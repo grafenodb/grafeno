@@ -57,12 +57,17 @@ jobs:
     timeout-minutes: 20
     env:
       # A process's AppArmor label: attr/apparmor/current on kernels that
-      # stack security modules, attr/current on older ones.
+      # stack security modules, attr/current on older ones. Where profiles
+      # are stacked the label joins them, `grafeno//&unconfined (enforce)`:
+      # confined by grafeno either way.
       CONFINED: |
         confined() {
           label="$(sudo cat "/proc/$1/attr/apparmor/current" 2>/dev/null || sudo cat "/proc/$1/attr/current")"
           echo "process $1: $label"
-          case "$label" in *"grafeno (enforce)"*) ;; *) echo "not confined by grafeno"; return 1 ;; esac
+          case "$label" in
+            "grafeno (enforce)"*|"grafeno//&"*"(enforce)"*) ;;
+            *) echo "not confined by grafeno"; return 1 ;;
+          esac
         }
     steps:
       - uses: actions/download-artifact@v4
