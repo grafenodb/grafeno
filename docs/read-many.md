@@ -1,7 +1,5 @@
 # Batched node and edge reads
 
-[Español](lecturas-por-lotes.md) | **English**
-
 `POST /v1/{namespace}/read-many` accepts optional `nodes` and `edges` UUID lists,
 with **512 combined positions** at most, including duplicates. One read
 transaction retrieves both lists. Nodes include the same text and memory fields

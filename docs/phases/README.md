@@ -1,0 +1,45 @@
+# Grafeno's phases
+
+How Grafeno was built, one phase at a time, each in its own file with
+its steps (subphases) and what was built in each. The general design
+(goals, architecture, measurements, open decisions) is in
+[DESIGN.md](../../DESIGN.md); the story in short is in
+[development-history.md](../development-history.md).
+
+| Phase | Status | Steps |
+| --- | --- | --- |
+| [Phase 1: Core](phase-01-core.md) | done | — |
+| [Phase 2: Retrieval](phase-02-retrieval.md) | done | — |
+| [Phase 3: Server](phase-03-server.md) | done | — |
+| [Phase 4: Foundations and validation](phase-04-foundations-and-validation.md) | done | — |
+| [Phase 5: Shell and query language](phase-05-shell-and-query-language.md) | done | — |
+| [Phase 6: Studio and installers](phase-06-studio-and-installers.md) | done | — |
+| [Phase 7: Memory](phase-07-memory.md) | done | — |
+| [Phase 8: Performance, query language and analysis](phase-08-performance-query-language-and-analysis.md) | done, in five steps | [8.1](phase-08-performance-query-language-and-analysis.md#81-gq-completeness-done), [8.2](phase-08-performance-query-language-and-analysis.md#82-statistics-and-time-done), [8.3](phase-08-performance-query-language-and-analysis.md#83-property-indexes-and-safe-queries-done), [8.4](phase-08-performance-query-language-and-analysis.md#84-concurrent-and-bulk-work-done-except-the-shared-read-caches), [8.5](phase-08-performance-query-language-and-analysis.md#85-graph-algorithms-done) |
+| [Phase 9: Desktop application](phase-09-desktop-application.md) | done, in five steps | [9.1](phase-09-desktop-application.md#91-namespaces-as-things-you-create-done), [9.2](phase-09-desktop-application.md#92-graph-lab-design-system-done), [9.3](phase-09-desktop-application.md#93-a-graph-you-can-handle-done), [9.4](phase-09-desktop-application.md#94-desktop-application-tauri-done), [9.5](phase-09-desktop-application.md#95-installers-and-icons-done) |
+| [Phase 10: Hardening](phase-10-hardening.md) | done, in seven steps | [10.1](phase-10-hardening.md#101-isolation-and-authorization-done), [10.2](phase-10-hardening.md#102-data-integrity-under-failure-done), [10.3](phase-10-hardening.md#103-hnsw-quality-after-deletions-done), [10.4](phase-10-hardening.md#104-costly-gq-done), [10.5](phase-10-hardening.md#105-correct-memory-merges-done), [10.6](phase-10-hardening.md#106-ram-under-large-graphs-done), [10.7](phase-10-hardening.md#107-one-writer-done) |
+| [Phase 11: Memory that keeps itself](phase-11-memory-that-keeps-itself.md) | done, in five steps | [11.0](phase-11-memory-that-keeps-itself.md#110-entity-resolution-and-text-similarity-done), [11.1](phase-11-memory-that-keeps-itself.md#111-incremental-extraction-and-reconciliation-of-entities-done), [11.2](phase-11-memory-that-keeps-itself.md#112-automatic-invalidation-of-contradicting-facts-done), [11.3](phase-11-memory-that-keeps-itself.md#113-hierarchical-community-summaries-done), [11.4](phase-11-memory-that-keeps-itself.md#114-continuous-ingestion-and-events-done) |
+| [Phase 12: Compatibility and speed](phase-12-compatibility-and-speed.md) | done, in five steps | [12.1](phase-12-compatibility-and-speed.md#121-wider-cypher-and-tool-compatibility-done-except-the-two-items-named-below), [12.2](phase-12-compatibility-and-speed.md#122-query-optimization-and-performance-under-concurrency-done), [12.3](phase-12-compatibility-and-speed.md#123-batched-execution-done), [12.4](phase-12-compatibility-and-speed.md#124-batched-and-parallel-traversal-done), [12.5](phase-12-compatibility-and-speed.md#125-compact-storage-and-vector-quantization-done-without-the-compressed-postings-and-adjacency-blocks-see-below) |
+| [Phase 13: Distributed operation](phase-13-distributed-operation.md) | done, in six steps | [13.1](phase-13-distributed-operation.md#131-a-replicated-log-of-deterministic-write-groups-done), [13.2](phase-13-distributed-operation.md#132-raft-leader-election-and-log-replication-done), [13.3](phase-13-distributed-operation.md#133-continuing-when-an-instance-fails-done), [13.4](phase-13-distributed-operation.md#134-queries-in-parallel-across-instances-done), [13.5](phase-13-distributed-operation.md#135-more-than-one-group-namespaces-placed-on-different-servers-done), [13.6](phase-13-distributed-operation.md#136-operating-a-cluster-done) |
+| [Phase 14: Users, roles and permissions (RBAC)](phase-14-users-roles-and-permissions.md) | done, in five steps | [14.1](phase-14-users-roles-and-permissions.md#141-accounts-and-sign-in-done), [14.2](phase-14-users-roles-and-permissions.md#142-roles-and-privileges-done), [14.3](phase-14-users-roles-and-permissions.md#143-managing-access-in-gq-the-api-and-the-tools-done), [14.4](phase-14-users-roles-and-permissions.md#144-enforcement-down-to-labels-properties-and-records-done), [14.5](phase-14-users-roles-and-permissions.md#145-audit-and-accountability-done) |
+| [Phase 15: Engine and interface apart](phase-15-engine-and-interface-apart.md) | done, in five steps | [15.1](phase-15-engine-and-interface-apart.md#151-the-engine-alone-done), [15.2](phase-15-engine-and-interface-apart.md#152-a-professional-installation-of-the-engine-done), [15.3](phase-15-engine-and-interface-apart.md#153-the-public-api-as-the-only-contract-done), [15.4](phase-15-engine-and-interface-apart.md#154-the-desktop-application-without-an-engine-done), [15.5](phase-15-engine-and-interface-apart.md#155-two-products-two-releases-done) |
+| [Phase 16: Integrations](phase-16-integrations.md) | planned | — |
+
+## In short
+
+- **[Phase 1: Core](phase-01-core.md)**: Model, storage, transactions, traversals (neighbors, k hops, shortest path, subgraph).
+- **[Phase 2: Retrieval](phase-02-retrieval.md)**: Full-text and vector indexes, hybrid recall, `context_for`.
+- **[Phase 3: Server](phase-03-server.md)**: HTTP API with atomic batches, MCP server, TypeScript client, Docker image.
+- **[Phase 4: Foundations and validation](phase-04-foundations-and-validation.md)**: Layout versioning, counters, namespaces and statistics, paging, integrity check and rebuild, export/import, property/durability/concurrency tests, benchmarks.
+- **[Phase 5: Shell and query language](phase-05-shell-and-query-language.md)**: `grafeno shell` (a console like `psql`, on a file or a server) and GQ, a Cypher-style language with time travel ([docs/query-language.md](../query-language.md)).
+- **[Phase 6: Studio and installers](phase-06-studio-and-installers.md)**: Grafeno Studio embedded in the binary; Windows installer and service; `.deb`, `.rpm`, `install.sh` and a systemd service ([docs/install.md](../install.md)).
+- **[Phase 7: Memory](phase-07-memory.md)**: Entity resolution by normalized names and aliases, importance, accesses and decay in ranking, duplicates and merging, archiving, consolidation into summaries.
+- **[Phase 8: Performance, query language and analysis](phase-08-performance-query-language-and-analysis.md)**: .
+- **[Phase 9: Desktop application](phase-09-desktop-application.md)**: Grafeno as a desktop app with its own installers, a new design and a graph you can handle directly.
+- **[Phase 10: Hardening](phase-10-hardening.md)**: The priority technical risks, measured and closed before more features build on them.
+- **[Phase 11: Memory that keeps itself](phase-11-memory-that-keeps-itself.md)**: Entity resolution, incremental extraction and reconciliation of entities, automatic invalidation of contradicting facts, hierarchical community summaries, continuous ingestion and events.
+- **[Phase 12: Compatibility and speed](phase-12-compatibility-and-speed.md)**: Wider Cypher and tool compatibility, query optimization under concurrency, batched execution, batched and parallel traversal, compact storage and vector quantization.
+- **[Phase 13: Distributed operation](phase-13-distributed-operation.md)**: Several servers holding the same data, kept in sync by a replicated log with Raft; a leader elected among them coordinates writes, the others take over when it fails, and reads and large queries spread over all of them.
+- **[Phase 14: Users, roles and permissions (RBAC)](phase-14-users-roles-and-permissions.md)**: A complete role-based access control, as most databases have: users who sign in, roles and privileges granted with `GRANT` and `REVOKE`, rights down to labels, properties and records, and an audit log.
+- **[Phase 15: Engine and interface apart](phase-15-engine-and-interface-apart.md)**: The engine's installers install only the engine (Windows `.exe`, Linux `.deb`, `.rpm` and a `curl` one-liner), as a professional installation in the way PostgreSQL's is, with no Docker needed; and the interface becomes a separate desktop product with installers of its own, talking to engines only through their public API.
+- **[Phase 16: Integrations](phase-16-integrations.md)**: Grafito first, Python bindings.

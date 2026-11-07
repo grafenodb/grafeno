@@ -77,7 +77,7 @@ presentan el proyecto y los primeros pasos.
 - **Phase 9.4, desktop application:** `apps/desktop`, a Tauri app that
   opens database files with the engine inside the app (no service, no
   port) or connects to a server, with native menus, dialogs and recent
-  databases ([apps/desktop/README.md](../apps/desktop/README.md)).
+  databases (now in [Grafeno Studio](https://github.com/grafenodb/grafeno-studio/blob/main/desktop/README.md)).
 - **Phase 9.5, installers and icons:** Grafeno Desktop installers for
   Windows (`.exe`, `.msi`) and Linux (`.deb`, `.rpm`, `.AppImage`) with
   `.redb` files opening in it, every icon rendered from one source, and a
@@ -272,4 +272,4 @@ presentan el proyecto y los primeros pasos.
 
 Next, phase 16:
 integrations (Grafito, Python bindings). The plan is in
-[DESIGN.md](../DESIGN.md).
+[docs/phases](phases/README.md), one file per phase.

@@ -142,8 +142,9 @@ requiere Node: solo lo usan las pruebas del cliente.
 ## Diseño, rendimiento y alcance
 
 - [Diseño y decisiones](DESIGN.md): arquitectura, almacenamiento y semántica temporal.
+- [Fases](docs/phases/README.md) (en inglés): cada fase de Grafeno en su propio archivo, con sus pasos.
 - [Rendimiento](docs/performance.md) y [benchmarks](docs/benchmarks.md): métodos, datos y límites de las mediciones del proyecto.
-- [Lecturas por lotes: contrato, pruebas y medición reproducible](docs/lecturas-por-lotes.md).
+- [Lecturas por lotes (en inglés): contrato, pruebas y medición reproducible](docs/read-many.md).
 - [Expansión del grafo](docs/expansion-grafo.md): vecindarios por lotes y protección ante respuestas tardías.
 - [Historial de desarrollo](docs/development-history.md): detalle de las fases documentadas originalmente.
 

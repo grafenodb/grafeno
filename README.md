@@ -141,6 +141,7 @@ no Node: only the client's tests use it.
 ## Design, performance and scope
 
 - [Design and decisions](DESIGN.md): architecture, storage and temporal semantics.
+- [Phases](docs/phases/README.md): each of Grafeno's phases in its own file, with its steps.
 - [Performance](docs/performance.md) and [benchmarks](docs/benchmarks.md): methods, data and limits of project measurements.
 - [Batched reads: contract, tests and reproducible measurements](docs/read-many.md).
 - [Graph expansion](docs/graph-expansion.md): batched neighborhoods (the endpoint the Studio's graph view uses).
