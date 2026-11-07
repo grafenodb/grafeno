@@ -1,8 +1,9 @@
-# Builds the engine's release files when a tag like engine-v0.1.0 is pushed
+# Builds the engine's release files when a tag like v0.1.0 is pushed
 # (the version in crates/grafeno-server/Cargo.toml), and attaches
 # them to a GitHub release, each with a .sha256 (and a .minisig when the
 # minisign key is set):
-#   grafeno-<version>-windows-x64-setup.exe, grafeno-x86_64-pc-windows-msvc.zip,
+#   grafeno-<version>-windows-x64-setup.exe (also as grafeno-windows-x64-setup.exe),
+#   grafeno-x86_64-pc-windows-msvc.zip,
 #   for x86_64 and aarch64: grafeno-<arch>-unknown-linux-musl.tar.gz,
 #     grafeno_<version>-1_<amd64|arm64>.deb, grafeno-<version>-1.<arch>.rpm
 #     (and the same packages under names without the version),
@@ -22,7 +23,7 @@ name: release
 
 on:
   push:
-    tags: ["engine-v*"]
+    tags: ["v*"]
   workflow_dispatch:
 
 permissions:
@@ -37,7 +38,7 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/')
         run: |
           version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
-          test "$GITHUB_REF_NAME" = "engine-v$version" || { echo "tag $GITHUB_REF_NAME, engine version $version"; exit 1; }
+          test "$GITHUB_REF_NAME" = "v$version" || { echo "tag $GITHUB_REF_NAME, engine version $version"; exit 1; }
           grep -q "^## $version" CHANGELOG.md || { echo "CHANGELOG.md has no section for $version"; exit 1; }
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo test --workspace --locked
@@ -87,7 +88,10 @@ jobs:
           Copy-Item target\release\grafeno.exe, README.md dist\zip\
           Compress-Archive -Path dist\zip\* -DestinationPath dist\grafeno-x86_64-pc-windows-msvc.zip
           $setup = "grafeno-$version-windows-x64-setup.exe"
-          python packaging/windows/winget/make-manifests.py $version "dist\$setup" "https://github.com/$env:GITHUB_REPOSITORY/releases/download/engine-v$version/$setup" dist\winget
+          # The setup also under a name without the version: what links to
+          # the latest release (releases/latest/download/…) ask for.
+          Copy-Item "dist\$setup" dist\grafeno-windows-x64-setup.exe
+          python packaging/windows/winget/make-manifests.py $version "dist\$setup" "https://github.com/$env:GITHUB_REPOSITORY/releases/download/v$version/$setup" dist\winget
           Compress-Archive -Path dist\winget\* -DestinationPath "dist\grafeno-$version-winget.zip"
           Get-ChildItem dist\*.exe, dist\*.zip | ForEach-Object {
             "$((Get-FileHash $_ -Algorithm SHA256).Hash.ToLower())  $($_.Name)" | Out-File -Encoding ascii "$($_.FullName).sha256"
@@ -125,11 +129,11 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          version="${GITHUB_REF_NAME#engine-v}"
+          version="${GITHUB_REF_NAME#v}"
           # The notes are the version's section of CHANGELOG.md.
           awk -v v="$version" '$0 ~ "^## " v {on=1; next} /^## / && on {exit} on' CHANGELOG.md > notes.md
           gh release create "$GITHUB_REF_NAME" files/* --repo "$GITHUB_REPOSITORY" \
-            --title "Grafeno engine $version" --notes-file notes.md
+            --title "Grafeno $version" --notes-file notes.md
 
   repositories:
     needs: linux

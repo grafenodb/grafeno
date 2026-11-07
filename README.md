@@ -43,7 +43,7 @@ one-liner that also suits AlmaLinux, Rocky and RHEL) and a `.tar.gz`: see
 the [installation guide](docs/install.md). The engine runs as a service on
 `127.0.0.1:7810`; its settings are in `grafeno.toml`. `grafeno setup` adds
 instances, as PostgreSQL clusters are, and `grafeno doctor` checks them.
-The engine's releases are tagged `engine-v<version>`; what each one
+The engine's releases are tagged `v<version>`; what each one
 changes is in [CHANGELOG.md](CHANGELOG.md).
 
 From source, with Rust installed:

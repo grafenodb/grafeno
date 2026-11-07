@@ -618,7 +618,7 @@ or the app closes. Install the engine first; the app finds it on the
 
 The engine and Grafeno Studio / Grafeno Desktop are two products with
 their own versions, change logs and releases: the engine's are tagged
-`engine-v<version>` in this repository ([CHANGELOG.md](../CHANGELOG.md)),
+`v<version>` in this repository ([CHANGELOG.md](../CHANGELOG.md)),
 the desktop app's `desktop-v<version>` in its own. Each installs on its
 own and leaves the other alone: the engine's packages bring nothing
 graphical, the desktop's no service and no engine, and installing,
@@ -646,7 +646,7 @@ is the icon of the executable, the installer and its shortcuts:
 `packaging/windows/make-icon.sh` renders it (16 to 256 pixels, with Docker)
 from `packaging/windows/grafeno-mark.svg`, the Grafeno site's mark.
 
-`.github/workflows/release.yml` builds all of them when an `engine-v*` tag is
+`.github/workflows/release.yml` builds all of them when a `v*` tag is
 pushed and publishes a GitHub release; it adds the packages to the
 repositories on the `gh-pages` branch (served by GitHub Pages). What signs
 comes from the repository's secrets, each optional:

@@ -71,13 +71,12 @@ case "$(uname -m)" in
     aarch64|arm64) ARCH="aarch64"; DEB_ARCH="arm64" ;;
     *) fail "no release for $(uname -m) (x86_64 and aarch64 only)" ;;
 esac
-# The engine's releases are tagged engine-v<version> (Grafeno Desktop has
-# its own, in its repository).
+# The engine's releases are tagged v<version> (Grafeno Studio has its own,
+# in its repository).
 case "$VERSION" in
     latest) TAG="latest"; NUMBER="" ;;
-    engine-v*) TAG="$VERSION"; NUMBER="${VERSION#engine-v}" ;;
-    v*) TAG="engine-$VERSION"; NUMBER="${VERSION#v}" ;;
-    *) TAG="engine-v$VERSION"; NUMBER="$VERSION" ;;
+    v*) TAG="$VERSION"; NUMBER="${VERSION#v}" ;;
+    *) TAG="v$VERSION"; NUMBER="$VERSION" ;;
 esac
 
 IS_ROOT=0

@@ -45,7 +45,7 @@ una línea con `curl` que también sirve para AlmaLinux, Rocky y RHEL) y un
 ejecuta como servicio en `127.0.0.1:7810`; su configuración está en
 `grafeno.toml`. `grafeno setup` agrega instancias, como los clústeres de
 PostgreSQL, y `grafeno doctor` las revisa. Las versiones del motor se
-etiquetan `engine-v<versión>`; lo que cambia cada una está en
+etiquetan `v<versión>`; lo que cambia cada una está en
 [CHANGELOG.md](CHANGELOG.md).
 
 Desde el código, con Rust instalado:

@@ -444,9 +444,10 @@ As built (the products already live in two repositories since 15.1):
 
 - The engine (this repository): version 0.1.0, `CHANGELOG.md` with a
   section per version (its release's notes), releases started by
-  `engine-v<version>` tags; the workflow refuses a tag that does not name
+  `v<version>` tags (`engine-v` at first; plain `v` since 0.1.0, as the two
+  products live in two repositories); the workflow refuses a tag that does not name
   the version in `Cargo.toml` or has no section in the change log. The
-  one-liner asks for `engine-v<version>` (`--version 0.1.0`), and the
+  one-liner asks for `v<version>` (`--version 0.1.0`), and the
   winget manifests point at those tags.
 - Grafeno Studio and Grafeno Desktop (the Grafeno Studio repository): one product, version
   0.2.0 (`desktop/Cargo.toml`, `desktop/tauri.conf.json` and
@@ -481,6 +482,6 @@ As built (the products already live in two repositories since 15.1):
   releases relate); the desktop app's guide is its own `README.md`, with
   the engines it works with.
 - Not done, and why: no release of either product has been tagged yet
-  (the first `engine-v0.1.0` and `desktop-v0.2.0` are the owner's to
+  (the first, `v0.1.0` and Grafeno Studio's `v0.2.0`, were the owner's to
   push), so "a tagged release builds" is shown by the same jobs running on
   pushes, not by a published release.

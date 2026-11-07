@@ -78,7 +78,7 @@ Tags:
   - graph
   - graph-database
   - knowledge-graph
-ReleaseNotesUrl: https://github.com/grafenodb/grafeno/releases/tag/engine-v{version}
+ReleaseNotesUrl: https://github.com/grafenodb/grafeno/releases/tag/v{version}
 ManifestType: defaultLocale
 ManifestVersion: {SCHEMA}
 """,

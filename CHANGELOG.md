@@ -2,8 +2,8 @@
 
 The engine (`grafeno`: the server, the shell, the administration commands
 and its installers) has its own versions and releases, tagged
-`engine-v<version>`; Grafeno Studio and Grafeno Desktop have theirs, in
-their own repository. A version's section here is its release's notes;
+`v<version>`; Grafeno Studio and Grafeno Desktop have theirs, in their own
+repository. A version's section here is its release's notes;
 the release workflow refuses a tag whose version has no section.
 
 What the engine speaks to clients is versioned apart from it: the HTTP
@@ -11,10 +11,10 @@ API version (`GET /v1/about`, now 1) changes only when a change would
 break a client of the previous one, and the database files' layout
 version (now 17) is upgraded in place, with a copy kept first.
 
-## 0.1.0 (not released yet)
+## 0.1.0 (2026-11-07)
 
 The first release: everything built in phases 1 to 15 (the story, step by
-step, is in [docs/development-history.md](docs/development-history.md)).
+step, is in [docs/development-history.md](https://github.com/grafenodb/grafeno/blob/main/docs/development-history.md)).
 
 - **The graph**: namespaces of nodes and edges with properties, facts with
   valid and record time, full-text (BM25) and vector (HNSW, int8 copies)
