@@ -17,6 +17,14 @@ version (now 17) is upgraded in place, with a copy kept first.
   Apache License 2.0, at the user's choice (`LICENSE-MIT`,
   `LICENSE-APACHE`). The packages, the Windows setup (a license page),
   the archives and the winget manifest carry it.
+- **Added**: indexes on several properties (`ON (p.last, p.first)`,
+  used by a prefix of them), on edge properties (`FOR ()-[r:rated]-()`)
+  and over several labels (`(n:A|B)`); constraints `IS NOT NULL`,
+  `IS :: TYPE`, `IS UNIQUE` on several properties and `IS KEY`, on nodes
+  and edges, checked against the data when declared and at the end of
+  each query statement (capability `indexes.advanced`).
+- **Changed**: `SHOW INDEXES` has two more columns (`on`, `key`) and
+  `SHOW CONSTRAINTS` one (`on`).
 - **Added**: explicit transactions. `BEGIN [READ ONLY]`, `COMMIT` and
   `ROLLBACK` in the shell and scripts (on a file or a server), and
   `POST /v1/{ns}/transactions` with `…/{id}/query`, `…/commit` and

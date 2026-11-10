@@ -7,8 +7,16 @@
 //! record stays, so `KNOWN AT` still shows what was believed. A constraint
 //! can instead only flag the contradiction, or refuse the new fact. Every
 //! invalidation and flag is recorded and can be listed.
+//!
+//! Since 16.5, rules on properties too: a property every node (or edge)
+//! of a label must have (`IS NOT NULL`, which refuses a stored `null`), or
+//! the type its values must have (`IS :: INTEGER`). Keys, properties that
+//! must exist and be unique together, are indexes ([`crate::IndexDef`]
+//! with `unique` and `required`). Writes check them as they go, or, once
+//! [`WriteTx::defer_checks`] is called, when [`WriteTx::check_deferred`]
+//! is (a query checks each statement's end state).
 
-use grafeno_core::{Edge, EdgeId, Error, Node, NodeId, Result, Timestamp, Value};
+use grafeno_core::{Edge, EdgeId, Error, Node, NodeId, Props, Result, Timestamp, Value};
 use redb::{ReadableTable, TableDefinition};
 use serde::{Deserialize, Serialize};
 
@@ -49,6 +57,67 @@ pub enum OnConflict {
     Reject,
 }
 
+/// The type a property's values must have.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PropertyType {
+    Boolean,
+    /// A whole number.
+    Integer,
+    /// A number written with a fraction or an exponent.
+    Float,
+    String,
+    List,
+    Map,
+    /// A string holding a date and time (how queries store them).
+    Datetime,
+}
+
+impl PropertyType {
+    /// Whether `value` has this type (`null` has every type: whether a
+    /// property may be `null` is another rule).
+    pub fn admits(self, value: &Value) -> bool {
+        match (self, value) {
+            (_, Value::Null) => true,
+            (PropertyType::Boolean, Value::Bool(_)) => true,
+            (PropertyType::Integer, Value::Number(n)) => n.is_i64() || n.is_u64(),
+            (PropertyType::Float, Value::Number(n)) => n.is_f64(),
+            (PropertyType::String, Value::String(_)) => true,
+            (PropertyType::Datetime, Value::String(s)) => Timestamp::parse(s).is_ok(),
+            (PropertyType::List, Value::Array(_)) => true,
+            (PropertyType::Map, Value::Object(_)) => true,
+            _ => false,
+        }
+    }
+
+    /// `INTEGER`, as queries write it.
+    pub fn keyword(self) -> &'static str {
+        match self {
+            PropertyType::Boolean => "BOOLEAN",
+            PropertyType::Integer => "INTEGER",
+            PropertyType::Float => "FLOAT",
+            PropertyType::String => "STRING",
+            PropertyType::List => "LIST",
+            PropertyType::Map => "MAP",
+            PropertyType::Datetime => "DATETIME",
+        }
+    }
+
+    /// The type a keyword names (`INT` and `BOOL` too).
+    pub fn from_keyword(word: &str) -> Option<Self> {
+        Some(match word.to_ascii_uppercase().as_str() {
+            "BOOLEAN" | "BOOL" => PropertyType::Boolean,
+            "INTEGER" | "INT" => PropertyType::Integer,
+            "FLOAT" => PropertyType::Float,
+            "STRING" => PropertyType::String,
+            "LIST" => PropertyType::List,
+            "MAP" => PropertyType::Map,
+            "DATETIME" => PropertyType::Datetime,
+            _ => return None,
+        })
+    }
+}
+
 /// A rule on facts or properties.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "kind")]
@@ -69,18 +138,92 @@ pub enum Constraint {
         label: String,
         key: String,
     },
+    /// `CREATE CONSTRAINT FOR (n:Person) REQUIRE n.email IS NOT NULL`:
+    /// every node (or edge, with `edges`) with the label has the property,
+    /// and not as `null` (16.5).
+    Exists {
+        name: String,
+        label: String,
+        key: String,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        edges: bool,
+    },
+    /// `CREATE CONSTRAINT FOR (n:Person) REQUIRE n.age IS :: INTEGER`: the
+    /// property, when set, has this type (16.5).
+    Typed {
+        name: String,
+        label: String,
+        key: String,
+        of: PropertyType,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        edges: bool,
+    },
 }
 
 impl Constraint {
     pub fn name(&self) -> &str {
         match self {
-            Constraint::Edge { name, .. } | Constraint::Functional { name, .. } => name,
+            Constraint::Edge { name, .. }
+            | Constraint::Functional { name, .. }
+            | Constraint::Exists { name, .. }
+            | Constraint::Typed { name, .. } => name,
+        }
+    }
+
+    /// Gives it a name (the default one when it has none).
+    pub fn set_name(&mut self, new: String) {
+        match self {
+            Constraint::Edge { name, .. }
+            | Constraint::Functional { name, .. }
+            | Constraint::Exists { name, .. }
+            | Constraint::Typed { name, .. } => *name = new,
         }
     }
 
     pub fn label(&self) -> &str {
         match self {
-            Constraint::Edge { label, .. } | Constraint::Functional { label, .. } => label,
+            Constraint::Edge { label, .. }
+            | Constraint::Functional { label, .. }
+            | Constraint::Exists { label, .. }
+            | Constraint::Typed { label, .. } => label,
+        }
+    }
+
+    /// The property it is on, if it is on one.
+    pub fn key(&self) -> Option<&str> {
+        match self {
+            Constraint::Edge { .. } => None,
+            Constraint::Functional { key, .. }
+            | Constraint::Exists { key, .. }
+            | Constraint::Typed { key, .. } => Some(key),
+        }
+    }
+
+    /// Whether it is on edges.
+    pub fn on_edges(&self) -> bool {
+        match self {
+            Constraint::Edge { .. } => true,
+            Constraint::Functional { .. } => false,
+            Constraint::Exists { edges, .. } | Constraint::Typed { edges, .. } => *edges,
+        }
+    }
+
+    /// What a property rule says of `props` (a record with the label):
+    /// `Some(problem)` when they break it.
+    fn broken_by(&self, props: &Props) -> Option<String> {
+        match self {
+            Constraint::Exists { key, .. } => match props.get(key) {
+                None => Some(format!("has no {key}")),
+                Some(Value::Null) => Some(format!("has {key} = null")),
+                Some(_) => None,
+            },
+            Constraint::Typed { key, of, .. } => match props.get(key) {
+                Some(value) if !of.admits(value) => {
+                    Some(format!("has {key} = {value}, not a {}", of.keyword()))
+                }
+                _ => None,
+            },
+            _ => None,
         }
     }
 
@@ -96,6 +239,10 @@ impl Constraint {
                 }
             ),
             Constraint::Functional { label, key, .. } => format!("{label}_{key}_functional"),
+            Constraint::Exists { label, key, .. } => format!("{label}_{key}_not_null"),
+            Constraint::Typed { label, key, of, .. } => {
+                format!("{label}_{key}_{}", of.keyword().to_lowercase())
+            }
         }
     }
 }
@@ -250,6 +397,35 @@ impl WriteTx {
             ns.to_owned(),
             constraint.name().to_owned(),
         ));
+        if matches!(
+            constraint,
+            Constraint::Exists { .. } | Constraint::Typed { .. }
+        ) {
+            if constraint.key().is_some_and(str::is_empty) {
+                return Err(Error::Invalid("a property rule needs a property".into()));
+            }
+            // The data already there must keep it: the first records that
+            // do not are named, and nothing is declared.
+            let mut broken = Vec::new();
+            for (id, props) in self.labelled(ns, constraint.on_edges(), constraint.label())? {
+                if let Some(problem) = constraint.broken_by(&props) {
+                    broken.push(format!(
+                        "{} {id} {problem}",
+                        kind_name(constraint.on_edges())
+                    ));
+                    if broken.len() == 3 {
+                        break;
+                    }
+                }
+            }
+            if !broken.is_empty() {
+                return Err(Error::Invalid(format!(
+                    "cannot declare {}: {}",
+                    constraint.name(),
+                    broken.join("; ")
+                )));
+            }
+        }
         self.tx
             .open_table(CONSTRAINTS)
             .map_err(storage)?
@@ -309,13 +485,16 @@ impl WriteTx {
         std::mem::take(&mut self.constraint_log)
     }
 
-    pub(crate) fn cached_constraints(&mut self, ns: &str) -> Result<Vec<Constraint>> {
+    pub(crate) fn cached_constraints(
+        &mut self,
+        ns: &str,
+    ) -> Result<std::sync::Arc<Vec<Constraint>>> {
         if let Some((cached_ns, cached)) = &self.constraint_cache
             && cached_ns == ns
         {
             return Ok(cached.clone());
         }
-        let found = self.constraints(ns)?;
+        let found = std::sync::Arc::new(self.constraints(ns)?);
         self.constraint_cache = Some((ns.to_owned(), found.clone()));
         Ok(found)
     }
@@ -412,7 +591,7 @@ impl WriteTx {
     ) -> Result<Vec<(String, Edge, Action)>> {
         let constraints = self.cached_constraints(ns)?;
         let mut pending = Vec::new();
-        for constraint in constraints {
+        for constraint in constraints.iter() {
             let Constraint::Edge {
                 name,
                 label,
@@ -422,7 +601,8 @@ impl WriteTx {
             else {
                 continue;
             };
-            if label != edge.label {
+            let (scope, on_conflict) = (*scope, *on_conflict);
+            if *label != edge.label {
                 continue;
             }
             let found = self.contradictions(ns, edge, scope)?;
@@ -529,17 +709,17 @@ impl WriteTx {
             return Ok(());
         };
         let constraints = self.cached_constraints(ns)?;
-        for constraint in constraints {
+        for constraint in constraints.iter() {
             let Constraint::Functional { label, key, .. } = constraint else {
                 continue;
             };
-            if !previous.has_label(&label) {
+            if !previous.has_label(label) {
                 continue;
             }
-            let Some(old) = previous.props.get(&key) else {
+            let Some(old) = previous.props.get(key) else {
                 continue;
             };
-            if node.props.get(&key) == Some(old) {
+            if node.props.get(key) == Some(old) {
                 continue;
             }
             let prefix = format!("{}/{key}/", node.id);
@@ -570,4 +750,155 @@ impl WriteTx {
     pub fn property_history(&self, ns: &str, node: NodeId, key: &str) -> Result<Vec<HistoryEntry>> {
         history_from(self.state_entries(ns, HISTORY, &format!("{node}/{key}/"), usize::MAX)?)
     }
+
+    /// From now on, property rules (not null, types, keys) are checked
+    /// when [`WriteTx::check_deferred`] is called, on the records' state
+    /// then, instead of at each write: a statement may create a node and
+    /// set its required property in two steps. Uniqueness is still checked
+    /// at each write.
+    pub fn defer_checks(&mut self) {
+        if self.deferred_rules.is_none() {
+            self.deferred_rules = Some(Vec::new());
+        }
+    }
+
+    /// Checks the property rules on every record written since
+    /// [`WriteTx::defer_checks`], and checks at each write again.
+    pub fn check_deferred(&mut self) -> Result<()> {
+        let Some(mut pending) = self.deferred_rules.take() else {
+            return Ok(());
+        };
+        pending.sort();
+        pending.dedup();
+        for (ns, edges, id) in pending {
+            let defs = self.index_defs(&ns)?;
+            let record = if edges {
+                self.edge(&ns, EdgeId::from_u128(id))?
+                    .filter(|edge| !edge.is_retracted())
+                    .map(|edge| (vec![edge.label], edge.props))
+            } else {
+                self.node(&ns, NodeId::from_u128(id))?
+                    .map(|node| (node.labels, node.props))
+            };
+            if let Some((labels, props)) = record {
+                self.check_record(&ns, edges, id, &defs, &labels, &props)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// After a record is written: checks its property rules now, or
+    /// remembers it for [`WriteTx::check_deferred`]. Nothing while applying
+    /// a replicated entry (its writes were checked where they were made).
+    /// `defs` are the namespace's indexes; `labels` and `props` the
+    /// record as written (`live`: not a retracted fact).
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn check_rules_later(
+        &mut self,
+        ns: &str,
+        edges: bool,
+        id: u128,
+        defs: &[crate::IndexDef],
+        labels: &[String],
+        props: &Props,
+        live: bool,
+    ) -> Result<()> {
+        if self.applying || !live {
+            return Ok(());
+        }
+        match &mut self.deferred_rules {
+            Some(pending) => {
+                pending.push((ns.to_owned(), edges, id));
+                Ok(())
+            }
+            None => self.check_record(ns, edges, id, defs, labels, props),
+        }
+    }
+
+    /// Whether the node (or edge) `id`, with these labels and properties,
+    /// keeps every property rule of its labels: not null, types and keys.
+    fn check_record(
+        &mut self,
+        ns: &str,
+        edges: bool,
+        id: u128,
+        defs: &[crate::IndexDef],
+        labels: &[String],
+        props: &Props,
+    ) -> Result<()> {
+        let constraints = self.cached_constraints(ns)?;
+        let keys = defs.iter().filter(|def| def.required && def.edges == edges);
+        let rules = constraints.iter().filter(|constraint| {
+            matches!(
+                constraint,
+                Constraint::Exists { .. } | Constraint::Typed { .. }
+            ) && constraint.on_edges() == edges
+        });
+        let what = kind_name(edges);
+        let name = || {
+            if edges {
+                EdgeId::from_u128(id).to_string()
+            } else {
+                NodeId::from_u128(id).to_string()
+            }
+        };
+        for rule in rules {
+            if !labels.iter().any(|label| label == rule.label()) {
+                continue;
+            }
+            if let Some(problem) = rule.broken_by(props) {
+                return Err(Error::Invalid(format!(
+                    "{}: {what} {} {problem}",
+                    rule.name(),
+                    name()
+                )));
+            }
+        }
+        for key in keys {
+            if !key.covers(labels) {
+                continue;
+            }
+            if let Some(missing) = crate::index::missing_key(key, props) {
+                return Err(Error::Invalid(format!(
+                    "{}: {what} {} has no {missing} (({}) is a key of {}: each needs a boolean, a number or a string)",
+                    key.name,
+                    name(),
+                    key.keys().join(", "),
+                    key.describe()
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    /// Every node (or current edge) with `label`: its id and properties.
+    fn labelled(&self, ns: &str, edges: bool, label: &str) -> Result<Vec<(String, Props)>> {
+        if edges {
+            return Ok(self
+                .edges_with_label(ns, label)?
+                .into_iter()
+                .filter(|edge| !edge.is_retracted())
+                .map(|edge| (edge.id.to_string(), edge.props))
+                .collect());
+        }
+        let ids = crate::store::nodes_with_label(
+            &self
+                .tx
+                .open_table(crate::store::NODE_LABELS)
+                .map_err(storage)?,
+            ns,
+            label,
+        )?;
+        let mut out = Vec::new();
+        for id in ids {
+            if let Some(node) = self.node(ns, id)? {
+                out.push((id.to_string(), node.props));
+            }
+        }
+        Ok(out)
+    }
+}
+
+fn kind_name(edges: bool) -> &'static str {
+    if edges { "edge" } else { "node" }
 }

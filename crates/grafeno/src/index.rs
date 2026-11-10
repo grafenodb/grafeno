@@ -13,17 +13,25 @@
 //! list): it finds the nodes whose text looks like a query
 //! ([`ReadTx::fuzzy_search`]), typos and word order included, without
 //! comparing with every node. Its entries share the table, tagged apart.
+//!
+//! Since 16.5 an index may also cover several properties (a composite
+//! index, usable by a prefix of them), several labels (records with any of
+//! them), or edges instead of nodes. A composite entry is its values one
+//! after the other, each encoded so that it ends unambiguously (strings
+//! escape their zero bytes and end with two), so byte order is still value
+//! order, property by property. Single-property indexes keep their first
+//! encoding, so no layout changed.
 
 use std::collections::HashMap;
 use std::ops::Bound;
 
-use grafeno_core::{Error, Node, NodeId, Result};
+use grafeno_core::{Edge, EdgeId, Error, Node, NodeId, Props, Result};
 use redb::{ReadableTable, TableDefinition};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as Json;
 
 use crate::store::{
-    NODE_LABELS, NODES, check_label, decode, encode, nodes_with_label, read_record, storage,
+    EDGES, NODE_LABELS, NODES, check_label, decode, encode, nodes_with_label, read_record, storage,
 };
 use crate::{ReadTx, WriteTx};
 
@@ -35,8 +43,9 @@ pub(crate) const INDEXES: TableDefinition<(&str, &str), &[u8]> = TableDefinition
 pub(crate) const INDEX_ENTRIES: TableDefinition<IndexKey, ()> =
     TableDefinition::new("index_entries");
 
-/// A declared index: nodes with `label`, by their property `key`.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// A declared index: nodes with `label`, by their property `key`; or,
+/// since 16.5, by several properties, over several labels, or on edges.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IndexDef {
     pub name: String,
     pub label: String,
@@ -48,6 +57,21 @@ pub struct IndexDef {
     /// value (not for lookups by value; never unique).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub fuzzy: bool,
+    /// The properties after `key`, in order: a composite index on `(key,
+    /// more_keys…)`. A record is in it when it has every one of them with
+    /// a value the index can hold; a lookup gives values for a prefix.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub more_keys: Vec<String>,
+    /// More labels: records with `label` or any of these.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub more_labels: Vec<String>,
+    /// On edges with the label(s) instead of nodes.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub edges: bool,
+    /// Every record with the label(s) must have every property, with a
+    /// value the index can hold (with `unique`: a key constraint).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub required: bool,
 }
 
 impl IndexDef {
@@ -72,8 +96,97 @@ impl IndexDef {
             name: Self::default_name(label, key, false),
             label: label.into(),
             key: key.into(),
-            unique: false,
-            fuzzy: false,
+            ..Self::default()
+        }
+    }
+
+    /// An index on several properties of nodes with `label`, named
+    /// `Person_last_first`.
+    pub fn composite(label: &str, keys: &[&str]) -> Self {
+        let mut def = Self {
+            label: label.into(),
+            key: keys.first().copied().unwrap_or_default().into(),
+            more_keys: keys.iter().skip(1).map(|key| (*key).to_owned()).collect(),
+            ..Self::default()
+        };
+        def.name = def.generated_name();
+        def
+    }
+
+    /// An index on a property of edges with `label`, named `rated_stars`.
+    pub fn on_edges(label: &str, key: &str) -> Self {
+        Self {
+            edges: true,
+            ..Self::new(label, key)
+        }
+    }
+
+    /// The name given when none is: labels, then properties, then
+    /// `unique`, `key` or `fuzzy`, joined by `_`.
+    pub fn generated_name(&self) -> String {
+        let mut parts: Vec<&str> = self.labels();
+        parts.extend(self.keys());
+        if self.fuzzy {
+            parts.push("fuzzy");
+        } else if self.unique && self.required {
+            parts.push("key");
+        } else if self.unique {
+            parts.push("unique");
+        }
+        parts.join("_")
+    }
+
+    /// Every property, in order.
+    pub fn keys(&self) -> Vec<&str> {
+        std::iter::once(self.key.as_str())
+            .chain(self.more_keys.iter().map(String::as_str))
+            .collect()
+    }
+
+    /// Every label.
+    pub fn labels(&self) -> Vec<&str> {
+        std::iter::once(self.label.as_str())
+            .chain(self.more_labels.iter().map(String::as_str))
+            .collect()
+    }
+
+    /// One property of nodes of one label: the index every version had.
+    pub fn is_simple(&self) -> bool {
+        self.more_keys.is_empty() && self.more_labels.is_empty() && !self.edges
+    }
+
+    pub(crate) fn composite_keys(&self) -> bool {
+        !self.more_keys.is_empty()
+    }
+
+    /// Whether a record with these labels belongs in the index.
+    pub fn covers<S: AsRef<str>>(&self, labels: &[S]) -> bool {
+        let mine = self.labels();
+        labels.iter().any(|label| mine.contains(&label.as_ref()))
+    }
+
+    /// The same records and properties, whatever the name.
+    pub fn same_shape(&self, other: &IndexDef) -> bool {
+        let sorted = |def: &IndexDef| {
+            let mut labels: Vec<String> = def.labels().into_iter().map(str::to_owned).collect();
+            labels.sort_unstable();
+            labels
+        };
+        sorted(self) == sorted(other)
+            && self.keys() == other.keys()
+            && self.edges == other.edges
+            && self.unique == other.unique
+            && self.fuzzy == other.fuzzy
+    }
+
+    /// What it is on, for messages: `:Person(email)`, `[:rated](stars)`.
+    pub fn describe(&self) -> String {
+        let labels = self.labels().join("|");
+        let keys = self.keys().join(", ");
+        if self.edges {
+            format!("[:{labels}]({keys})")
+        } else {
+            format!(":{labels}({keys})")
         }
     }
 
@@ -188,6 +301,117 @@ pub(crate) fn encode_value(value: &Json) -> Option<Vec<u8>> {
     }
 }
 
+/// One value of a composite entry: as [`encode_value`], but strings escape
+/// their zero bytes (`00 FF`) and end with `00 00`, so a value ends where
+/// the next one starts and byte order stays value order.
+fn component(value: &Json) -> Option<Vec<u8>> {
+    match value {
+        Json::String(s) => {
+            let mut out = vec![STRING];
+            escape_into(&mut out, s);
+            out.extend_from_slice(&[0, 0]);
+            Some(out)
+        }
+        other => encode_value(other),
+    }
+}
+
+fn escape_into(out: &mut Vec<u8>, text: &str) {
+    for &byte in text.as_bytes() {
+        out.push(byte);
+        if byte == 0 {
+            out.push(0xFF);
+        }
+    }
+}
+
+/// The entry of a record's properties in `def` (not a fuzzy one), or
+/// `None` if a property is missing or holds what the index cannot.
+pub(crate) fn entry_bytes(def: &IndexDef, props: &Props) -> Option<Vec<u8>> {
+    if !def.composite_keys() {
+        return encode_value(props.get(&def.key)?);
+    }
+    let mut out = Vec::new();
+    for key in def.keys() {
+        out.extend(component(props.get(key)?)?);
+    }
+    Some(out)
+}
+
+/// The byte range of a lookup in `def`: values equal to `prefix` for its
+/// first properties, then `range` on the next one (anything when `None`).
+/// `None`: nothing can match (a value the index cannot hold, a range that
+/// mixes kinds, more values than properties).
+pub(crate) fn seek_bytes(
+    def: &IndexDef,
+    prefix: &[Json],
+    range: Option<&IndexRange>,
+) -> Option<(Vec<u8>, Vec<u8>)> {
+    if !def.composite_keys() {
+        return match (prefix, range) {
+            ([], Some(range)) => byte_range(range),
+            ([value], None) => byte_range(&IndexRange::Equal(value.clone())),
+            _ => None,
+        };
+    }
+    if prefix.len() + usize::from(range.is_some()) > def.keys().len() {
+        return None;
+    }
+    let mut start = Vec::new();
+    for value in prefix {
+        start.extend(component(value)?);
+    }
+    let with = |tail: &[u8]| {
+        let mut out = start.clone();
+        out.extend_from_slice(tail);
+        out
+    };
+    // Whatever follows a value sorts before 0xFF, which no value's first
+    // byte (its kind) reaches.
+    Some(match range {
+        None => (start.clone(), with(&[0xFF])),
+        Some(IndexRange::Equal(value)) => {
+            let value = component(value)?;
+            let mut high = value.clone();
+            high.push(0xFF);
+            (with(&value), with(&high))
+        }
+        Some(IndexRange::Prefix(text)) => {
+            let mut low = vec![STRING];
+            escape_into(&mut low, text);
+            let mut high = low.clone();
+            high.push(0xFF);
+            (with(&low), with(&high))
+        }
+        Some(IndexRange::Between { lower, upper }) => {
+            let bound_kind = |bound: &Bound<Json>| match bound {
+                Bound::Included(value) | Bound::Excluded(value) => kind(value),
+                Bound::Unbounded => None,
+            };
+            let tag = bound_kind(lower).or_else(|| bound_kind(upper))?;
+            if [lower, upper]
+                .iter()
+                .any(|bound| bound_kind(bound).is_some_and(|other| other != tag))
+            {
+                return None;
+            }
+            let low = match lower {
+                Bound::Included(value) | Bound::Excluded(value) => component(value)?,
+                Bound::Unbounded => vec![tag],
+            };
+            let high = match upper {
+                Bound::Included(value) | Bound::Excluded(value) => {
+                    let mut high = component(value)?;
+                    high.push(0xFF);
+                    high
+                }
+                Bound::Unbounded => vec![tag, 0xFF],
+            };
+            (with(&low), with(&high))
+        }
+    })
+}
+
 /// The value encoded by [`encode_value`] (numbers come back as `f64`
 /// unless they are whole and fit an `i64`).
 pub(crate) fn decode_value(bytes: &[u8]) -> Option<Json> {
@@ -259,18 +483,51 @@ pub(crate) fn byte_range(range: &IndexRange) -> Option<(Vec<u8>, Vec<u8>)> {
 
 /// The index entries a node should have under these definitions.
 pub(crate) fn entries_of<'a>(defs: &'a [IndexDef], node: &Node) -> Vec<(&'a IndexDef, Vec<u8>)> {
+    record_entries(defs, false, &node.labels, &node.props)
+}
+
+/// The index entries of a node (`edges` false) or an edge with these
+/// labels and properties.
+pub(crate) fn record_entries<'a, S: AsRef<str>>(
+    defs: &'a [IndexDef],
+    edges: bool,
+    labels: &[S],
+    props: &Props,
+) -> Vec<(&'a IndexDef, Vec<u8>)> {
     let mut out = Vec::new();
-    for def in defs.iter().filter(|def| node.has_label(&def.label)) {
-        let Some(value) = node.props.get(&def.key) else {
-            continue;
-        };
+    for def in defs
+        .iter()
+        .filter(|def| def.edges == edges && def.covers(labels))
+    {
         if def.fuzzy {
-            out.extend(grams_of(value).iter().map(|gram| (def, gram_bytes(gram))));
-        } else if let Some(bytes) = encode_value(value) {
+            if let Some(value) = props.get(&def.key) {
+                out.extend(grams_of(value).iter().map(|gram| (def, gram_bytes(gram))));
+            }
+        } else if let Some(bytes) = entry_bytes(def, props) {
             out.push((def, bytes));
         }
     }
     out
+}
+
+/// A record's values for the properties of `def`, for messages.
+pub(crate) fn values_of(def: &IndexDef, props: &Props) -> String {
+    let values: Vec<String> = def
+        .keys()
+        .iter()
+        .map(|key| props.get(*key).map_or("null".into(), Json::to_string))
+        .collect();
+    if values.len() == 1 {
+        values[0].clone()
+    } else {
+        format!("({})", values.join(", "))
+    }
+}
+
+/// Whether two records hold the same values for every property of `def`
+/// (equal bytes are equal values except for integers beyond 2^53).
+pub(crate) fn same_values(def: &IndexDef, a: &Props, b: &Props) -> bool {
+    def.keys().iter().all(|key| a.get(*key) == b.get(*key))
 }
 
 /// Nodes of fuzzy index `name` that share trigrams with `text`, best first:
@@ -338,7 +595,7 @@ fn fuzzy(
 
 fn fuzzy_def(defs: Vec<IndexDef>, label: &str, key: &str) -> Result<IndexDef> {
     defs.into_iter()
-        .find(|def| def.fuzzy && def.label == label && def.key == key)
+        .find(|def| def.fuzzy && def.is_simple() && def.label == label && def.key == key)
         .ok_or_else(|| {
             Error::Invalid(format!(
                 "no fuzzy index on :{label}({key}); create one with CREATE FUZZY INDEX FOR (n:{label}) ON (n.{key})"
@@ -371,18 +628,59 @@ fn lookup(
     let Some((low, high)) = byte_range(range) else {
         return Ok(Vec::new());
     };
+    Ok(lookup_bytes(table, ns, name, &low, &high, limit)?
+        .into_iter()
+        .map(NodeId::from_u128)
+        .collect())
+}
+
+/// The ids of the entries between two keys, both included, in key order.
+fn lookup_bytes(
+    table: &impl ReadableTable<IndexKey, ()>,
+    ns: &str,
+    name: &str,
+    low: &[u8],
+    high: &[u8],
+    limit: usize,
+) -> Result<Vec<u128>> {
     let mut out = Vec::new();
     for item in table
-        .range((ns, name, low.as_slice(), 0u128)..=(ns, name, high.as_slice(), u128::MAX))
+        .range((ns, name, low, 0u128)..=(ns, name, high, u128::MAX))
         .map_err(storage)?
     {
         if out.len() >= limit {
             break;
         }
         let (key, _) = item.map_err(storage)?;
-        out.push(NodeId::from_u128(key.value().3));
+        out.push(key.value().3);
     }
     Ok(out)
+}
+
+fn find_def(defs: Vec<IndexDef>, name: &str) -> Result<IndexDef> {
+    defs.into_iter()
+        .find(|def| def.name == name)
+        .ok_or_else(|| Error::Invalid(format!("there is no index named {name:?}")))
+}
+
+fn seek_ids(
+    table: &impl ReadableTable<IndexKey, ()>,
+    ns: &str,
+    def: &IndexDef,
+    prefix: &[Json],
+    range: Option<&IndexRange>,
+    limit: usize,
+) -> Result<Vec<u128>> {
+    if def.fuzzy {
+        return Err(Error::Invalid(format!(
+            "{} is a fuzzy index: search it with fuzzy_search",
+            def.name
+        )));
+    }
+    match seek_bytes(def, prefix, range) {
+        Some((low, high)) => lookup_bytes(table, ns, &def.name, &low, &high, limit),
+        None => Ok(Vec::new()),
+    }
 }
 
 fn count(table: &impl ReadableTable<IndexKey, ()>, ns: &str, name: &str) -> Result<u64> {
@@ -476,11 +774,128 @@ impl ReadTx {
         }
         Ok(visible)
     }
+
+    /// Up to `limit` nodes in node index `name` (of any kind: composite,
+    /// over several labels) whose first properties equal `prefix` and whose
+    /// next one is in `range` (anything when `None`), in value order.
+    /// Numbers are compared as `f64` and range ends are included: check the
+    /// properties of what it finds.
+    pub fn index_seek_nodes(
+        &self,
+        ns: &str,
+        name: &str,
+        prefix: &[Json],
+        range: Option<&IndexRange>,
+        limit: usize,
+    ) -> Result<Vec<NodeId>> {
+        let def = find_def(self.index_defs(ns)?, name)?;
+        if def.edges {
+            return Err(Error::Invalid(format!("{name} is an index on edges")));
+        }
+        let Some(view) = self.view() else {
+            return Ok(
+                seek_ids(&self.index_entries, ns, &def, prefix, range, limit)?
+                    .into_iter()
+                    .map(NodeId::from_u128)
+                    .collect(),
+            );
+        };
+        if view.per_record(ns)
+            && def.keys().iter().any(|key| {
+                def.labels()
+                    .iter()
+                    .any(|label| view.property_hidden(ns, &[(*label).to_owned()], key))
+            })
+        {
+            return Ok(Vec::new());
+        }
+        let mut visible = Vec::new();
+        for id in seek_ids(&self.index_entries, ns, &def, prefix, range, usize::MAX)? {
+            let id = NodeId::from_u128(id);
+            if self.sees(ns, id)? {
+                visible.push(id);
+                if visible.len() == limit {
+                    break;
+                }
+            }
+        }
+        Ok(visible)
+    }
+
+    /// [`ReadTx::index_seek_nodes`] for an index on edges: the edges found,
+    /// retracted ones included (check them).
+    pub fn index_seek_edges(
+        &self,
+        ns: &str,
+        name: &str,
+        prefix: &[Json],
+        range: Option<&IndexRange>,
+        limit: usize,
+    ) -> Result<Vec<EdgeId>> {
+        let def = find_def(self.index_defs(ns)?, name)?;
+        if !def.edges {
+            return Err(Error::Invalid(format!("{name} is an index on nodes")));
+        }
+        let viewed = self.view().is_some();
+        let wanted = if viewed { usize::MAX } else { limit };
+        let mut out = Vec::new();
+        for id in seek_ids(&self.index_entries, ns, &def, prefix, range, wanted)? {
+            let id = EdgeId::from_u128(id);
+            // `edge` gives nothing the view hides.
+            if !viewed || self.edge(ns, id)?.is_some() {
+                out.push(id);
+                if out.len() == limit {
+                    break;
+                }
+            }
+        }
+        Ok(out)
+    }
 }
 
 impl WriteTx {
     pub fn index_defs(&self, ns: &str) -> Result<Vec<IndexDef>> {
         defs_in(&self.tx.open_table(INDEXES).map_err(storage)?, ns)
+    }
+
+    /// [`ReadTx::index_seek_nodes`] as written so far in this transaction.
+    pub fn index_seek_nodes(
+        &self,
+        ns: &str,
+        name: &str,
+        prefix: &[Json],
+        range: Option<&IndexRange>,
+        limit: usize,
+    ) -> Result<Vec<NodeId>> {
+        let def = find_def(self.index_defs(ns)?, name)?;
+        if def.edges {
+            return Err(Error::Invalid(format!("{name} is an index on edges")));
+        }
+        let table = self.tx.open_table(INDEX_ENTRIES).map_err(storage)?;
+        Ok(seek_ids(&table, ns, &def, prefix, range, limit)?
+            .into_iter()
+            .map(NodeId::from_u128)
+            .collect())
+    }
+
+    /// [`ReadTx::index_seek_edges`] as written so far in this transaction.
+    pub fn index_seek_edges(
+        &self,
+        ns: &str,
+        name: &str,
+        prefix: &[Json],
+        range: Option<&IndexRange>,
+        limit: usize,
+    ) -> Result<Vec<EdgeId>> {
+        let def = find_def(self.index_defs(ns)?, name)?;
+        if !def.edges {
+            return Err(Error::Invalid(format!("{name} is an index on nodes")));
+        }
+        let table = self.tx.open_table(INDEX_ENTRIES).map_err(storage)?;
+        Ok(seek_ids(&table, ns, &def, prefix, range, limit)?
+            .into_iter()
+            .map(EdgeId::from_u128)
+            .collect())
     }
 
     /// [`ReadTx::fuzzy_search`] as written so far in this transaction.
@@ -532,12 +947,23 @@ impl WriteTx {
             ns.to_owned(),
             def.name.clone(),
         ));
-        check_label(&def.label)?;
+        for label in def.labels() {
+            check_label(label)?;
+        }
         crate::namespace::ensure(&self.tx, ns)?;
-        if def.key.is_empty() || def.name.is_empty() {
+        if def.keys().iter().any(|key| key.is_empty()) || def.name.is_empty() {
             return Err(Error::Invalid(
                 "an index needs a name and a property".into(),
             ));
+        }
+        let mut keys = def.keys();
+        keys.sort_unstable();
+        keys.dedup();
+        if keys.len() != def.keys().len() {
+            return Err(Error::Invalid(format!(
+                "{} names a property twice",
+                def.describe()
+            )));
         }
         let existing = self.index_defs(ns)?;
         if let Some(same) = existing.iter().find(|other| other.name == def.name) {
@@ -550,62 +976,82 @@ impl WriteTx {
                 def.name
             )));
         }
-        if def.fuzzy && def.unique {
-            return Err(Error::Invalid("a fuzzy index cannot be unique".into()));
+        if def.fuzzy && (def.unique || !def.is_simple()) {
+            return Err(Error::Invalid(
+                "a fuzzy index is on one property of one node label, and not unique".into(),
+            ));
         }
-        if let Some(other) = existing.iter().find(|other| {
-            other.label == def.label
-                && other.key == def.key
-                && other.unique == def.unique
-                && other.fuzzy == def.fuzzy
-        }) {
+        if def.required && !def.unique {
+            return Err(Error::Invalid(
+                "a required index is a key: it is unique too".into(),
+            ));
+        }
+        if self
+            .constraints(ns)?
+            .iter()
+            .any(|constraint| constraint.name() == def.name)
+        {
             return Err(Error::Invalid(format!(
-                "index {:?} already covers :{}({})",
-                other.name, def.label, def.key
+                "a constraint is named {:?}",
+                def.name
             )));
         }
-        let ids = nodes_with_label(
-            &self.tx.open_table(NODE_LABELS).map_err(storage)?,
-            ns,
-            &def.label,
-        )?;
-        let nodes = self.tx.open_table(NODES).map_err(storage)?;
-        let mut seen: HashMap<Vec<u8>, (NodeId, Json)> = HashMap::new();
+        if let Some(other) = existing
+            .iter()
+            .find(|other| other.same_shape(&def) && other.required == def.required)
+        {
+            return Err(Error::Invalid(format!(
+                "index {:?} already covers {}",
+                other.name,
+                def.describe()
+            )));
+        }
+        let records = self.records_of(ns, &def)?;
+        let mut seen: HashMap<Vec<u8>, (u128, Props)> = HashMap::new();
         let mut entries = Vec::new();
-        for id in ids {
-            let Some(node) = read_record::<Node>(&nodes, ns, id.as_u128())? else {
-                continue;
-            };
-            let Some(value) = node.props.get(&def.key) else {
-                continue;
-            };
+        let what = if def.edges { "edges" } else { "nodes" };
+        for (id, props, live) in &records {
+            if def.required
+                && *live
+                && let Some(missing) = missing_key(&def, props)
+            {
+                return Err(Error::Invalid(format!(
+                    "cannot make ({}) a key of {}: {} {} has no {missing} the index can hold",
+                    def.keys().join(", "),
+                    def.describe(),
+                    &what[..what.len() - 1],
+                    record_name(&def, *id),
+                )));
+            }
             if def.fuzzy {
-                for (_, bytes) in entries_of(std::slice::from_ref(&def), &node) {
-                    entries.push((bytes, id));
+                if let Some(value) = props.get(&def.key) {
+                    entries.extend(grams_of(value).iter().map(|gram| (gram_bytes(gram), *id)));
                 }
                 continue;
             }
-            let Some(bytes) = encode_value(value) else {
+            let Some(bytes) = entry_bytes(&def, props) else {
                 continue;
             };
-            if def.unique {
-                if let Some((other, other_value)) = seen.get(&bytes)
-                    && other_value == value
+            if def.unique && *live {
+                if let Some((other, other_props)) = seen.get(&bytes)
+                    && same_values(&def, other_props, props)
                 {
                     return Err(Error::Invalid(format!(
-                        "cannot make :{}({}) unique: nodes {other} and {id} both have {value}",
-                        def.label, def.key
+                        "cannot make {} unique: {what} {} and {} both have {}",
+                        def.describe(),
+                        record_name(&def, *other),
+                        record_name(&def, *id),
+                        values_of(&def, props)
                     )));
                 }
-                seen.insert(bytes.clone(), (id, value.clone()));
+                seen.insert(bytes.clone(), (*id, props.clone()));
             }
-            entries.push((bytes, id));
+            entries.push((bytes, *id));
         }
-        drop(nodes);
         let mut table = self.tx.open_table(INDEX_ENTRIES).map_err(storage)?;
         for (bytes, id) in &entries {
             table
-                .insert((ns, def.name.as_str(), bytes.as_slice(), id.as_u128()), ())
+                .insert((ns, def.name.as_str(), bytes.as_slice(), *id), ())
                 .map_err(storage)?;
         }
         drop(table);
@@ -650,33 +1096,110 @@ impl WriteTx {
         previous: Option<&Node>,
     ) -> Result<()> {
         let defs = self.index_defs(ns)?;
-        if defs.is_empty() {
-            return Ok(());
-        }
-        let old = previous
-            .map(|node| entries_of(&defs, node))
-            .unwrap_or_default();
-        let new = node.map(|node| entries_of(&defs, node)).unwrap_or_default();
+        self.index_node_with(&defs, ns, node, previous)
+    }
+
+    /// [`WriteTx::index_node`] with the namespace's indexes read already.
+    pub(crate) fn index_node_with(
+        &mut self,
+        defs: &[IndexDef],
+        ns: &str,
+        node: Option<&Node>,
+        previous: Option<&Node>,
+    ) -> Result<()> {
         let id = node
             .or(previous)
-            .map(|node| node.id)
+            .map(|node| node.id.as_u128())
             .expect("a node to index");
+        self.index_record(
+            defs,
+            ns,
+            false,
+            id,
+            node.map(|node| (node.labels.as_slice(), &node.props)),
+            previous.map(|node| (node.labels.as_slice(), &node.props)),
+            true,
+        )
+    }
+
+    /// [`WriteTx::index_node`] for an edge. A retracted fact keeps its
+    /// entries but no longer holds its unique values (the version that
+    /// replaces an invalidated fact has the same ones).
+    pub(crate) fn index_edge(
+        &mut self,
+        ns: &str,
+        edge: Option<&Edge>,
+        previous: Option<&Edge>,
+    ) -> Result<()> {
+        let defs = self.index_defs(ns)?;
+        self.index_edge_with(&defs, ns, edge, previous)
+    }
+
+    /// [`WriteTx::index_edge`] with the namespace's indexes read already.
+    pub(crate) fn index_edge_with(
+        &mut self,
+        defs: &[IndexDef],
+        ns: &str,
+        edge: Option<&Edge>,
+        previous: Option<&Edge>,
+    ) -> Result<()> {
+        if !defs.iter().any(|def| def.edges) {
+            return Ok(());
+        }
+        let id = edge
+            .or(previous)
+            .map(|edge| edge.id.as_u128())
+            .expect("an edge to index");
+        let new_labels = edge.map(|edge| vec![edge.label.clone()]);
+        let old_labels = previous.map(|edge| vec![edge.label.clone()]);
+        self.index_record(
+            defs,
+            ns,
+            true,
+            id,
+            new_labels.as_deref().zip(edge.map(|edge| &edge.props)),
+            old_labels.as_deref().zip(previous.map(|edge| &edge.props)),
+            edge.is_some_and(|edge| !edge.is_retracted()),
+        )
+    }
+
+    /// Moves a record's entries from `old` to `new` (labels, properties);
+    /// with `check`, its new unique values must be its own.
+    #[allow(clippy::too_many_arguments)]
+    fn index_record(
+        &mut self,
+        defs: &[IndexDef],
+        ns: &str,
+        edges: bool,
+        id: u128,
+        new: Option<(&[String], &Props)>,
+        old: Option<(&[String], &Props)>,
+        check: bool,
+    ) -> Result<()> {
+        if !defs.iter().any(|def| def.edges == edges) {
+            return Ok(());
+        }
+        let old_entries = old
+            .map(|(labels, props)| record_entries(defs, edges, labels, props))
+            .unwrap_or_default();
+        let new_entries = new
+            .map(|(labels, props)| record_entries(defs, edges, labels, props))
+            .unwrap_or_default();
         let mut table = self.tx.open_table(INDEX_ENTRIES).map_err(storage)?;
-        for (def, bytes) in &old {
-            if !new.contains(&(def, bytes.clone())) {
+        for (def, bytes) in &old_entries {
+            if !new_entries.contains(&(def, bytes.clone())) {
                 table
-                    .remove((ns, def.name.as_str(), bytes.as_slice(), id.as_u128()))
+                    .remove((ns, def.name.as_str(), bytes.as_slice(), id))
                     .map_err(storage)?;
             }
         }
-        for (def, bytes) in &new {
-            if old.contains(&(def, bytes.clone())) {
+        for (def, bytes) in &new_entries {
+            if old_entries.contains(&(def, bytes.clone())) {
                 continue;
             }
-            if def.unique {
-                let value = node
-                    .and_then(|node| node.props.get(&def.key))
-                    .expect("indexed");
+            if def.unique && check {
+                let props = new.map(|(_, props)| props).expect("indexed");
+                let mut others = Vec::new();
                 for item in table
                     .range(
                         (ns, def.name.as_str(), bytes.as_slice(), 0u128)
@@ -686,29 +1209,98 @@ impl WriteTx {
                 {
                     let (key, _) = item.map_err(storage)?;
                     let other = key.value().3;
-                    if other == id.as_u128() {
-                        continue;
+                    if other != id {
+                        others.push(other);
                     }
-                    // Equal bytes are equal values except for huge integers:
-                    // compare the values themselves.
-                    let nodes = self.tx.open_table(NODES).map_err(storage)?;
-                    let same = read_record::<Node>(&nodes, ns, other)?
-                        .is_some_and(|other| other.props.get(&def.key) == Some(value));
-                    if same {
+                }
+                for other in others {
+                    // Equal bytes are equal values except for huge
+                    // integers: compare the values themselves.
+                    if let Some(other_props) = self.live_props(ns, edges, other)?
+                        && same_values(def, &other_props, props)
+                    {
                         return Err(Error::Invalid(format!(
-                            "{} must be unique among :{} nodes: node {} already has {value}",
-                            def.key,
-                            def.label,
-                            NodeId::from_u128(other)
+                            "{} must be unique among {}: {} {} already has {}",
+                            def.keys().join(", "),
+                            def.describe(),
+                            if edges { "edge" } else { "node" },
+                            record_name(def, other),
+                            values_of(def, props)
                         )));
                     }
                 }
             }
             table
-                .insert((ns, def.name.as_str(), bytes.as_slice(), id.as_u128()), ())
+                .insert((ns, def.name.as_str(), bytes.as_slice(), id), ())
                 .map_err(storage)?;
         }
         Ok(())
+    }
+
+    /// The properties of a node, or of an edge that is not retracted.
+    fn live_props(&self, ns: &str, edges: bool, id: u128) -> Result<Option<Props>> {
+        if edges {
+            let table = self.tx.open_table(EDGES).map_err(storage)?;
+            Ok(read_record::<Edge>(&table, ns, id)?
+                .filter(|edge| !edge.is_retracted())
+                .map(|edge| edge.props))
+        } else {
+            let table = self.tx.open_table(NODES).map_err(storage)?;
+            Ok(read_record::<Node>(&table, ns, id)?.map(|node| node.props))
+        }
+    }
+
+    /// The records an index covers: id, properties, and whether it is
+    /// current (a retracted edge is not).
+    pub(crate) fn records_of(&self, ns: &str, def: &IndexDef) -> Result<Vec<(u128, Props, bool)>> {
+        let mut out = Vec::new();
+        if def.edges {
+            let table = self.tx.open_table(EDGES).map_err(storage)?;
+            for item in table.range((ns, 0u128)..).map_err(storage)? {
+                let (key, value) = item.map_err(storage)?;
+                if key.value().0 != ns {
+                    break;
+                }
+                let edge: Edge = decode(value.value())?;
+                if def.covers(std::slice::from_ref(&edge.label)) {
+                    let live = !edge.is_retracted();
+                    out.push((edge.id.as_u128(), edge.props, live));
+                }
+            }
+            return Ok(out);
+        }
+        let labels = self.tx.open_table(NODE_LABELS).map_err(storage)?;
+        let mut ids = Vec::new();
+        for label in def.labels() {
+            ids.extend(nodes_with_label(&labels, ns, label)?);
+        }
+        drop(labels);
+        ids.sort();
+        ids.dedup();
+        let nodes = self.tx.open_table(NODES).map_err(storage)?;
+        for id in ids {
+            if let Some(node) = read_record::<Node>(&nodes, ns, id.as_u128())? {
+                out.push((id.as_u128(), node.props, true));
+            }
+        }
+        Ok(out)
+    }
+}
+
+/// The first property of a key that a record lacks, holds as `null`, or
+/// holds as a value the index cannot keep (a list, a map).
+pub(crate) fn missing_key<'a>(def: &'a IndexDef, props: &Props) -> Option<&'a str> {
+    def.keys()
+        .into_iter()
+        .find(|key| props.get(*key).and_then(component).is_none())
+}
+
+/// A node's or an edge's id as text.
+pub(crate) fn record_name(def: &IndexDef, id: u128) -> String {
+    if def.edges {
+        EdgeId::from_u128(id).to_string()
+    } else {
+        NodeId::from_u128(id).to_string()
     }
 }
 

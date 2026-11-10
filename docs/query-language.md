@@ -189,7 +189,7 @@ CALL db.search('borrow checker', 5) YIELD node, score RETURN node.title, score;
 | `db.edgeLabels()` (`db.relationshipTypes()`) | `label`, `count` | edge labels and their counts |
 | `db.propertyKeys()` | `key` | property names of nodes and edges (reads every record) |
 | `db.stats()` | `nodes`, `edges`, `texts`, `vectors`, `dimension` | counts of the namespace |
-| `db.indexes()` | `name`, `label`, `property`, `unique`, `entries`, `fuzzy` | property and fuzzy indexes (also `SHOW INDEXES`); a fuzzy index counts trigram entries |
+| `db.indexes()` | `name`, `label`, `property`, `unique`, `entries`, `fuzzy` | property and fuzzy indexes (also `SHOW INDEXES`); several labels are joined by `\|` and several properties by `, `; a fuzzy index counts trigram entries |
 | `db.analyze()` | `kind`, `name`, `count`, `distinct`, `out_degree`, `in_degree`, `common` | rebuilds the planner's statistics now and lists them: per index its entries, distinct values and ten most common values (`[value, nodes]`); per edge label its edges and average degree each way |
 | `db.searchFuzzy(label, property, text, limit = 10, measure = 'dice')` | `node`, `score` | nodes whose property looks like the text, through its fuzzy index (see *Similar text and entity resolution*) |
 | `db.match(label, properties, limit = 10)` | `node`, `score`, `decision`, `fields` | nodes that may be the record described, by the label's match rule |
@@ -545,7 +545,7 @@ CREATE CONSTRAINT FOR ()-[r:works_at]->() REQUIRE ONE PER SOURCE;      // works_
 CREATE CONSTRAINT seat FOR ()-[r:sits_in]->() REQUIRE ONE PER TARGET ON CONFLICT REJECT;
 CREATE CONSTRAINT FOR ()-[r:rates]->() REQUIRE ONE PER PAIR ON CONFLICT FLAG;
 CREATE CONSTRAINT FOR (p:Person) REQUIRE p.city IS FUNCTIONAL;         // keeps earlier values
-SHOW CONSTRAINTS;                                                       // name, kind, label, property, rule
+SHOW CONSTRAINTS;                                                       // name, kind, label, property, rule, on
 DROP CONSTRAINT works_at_one_per_source;
 ```
 
@@ -571,6 +571,48 @@ A write reports `facts_invalidated` and `conflicts_flagged` in its stats;
 `GET /v1/{ns}/contradictions` lists what constraints did. A functional
 property keeps its earlier values: `history(p, 'city')` is a list of
 `{value, from, to, by}`, oldest first.
+
+## Constraints on properties
+
+A property every node (or edge) of a label must have, the type its
+values must have, and keys:
+
+```text
+CREATE CONSTRAINT FOR (u:User) REQUIRE u.email IS NOT NULL;           // User_email_not_null
+CREATE CONSTRAINT FOR (u:User) REQUIRE u.age IS :: INTEGER;           // User_age_integer
+CREATE CONSTRAINT FOR (u:User) REQUIRE u.seen IS TYPED DATETIME;
+CREATE CONSTRAINT FOR (b:Book) REQUIRE (b.isbn, b.edition) IS UNIQUE; // Book_isbn_edition_unique
+CREATE CONSTRAINT book_key FOR (b:Book) REQUIRE (b.isbn, b.edition) IS KEY;
+CREATE CONSTRAINT FOR ()-[r:rated]-() REQUIRE r.stars IS NOT NULL;    // the same on edges
+CREATE CONSTRAINT FOR (n:Person|Company) REQUIRE n.name IS UNIQUE;    // across both labels
+```
+
+- `IS NOT NULL`: every node with the label has the property, and not as
+  a stored `null`.
+- `IS :: TYPE` (or `IS TYPED TYPE`): when the property is set, its value
+  is a `BOOLEAN`, an `INTEGER` (a whole number), a `FLOAT` (a number with
+  a fraction or an exponent), a `STRING`, a `LIST`, a `MAP` or a
+  `DATETIME` (a string holding a date and time, as `datetime()` stores
+  it). A `null` has every type: whether it may be `null` is the rule
+  above.
+- `IS UNIQUE` on one property or several: no two nodes share the values
+  of all of them. A node that lacks one of them, or holds `null`, a list
+  or a map there, is not checked.
+- `IS KEY`: unique, and every node with the label has every property,
+  each a boolean, a number or a string.
+- On edges (`FOR ()-[r:label]-()`) the same rules hold for each current
+  fact with the label; a retracted fact holds none.
+- Declaring a rule checks the data already there: the first records that
+  break it are named, and nothing is declared.
+- Writes are checked as they go, except in a query, where a statement's
+  end state is checked: `MERGE (b:Book {isbn: '7'}) ON CREATE SET
+  b.edition = 1` creates the book and then gives it its key. Uniqueness
+  is checked at each write. Replicated entries are not checked again
+  (the member that made them did).
+- `SHOW CONSTRAINTS` lists every kind (`kind`: `unique`, `key`,
+  `not_null`, `type`, `edge`, `functional`; `on`: `nodes` or `edges`);
+  unique and key constraints are indexes too, and `SHOW INDEXES` lists
+  them.
 
 ## Similar text and entity resolution
 
@@ -638,8 +680,11 @@ the label and property reads only the matching ones.
 CREATE INDEX FOR (p:Person) ON (p.age);                   // named Person_age
 CREATE INDEX people_by_name IF NOT EXISTS FOR (p:Person) ON (p.name);
 CREATE CONSTRAINT FOR (p:Person) REQUIRE p.email IS UNIQUE; // Person_email_unique
+CREATE INDEX FOR (p:Person) ON (p.last, p.first);        // Person_last_first: several properties
+CREATE INDEX FOR ()-[r:rated]-() ON (r.stars);           // rated_stars: on edges
+CREATE INDEX named FOR (n:Person|Company) ON (n.name);   // over several labels
 CREATE FUZZY INDEX FOR (p:Person) ON (p.name);           // trigrams, for db.searchFuzzy
-SHOW INDEXES;                                             // name, label, property, unique, entries, fuzzy
+SHOW INDEXES;                                             // name, label, property, unique, entries, fuzzy, on, key
 SHOW NAMESPACES;                                          // name, nodes, edges, created_at, description (those the caller may read)
 SHOW CONSTRAINTS;
 DROP INDEX people_by_name;
@@ -651,6 +696,18 @@ DROP CONSTRAINT Person_email_unique IF EXISTS;
   filled when created and kept in the same transaction as every write.
 - A unique constraint is an index that refuses a second node with the
   same value; creating one fails if duplicates already exist.
+- An index on several properties holds the nodes that have all of them
+  (each a number, a string or a boolean). The planner uses it for equal
+  values on its first properties, in order, and then any of the lookups
+  below on the next one: one on `(last, first)` serves `last = 'Ruiz'`,
+  `last = 'Ruiz' AND first STARTS WITH 'A'` and both equal, not `first`
+  alone.
+- An index over several labels (`(n:A|B)`) holds the nodes with any of
+  them, and serves a pattern with either label; the pattern's labels
+  still decide what matches.
+- An index on edges serves a pattern whose edge has the property,
+  `(p)-[r:rated {stars: 5}]->(f)` or `WHERE r.at >= 10`: the match starts
+  at the ends of the edges it finds, on the side of the pattern's start.
 - The planner uses an index for `n.key = v`, `{key: v}` in the pattern,
   `n.key IN [...]`, `n.key STARTS WITH 'x'` and ranges (`>`, `>=`, `<`,
   `<=`, and both ends together), when the value can be computed before the
@@ -705,8 +762,10 @@ DROP CONSTRAINT Person_email_unique IF EXISTS;
   on its own thread; the results, group order and floating-point sums
   included, are the same as on one thread.
 - `EXPLAIN` shows where each pattern starts and how many nodes that is
-  estimated to find (`index Person_age: … < age, ~420 nodes`, `scan of
-  :Person, 2000 nodes`); `PROFILE` adds the records each step read.
+  estimated to find (`index Person_age: … < age, ~420 nodes`, `index
+  Person_last_first: last = …, first = …`, `edge index rated_at, where the
+  edges leave: at >= …`, `scan of :Person, 2000 nodes`); `PROFILE` adds
+  the records each step read.
 - Indexes travel with exports and survive `rebuild`; `check` verifies them.
 
 **Limits.** Over HTTP and MCP, each query runs within limits, so one query
@@ -887,6 +946,5 @@ the language's conformance scenarios.
 - `UNION` inside `CALL { … }`, `IN TRANSACTIONS`, and path variables in
   `CREATE` and `MERGE`.
 - A binary wire protocol: clients use the HTTP API or MCP.
-- Indexes on several properties at once, or on edge properties.
 - Graph algorithms over several namespaces at once. Hybrid recall is in
   the shell's `\recall` and `\context`, and in the HTTP API.

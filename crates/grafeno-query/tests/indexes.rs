@@ -66,7 +66,16 @@ fn index_commands() {
     let created = rows(&db, "CREATE INDEX FOR (p:Person) ON (p.age)");
     assert_eq!(
         created,
-        json!([["Person_age", "Person", "age", false, 2000, false]])
+        json!([[
+            "Person_age",
+            "Person",
+            "age",
+            false,
+            2000,
+            false,
+            "nodes",
+            false
+        ]])
     );
     run(
         &db,
@@ -84,10 +93,39 @@ fn index_commands() {
     assert_eq!(
         rows(&db, "SHOW INDEXES"),
         json!([
-            ["Company_name", "Company", "name", false, 5, false],
-            ["Person_age", "Person", "age", false, 2000, false],
-            ["Person_email_unique", "Person", "email", true, 2000, false],
-            ["names", "Person", "name", false, 2000, false]
+            [
+                "Company_name",
+                "Company",
+                "name",
+                false,
+                5,
+                false,
+                "nodes",
+                false
+            ],
+            [
+                "Person_age",
+                "Person",
+                "age",
+                false,
+                2000,
+                false,
+                "nodes",
+                false
+            ],
+            [
+                "Person_email_unique",
+                "Person",
+                "email",
+                true,
+                2000,
+                false,
+                "nodes",
+                false
+            ],
+            [
+                "names", "Person", "name", false, 2000, false, "nodes", false
+            ]
         ])
     );
     assert_eq!(rows(&db, "SHOW CONSTRAINTS").as_array().unwrap().len(), 1);

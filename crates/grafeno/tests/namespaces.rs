@@ -74,6 +74,7 @@ fn dropping_removes_everything_and_nothing_else() {
                     key: "name".into(),
                     unique: false,
                     fuzzy: false,
+                    ..IndexDef::default()
                 },
             )?;
             Ok(())

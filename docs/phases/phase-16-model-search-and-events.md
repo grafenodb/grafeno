@@ -2,7 +2,7 @@
 
 [All phases](README.md) · [← Phase 15: Engine and interface apart](phase-15-engine-and-interface-apart.md) · [Phase 17: Integrations →](phase-17-integrations.md)
 
-**Status:** in progress: 16.1 to 16.4 done.
+**Status:** in progress: 16.1 to 16.5 done.
 
 What the engine still lacks as a database people build on: a free
 license, null as a value, namespaces made from scripts, transactions that
@@ -20,7 +20,7 @@ Steps:
 - [16.2 Null as a stored value (done)](#162-null-as-a-stored-value-done)
 - [16.3 Namespaces from scripts (done)](#163-namespaces-from-scripts-done)
 - [16.4 Explicit transactions (done)](#164-explicit-transactions-done)
-- [16.5 Advanced indexes and constraints (planned)](#165-advanced-indexes-and-constraints-planned)
+- [16.5 Advanced indexes and constraints (done)](#165-advanced-indexes-and-constraints-done)
 - [16.6 Full-text search (planned)](#166-full-text-search-planned)
 - [16.7 Better vector indexes (planned)](#167-better-vector-indexes-planned)
 - [16.8 More graph algorithms, for analysis and simulation (planned)](#168-more-graph-algorithms-for-analysis-and-simulation-planned)
@@ -287,7 +287,7 @@ As built:
   statements, plain writes waiting, rollback, followers refusing), and the
   TypeScript client against the real binary.
 
-## 16.5 Advanced indexes and constraints (planned)
+## 16.5 Advanced indexes and constraints (done)
 
 **Where it starts from.** Property indexes are on one node property of
 one label (value, unique or fuzzy); constraints are uniqueness (through a
@@ -311,6 +311,53 @@ properties (11.2).
 Done when: each kind is declared, enforced on every write path (GQ,
 HTTP, batches, imports, replication), listed, used by plans, and measured
 on large graphs.
+
+As built:
+
+- `IndexDef` gained `more_keys` (a composite index), `more_labels`,
+  `edges` and `required` (with `unique`, a key), all defaulted, so stored
+  definitions read as before and no layout changed. A composite entry
+  concatenates its values, each self-delimiting (strings escape their
+  zero bytes and end with two zero bytes), so byte order stays value
+  order property by property; single-property entries keep their first
+  encoding. Lookups: `index_seek_nodes` and `index_seek_edges` (equal
+  values for a prefix, then a range on the next property).
+- Writes: `put_node` and `put_edge` (every path ends there: the API, GQ,
+  batches, imports, replicated entries, rebuilds) read the namespace's
+  index definitions once and maintain node and edge entries; unique
+  checks compare the stored values of every property, and a retracted
+  fact no longer holds its values (the new version that ends an
+  invalidated fact has the same ones). `check` and `rebuild` cover edge
+  entries.
+- Constraints: `Constraint::Exists` (`IS NOT NULL`) and
+  `Constraint::Typed` (`IS :: TYPE`: boolean, integer, float, string,
+  list, map, datetime), on nodes or edges; keys are unique indexes with
+  `required`. Declaring one checks the data and names the first three
+  records that break it. The checks run after each write, or, after
+  `WriteTx::defer_checks`, at `check_deferred`: a GQ statement defers to
+  its end, so `MERGE … ON CREATE SET` can set a required property. Not
+  done: declaring a rule that only flags what breaks it (it refuses).
+- GQ: `ON (n.a, n.b)`, `FOR ()-[r:label]-()`, `FOR (n:A|B)`, and
+  `REQUIRE … IS UNIQUE | KEY | NOT NULL | :: TYPE | TYPED TYPE`. `SHOW
+  INDEXES` adds `on` and `key`, `SHOW CONSTRAINTS` adds `on` and lists
+  every kind. The planner reads a composite index with equal values for
+  its first properties and any seek on the next, and starts a pattern at
+  the ends of edges an edge index finds (the side of the anchor, or both
+  for an undirected step); its statistics cover every non-fuzzy index
+  (composite ones by whole entries, edge ones against edge label counts).
+- Measured (`examples/schema_bench.rs`, 200 000 people and 400 000 edges,
+  release build, laptop): loading took 14.0 s with no indexes and 19.7 s
+  with a key on three properties, an edge index, a not-null rule on edges
+  and a type rule on nodes. A whole key took 1.5 ms instead of 118 ms by
+  scan, its first property 0.6 ms instead of 72 ms, a prefix and a range
+  0.2 ms instead of 84 ms, and a range on an edge property 0.7 ms instead
+  of 916 ms. Loading without indexes or rules was unchanged (an A/B of
+  the previous build and this one, alternately: 3.8 to 4.2 s each).
+- Tests: `grafeno/tests/advanced_indexes.rs` (the API, deferred checks,
+  lookups, replicated entries applied by a follower, an export imported
+  elsewhere) and `grafeno-query/tests/advanced_indexes.rs` (plans and
+  results of each kind, reads against scans, keys with `MERGE`, labels
+  added later, rules on edges, rebuild and `check`, syntax errors).
 
 ## 16.6 Full-text search (planned)
 

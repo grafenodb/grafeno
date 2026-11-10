@@ -48,6 +48,7 @@ fn a_backup_is_the_snapshot_while_writes_go_on() {
                 key: "i".into(),
                 unique: false,
                 fuzzy: false,
+                ..IndexDef::default()
             },
         )?;
         tx.create_namespace("empty", Some("still here"))?;

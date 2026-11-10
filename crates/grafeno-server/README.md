@@ -415,7 +415,7 @@ requests accept either that or an ISO 8601 string (`2024-05-01`,
 | `GET`    | `/v1/{ns}/merges`                     | `?node=&limit=`                                         | merge records, newest first   |
 | `POST`   | `/v1/{ns}/merges/{id}/undo`           | `{force?}` (optional)                                   | the record, marked undone     |
 | `GET`    | `/v1/{ns}/fuzzy`                      | `?label=&key=&q=&limit=&measure=`                       | `[{node, score}]`: nodes whose property looks like `q` (needs a fuzzy index) |
-| `GET`    | `/v1/{ns}/constraints`                |                                                         | constraints on facts and functional properties (`CREATE CONSTRAINT` in GQ) |
+| `GET`    | `/v1/{ns}/constraints`                |                                                         | constraints on facts and on properties: one per source, functional, not null, type (`CREATE CONSTRAINT` in GQ; unique and key constraints are indexes) |
 | `GET`    | `/v1/{ns}/contradictions`             | `?limit=`                                               | `[{constraint, action, new_edge, old_edge, replacement, at, by}]`, newest first |
 | `GET`    | `/v1/{ns}/nodes/{id}/history/{key}`   |                                                         | `[{value, from, to, by}]`: earlier values of a functional property |
 | `GET`    | `/v1/{ns}/export.graphml`             |                                                         | the namespace as GraphML (retracted facts left out) |
@@ -557,6 +557,7 @@ engine lacks instead of failing. The capabilities:
 | `search.text`, `search.vector` | full-text and vector search |
 | `recall`, `context`, `memory` | hybrid recall, context for a prompt, importance and accesses |
 | `transactions` | `BEGIN`, `COMMIT` and `ROLLBACK` across requests (16.4) |
+| `indexes.advanced` | indexes on several properties, on edges and over several labels; `NOT NULL`, type and key constraints (16.5) |
 | `query`, `query.explain`, `batches`, `traversal`, `algorithms` | GQ, `EXPLAIN`, batches, k-hop, paths, subgraphs and neighborhoods, graph algorithms |
 | `resolution`, `match-rules`, `extraction`, `constraints`, `communities`, `summaries`, `indexes` | keeping knowledge in shape (phase 11) |
 | `changes`, `changes.stream`, `webhooks`, `ingest` | the change log, as pages and as a stream, webhooks, NDJSON ingestion |

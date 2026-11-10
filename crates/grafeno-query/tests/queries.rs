@@ -570,7 +570,7 @@ fn constraints_in_gq() {
     let shown = run("SHOW CONSTRAINTS").to_json();
     assert_eq!(
         shown["columns"],
-        serde_json::json!(["name", "kind", "label", "property", "rule"])
+        serde_json::json!(["name", "kind", "label", "property", "rule", "on"])
     );
     assert_eq!(shown["rows"].as_array().unwrap().len(), 2);
     run("DROP CONSTRAINT works_at_one_per_source");

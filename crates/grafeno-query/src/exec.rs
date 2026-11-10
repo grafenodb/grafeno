@@ -242,9 +242,35 @@ fn plan_info_with(read: &ReadTx, ns: &str, building: bool) -> Result<PlanInfo, Q
     })
 }
 
-const CONSTRAINT_COLUMNS: [&str; 5] = ["name", "kind", "label", "property", "rule"];
+const CONSTRAINT_COLUMNS: [&str; 6] = ["name", "kind", "label", "property", "rule", "on"];
+
+fn on(edges: bool) -> Value {
+    Value::Str(if edges { "edges" } else { "nodes" }.into())
+}
 
 fn constraint_row(constraint: &grafeno::Constraint) -> Vec<Value> {
+    let mut row = constraint_cells(constraint);
+    row.push(on(constraint.on_edges()));
+    row
+}
+
+/// A unique or key index, as a constraint row.
+fn key_row(def: &IndexDef) -> Vec<Value> {
+    vec![
+        Value::Str(def.name.clone()),
+        Value::Str(if def.required { "key" } else { "unique" }.into()),
+        Value::Str(def.labels().join("|")),
+        Value::Str(def.keys().join(", ")),
+        if def.required {
+            Value::Str("present and unique together".into())
+        } else {
+            Value::Null
+        },
+        on(def.edges),
+    ]
+}
+
+fn constraint_cells(constraint: &grafeno::Constraint) -> Vec<Value> {
     match constraint {
         grafeno::Constraint::Edge {
             name,
@@ -269,20 +295,57 @@ fn constraint_row(constraint: &grafeno::Constraint) -> Vec<Value> {
             Value::Str(key.clone()),
             Value::Str("one value at a time, earlier ones kept".into()),
         ],
+        grafeno::Constraint::Exists {
+            name, label, key, ..
+        } => vec![
+            Value::Str(name.clone()),
+            Value::Str("not_null".into()),
+            Value::Str(label.clone()),
+            Value::Str(key.clone()),
+            Value::Str("present, not null".into()),
+        ],
+        grafeno::Constraint::Typed {
+            name,
+            label,
+            key,
+            of,
+            ..
+        } => vec![
+            Value::Str(name.clone()),
+            Value::Str("type".into()),
+            Value::Str(label.clone()),
+            Value::Str(key.clone()),
+            Value::Str(format!(":: {}", of.keyword())),
+        ],
     }
 }
 
-const INDEX_COLUMNS: [&str; 6] = ["name", "label", "property", "unique", "entries", "fuzzy"];
+/// The first six as before 16.5 (several labels joined by `|`, several
+/// properties by `, `), then what an index is on and whether it is a key.
+const INDEX_COLUMNS: [&str; 8] = [
+    "name", "label", "property", "unique", "entries", "fuzzy", "on", "key",
+];
 
 fn index_row(def: &IndexDef, entries: u64) -> Vec<Value> {
     vec![
         Value::Str(def.name.clone()),
-        Value::Str(def.label.clone()),
-        Value::Str(def.key.clone()),
+        Value::Str(def.labels().join("|")),
+        Value::Str(def.keys().join(", ")),
         Value::Bool(def.unique),
         Value::Int(entries as i64),
         Value::Bool(def.fuzzy),
+        on(def.edges),
+        Value::Bool(def.required),
     ]
+}
+
+fn constraint_table(rows: Vec<Vec<Value>>) -> QueryResult {
+    QueryResult {
+        columns: CONSTRAINT_COLUMNS.map(String::from).to_vec(),
+        rows,
+        stats: WriteStats::default(),
+        profile: None,
+    }
 }
 
 /// `CREATE INDEX`, `DROP INDEX`, `SHOW INDEXES` and the constraint forms.
@@ -418,18 +481,10 @@ fn run_schema(
         }),
         Schema::Show { constraints: true } => {
             let mut rows: Vec<Vec<Value>> = read
-                .indexes(ns)?
-                .into_iter()
-                .filter(|info| info.def.unique)
-                .map(|info| {
-                    vec![
-                        Value::Str(info.def.name),
-                        Value::Str("unique".into()),
-                        Value::Str(info.def.label),
-                        Value::Str(info.def.key),
-                        Value::Null,
-                    ]
-                })
+                .index_defs(ns)?
+                .iter()
+                .filter(|def| def.unique)
+                .map(key_row)
                 .collect();
             for constraint in read.constraints(ns)? {
                 rows.push(constraint_row(&constraint));
@@ -454,11 +509,7 @@ fn run_schema(
             let tx = tx.expect("schema writes run with a write transaction");
             let mut constraint = constraint.clone();
             if constraint.name().is_empty() {
-                let name = constraint.default_name();
-                match &mut constraint {
-                    grafeno::Constraint::Edge { name: slot, .. }
-                    | grafeno::Constraint::Functional { name: slot, .. } => *slot = name,
-                }
+                constraint.set_name(constraint.default_name());
             }
             if *if_not_exists
                 && let Some(existing) = tx
@@ -485,41 +536,34 @@ fn run_schema(
                 profile: None,
             })
         }
-        Schema::Create {
-            name,
-            label,
-            key,
-            unique,
-            fuzzy,
-            if_not_exists,
-        } => {
+        Schema::Create { def, if_not_exists } => {
             let tx = tx.expect("schema writes run with a write transaction");
-            let def = IndexDef {
-                name: name.clone().unwrap_or_else(|| {
-                    if *fuzzy {
-                        IndexDef::default_fuzzy_name(label, key)
-                    } else {
-                        IndexDef::default_name(label, key, *unique)
-                    }
-                }),
-                label: label.clone(),
-                key: key.clone(),
-                unique: *unique,
-                fuzzy: *fuzzy,
-            };
+            let mut def = def.clone();
+            if def.name.is_empty() {
+                def.name = def.generated_name();
+            }
             if *if_not_exists
                 && let Some(existing) = tx.index_defs(ns)?.into_iter().find(|other| {
                     other.name == def.name
-                        || (other.label == def.label
-                            && other.key == def.key
-                            && other.unique == def.unique
-                            && other.fuzzy == def.fuzzy)
+                        || (other.same_shape(&def) && other.required == def.required)
                 })
             {
-                return Ok(table(vec![index_row(&existing, 0)]));
+                return Ok(if def.unique {
+                    constraint_table(vec![key_row(&existing)])
+                } else {
+                    table(vec![index_row(&existing, 0)])
+                });
             }
             let entries = tx.create_index(ns, def.clone())?;
-            Ok(table(vec![index_row(&def, entries)]))
+            Ok(if def.unique {
+                let mut row = key_row(&def);
+                row.push(Value::Int(entries as i64));
+                let mut result = constraint_table(vec![row]);
+                result.columns.push("entries".into());
+                result
+            } else {
+                table(vec![index_row(&def, entries)])
+            })
         }
         Schema::Drop {
             name,
@@ -550,7 +594,11 @@ fn run_schema(
                 ))),
                 Some(def) => {
                     tx.drop_index(ns, name)?;
-                    Ok(table(vec![index_row(&def, 0)]))
+                    Ok(if *constraint {
+                        constraint_table(vec![key_row(&def)])
+                    } else {
+                        table(vec![index_row(&def, 0)])
+                    })
                 }
             }
         }
@@ -853,6 +901,12 @@ impl<'a> Runner<'a> {
                 )));
             }
         }
+        // Property rules (not null, types, keys) hold at the statement's
+        // end, not between its clauses: `MERGE … ON CREATE SET` may create
+        // a node and then give it its required property.
+        if let Some(tx) = self.tx.as_deref_mut() {
+            tx.defer_checks();
+        }
         let mut columns: Option<Vec<String>> = None;
         let mut rows: Vec<Vec<Value>> = Vec::new();
         for (index, part) in statement.parts.iter().enumerate() {
@@ -874,6 +928,9 @@ impl<'a> Runner<'a> {
                 rows.retain(|row| seen.insert(row.iter().map(Value::key).collect::<Vec<_>>()));
                 self.record("UNION", "distinct rows of both parts", rows.len(), started);
             }
+        }
+        if let Some(tx) = self.tx.as_deref_mut() {
+            tx.check_deferred()?;
         }
         Ok(QueryResult {
             columns: columns.unwrap_or_default(),
@@ -1762,23 +1819,55 @@ fn parallel_candidates(
             ctx.budget.read(ids.len().max(1))?;
             ids
         }
-        Source::Index { name, seek, .. } => match seek_ranges(ctx, *seek, row)? {
-            Some(ranges) => {
-                let mut ids = Vec::new();
-                let mut seen = HashSet::new();
-                for range in &ranges {
-                    for id in ctx.index_lookup(name, range)? {
-                        if seen.insert(id) {
-                            ids.push(id);
-                        }
-                    }
-                }
-                ids
-            }
+        Source::Index { .. } => match index_candidates(ctx, source, row)? {
+            Some(ids) => ids,
             None => return Ok(None),
         },
         _ => return Ok(None),
     };
+    Ok(Some(ids))
+}
+
+/// The nodes an index start finds for this row, each once, in index
+/// order; `None` when its values cannot be looked up (a time, a list…).
+fn index_candidates(
+    ctx: &Context,
+    source: &Source,
+    row: &Row,
+) -> Result<Option<Vec<NodeId>>, QueryError> {
+    let Source::Index {
+        name,
+        prefix,
+        seek,
+        edges,
+        ..
+    } = source
+    else {
+        return Ok(None);
+    };
+    let Some(ranges) = seek_ranges(ctx, *seek, row)? else {
+        return Ok(None);
+    };
+    let mut values = Vec::with_capacity(prefix.len());
+    for (_, expr) in prefix {
+        match eval(ctx, expr, Scope::Row(row))? {
+            // `= null` is never true.
+            Value::Null => return Ok(Some(Vec::new())),
+            value => match crate::plan::indexable(&value) {
+                Some(json) => values.push(json),
+                None => return Ok(None),
+            },
+        }
+    }
+    let mut ids = Vec::new();
+    let mut seen = HashSet::new();
+    for range in &ranges {
+        for id in ctx.index_seek(name, &values, range, *edges)? {
+            if seen.insert(id) {
+                ids.push(id);
+            }
+        }
+    }
     Ok(Some(ids))
 }
 
@@ -1797,16 +1886,8 @@ fn all_candidates(
             ids = ctx.read.nodes_with_label(ctx.ns, label)?;
             ctx.budget.read(ids.len().max(1))?;
         }
-        Source::Index { name, seek, .. } if seek_ranges(ctx, *seek, row)?.is_some() => {
-            let ranges = seek_ranges(ctx, *seek, row)?.unwrap_or_default();
-            let mut seen = HashSet::new();
-            for range in &ranges {
-                for id in ctx.index_lookup(name, range)? {
-                    if seen.insert(id) {
-                        ids.push(id);
-                    }
-                }
-            }
+        Source::Index { .. } if index_candidates(ctx, source, row)?.is_some() => {
+            ids = index_candidates(ctx, source, row)?.unwrap_or_default();
         }
         _ => loop {
             // Scans, an `@id`: page through as the serial match does.
@@ -1918,27 +1999,10 @@ fn candidates(
             };
             Ok((fitting(found)?, None))
         }
-        Source::Index { name, seek, .. } => match seek_ranges(ctx, *seek, row)? {
-            Some(ranges) => {
-                let mut ids = Vec::new();
-                let mut seen = HashSet::new();
-                for range in &ranges {
-                    for id in ctx.index_lookup(name, range)? {
-                        if seen.insert(id) {
-                            ids.push(id);
-                        }
-                    }
-                }
-                load(ids, 0)
-            }
-            // Values the index cannot look up: scan the index's label.
-            None => scan(
-                ctx.info
-                    .indexes
-                    .iter()
-                    .find(|def| def.name == *name)
-                    .map(|def| def.label.as_str()),
-            ),
+        Source::Index { .. } => match index_candidates(ctx, source, row)? {
+            Some(ids) => load(ids, 0),
+            // Values the index cannot look up: scan the pattern's label.
+            None => scan(pattern.labels.first().map(String::as_str)),
         },
         Source::Label { label, .. } => scan(Some(label)),
         Source::Scan { .. } => scan(None),
@@ -2654,25 +2718,35 @@ fn explain(
     let value_of = |expr: &Expr| constant(expr, Some(params));
     if let Some(schema) = &statement.schema {
         let details = match schema {
-            Schema::Create {
-                label,
-                key,
-                unique,
-                fuzzy,
-                ..
-            } => format!(
-                "{} on :{label}({key}), filled from the nodes with the label",
-                if *unique {
+            Schema::Create { def, .. } => format!(
+                "{} on {}, filled from the {} with the label{}{}",
+                if def.required {
+                    "key constraint"
+                } else if def.unique {
                     "unique constraint"
-                } else if *fuzzy {
+                } else if def.fuzzy {
                     "fuzzy index"
                 } else {
                     "index"
+                },
+                def.describe(),
+                if def.edges { "edges" } else { "nodes" },
+                if def.labels().len() > 1 { "s" } else { "" },
+                if def.unique {
+                    ", refused if they break it"
+                } else {
+                    ""
                 }
             ),
             Schema::Constrain { constraint, .. } => format!(
-                "constraint on :{}, checked against the current facts",
-                constraint.label()
+                "constraint on {}{}, checked against the current {}",
+                if constraint.on_edges() { "[:" } else { ":" },
+                constraint.label(),
+                if constraint.on_edges() {
+                    "facts"
+                } else {
+                    "nodes"
+                }
             ),
             Schema::Drop { name, .. } => format!("drop {name}"),
             Schema::Show { .. } => "list the indexes".into(),

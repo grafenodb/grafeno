@@ -281,6 +281,9 @@ presentan el proyecto y los primeros pasos.
   NAMESPACE` in GQ, checked on the namespace they name;
   `grafeno namespaces create | describe | drop`; `grafeno shell
   --stop-on-error`.
+- **Phase 16.5, advanced indexes and constraints:** indexes on several
+  properties, on edges and over several labels, used by plans; not-null,
+  type and key constraints on nodes and edges.
 - **Phase 16.4, explicit transactions:** `BEGIN`, `COMMIT` and `ROLLBACK`
   in the shell and over HTTP, one writer at a time with idle and lifetime
   limits; on a cluster, one replicated entry per transaction.

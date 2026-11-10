@@ -207,6 +207,77 @@ impl Context<'_> {
         Ok(visible)
     }
 
+    /// The nodes index `name` finds: values equal to `prefix` for its
+    /// first properties (a composite index) and in `range` for the next.
+    /// For an index on edges (`edges`), the ends of the edges found on
+    /// that side (`Out`: where they leave, `In`: where they arrive).
+    pub(crate) fn index_seek(
+        &self,
+        name: &str,
+        prefix: &[serde_json::Value],
+        range: &IndexRange,
+        edges: Option<grafeno::Direction>,
+    ) -> Result<Vec<NodeId>, QueryError> {
+        let Some(def) = self.info.indexes.iter().find(|def| def.name == name) else {
+            return Ok(Vec::new());
+        };
+        if edges.is_none() && def.is_simple() && prefix.is_empty() {
+            return self.index_lookup(name, range);
+        }
+        if self.blind() {
+            return Ok(Vec::new());
+        }
+        let Some(end) = edges else {
+            if let Some(view) = self.per_record()
+                && def.keys().iter().any(|key| {
+                    def.labels()
+                        .iter()
+                        .any(|label| view.property_hidden(self.ns, &[(*label).to_owned()], key))
+                })
+            {
+                return Ok(Vec::new());
+            }
+            let found = match self.write {
+                Some(tx) => tx.index_seek_nodes(self.ns, name, prefix, Some(range), usize::MAX)?,
+                None => {
+                    self.read
+                        .index_seek_nodes(self.ns, name, prefix, Some(range), usize::MAX)?
+                }
+            };
+            self.budget.read(found.len().max(1))?;
+            if self.per_record().is_none() {
+                return Ok(found);
+            }
+            let mut visible = Vec::with_capacity(found.len());
+            for id in found {
+                if self.visible(id)? {
+                    visible.push(id);
+                }
+            }
+            return Ok(visible);
+        };
+        let found = match self.write {
+            Some(tx) => tx.index_seek_edges(self.ns, name, prefix, Some(range), usize::MAX)?,
+            None => self
+                .read
+                .index_seek_edges(self.ns, name, prefix, Some(range), usize::MAX)?,
+        };
+        self.budget.read(found.len().max(1))?;
+        let mut out = Vec::with_capacity(found.len());
+        for id in found {
+            // Retracted facts stay candidates: a query known at an earlier
+            // time may still follow them.
+            if let Some(edge) = self.edge(id)? {
+                match end {
+                    grafeno::Direction::Out => out.push(edge.from),
+                    grafeno::Direction::In => out.push(edge.to),
+                    grafeno::Direction::Both => out.extend([edge.from, edge.to]),
+                }
+            }
+        }
+        Ok(out)
+    }
+
     pub(crate) fn index_lookup(
         &self,
         name: &str,

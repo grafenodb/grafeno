@@ -231,9 +231,9 @@ pub(crate) fn call(
             .into_iter()
             .map(|info| {
                 vec![
-                    Value::Str(info.def.name),
-                    Value::Str(info.def.label),
-                    Value::Str(info.def.key),
+                    Value::Str(info.def.name.clone()),
+                    Value::Str(info.def.labels().join("|")),
+                    Value::Str(info.def.keys().join(", ")),
                     Value::Bool(info.def.unique),
                     Value::Int(info.entries as i64),
                 ]

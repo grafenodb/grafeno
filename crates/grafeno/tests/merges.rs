@@ -63,6 +63,7 @@ fn identity_and_contradictions_are_checked_before_merging() {
                 key: "passport".into(),
                 unique: true,
                 fuzzy: false,
+                ..IndexDef::default()
             },
         )
         .map(|_| ())

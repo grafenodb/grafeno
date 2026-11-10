@@ -60,6 +60,9 @@ pub const CAPABILITIES: &[&str] = &[
     "communities",
     "summaries",
     "indexes",
+    // Composite, edge and multi-label indexes; not-null, type and key
+    // constraints (16.5).
+    "indexes.advanced",
     // Changes and ingestion (11.4).
     "changes",
     "changes.stream",

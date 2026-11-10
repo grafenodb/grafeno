@@ -188,7 +188,7 @@ pub fn find_duplicates(
 
     let mut strong_keys = options.strong_keys.clone();
     for def in read.index_defs(ns)? {
-        if def.unique && !strong_keys.contains(&def.key) {
+        if def.unique && def.is_simple() && !strong_keys.contains(&def.key) {
             strong_keys.push(def.key);
         }
     }

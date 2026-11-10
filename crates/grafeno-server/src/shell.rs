@@ -473,7 +473,9 @@ impl Shell {
             ));
         }
         let opened = match &self.backend {
-            Backend::Local(db) if read_only => db.begin_read().map(|read| Open::Read(Box::new(read))),
+            Backend::Local(db) if read_only => {
+                db.begin_read().map(|read| Open::Read(Box::new(read)))
+            }
             Backend::Local(db) => db.begin_write().map(|tx| Open::Write(Box::new(tx), None)),
             Backend::Remote { .. } => {
                 let body = json!({ "read_only": read_only });

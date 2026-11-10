@@ -65,9 +65,78 @@ impl PlanInfo {
         self.label_counts.get(label).copied().unwrap_or(0)
     }
 
-    /// Nodes a lookup of `seek` in index `def` is estimated to find.
-    fn seek_rows(&self, def: &IndexDef, seek: &Seek, value_of: ValueOf) -> f64 {
-        let label = self.label_count(&def.label) as f64;
+    /// The records an index covers: nodes (or edges) with its labels.
+    fn covered(&self, def: &IndexDef) -> f64 {
+        def.labels()
+            .iter()
+            .map(|label| {
+                if def.edges {
+                    self.edge_labels.get(*label).copied().unwrap_or(0)
+                } else {
+                    self.label_count(label)
+                }
+            })
+            .sum::<u64>() as f64
+    }
+
+    /// Records a lookup in index `def` is estimated to find: values equal
+    /// to `prefix` for its first properties (of a composite index), then
+    /// `seek` on the next.
+    fn seek_rows(
+        &self,
+        def: &IndexDef,
+        prefix: &[(String, &Expr)],
+        seek: &Seek,
+        value_of: ValueOf,
+    ) -> f64 {
+        if def.more_keys.is_empty() {
+            return self.single_rows(def, seek, value_of);
+        }
+        let label = self.covered(def);
+        let complete = prefix.len() + 1 == def.keys().len() && matches!(seek, Seek::Equal(_));
+        let stats = self
+            .stats
+            .as_ref()
+            .and_then(|stats| stats.index(&def.name))
+            .filter(|stats| stats.label_nodes > 0);
+        let values: Option<Vec<Json>> = prefix
+            .iter()
+            .map(|(_, expr)| value_of(expr).as_ref().and_then(indexable))
+            .collect();
+        if let (Some(stats), Some(values)) = (stats, values) {
+            let scale = label / stats.label_nodes as f64;
+            let rows = match seek {
+                Seek::Equal(expr) => match value_of(expr).as_ref().and_then(indexable) {
+                    Some(value) => {
+                        stats.estimate_seek(def, &values, Some(&IndexRange::Equal(value)))
+                    }
+                    None => stats.estimate_seek(def, &values, None) / 10.0,
+                },
+                // The prefix alone bounds the rest.
+                _ => stats.estimate_seek(def, &values, None) / 4.0,
+            };
+            return if def.unique {
+                rows.min(label)
+            } else {
+                rows * scale
+            };
+        }
+        if complete && def.unique {
+            return 1.0;
+        }
+        let equalities = prefix.len() + usize::from(matches!(seek, Seek::Equal(_)));
+        let narrowed = label / 10f64.powi(equalities as i32);
+        let rows = if matches!(seek, Seek::Equal(_)) {
+            narrowed
+        } else {
+            narrowed / 4.0
+        };
+        rows.max(1.0)
+    }
+
+    /// [`PlanInfo::seek_rows`] for an index on one property.
+    fn single_rows(&self, def: &IndexDef, seek: &Seek, value_of: ValueOf) -> f64 {
+        let label = self.covered(def);
         let stats = self
             .stats
             .as_ref()
@@ -224,10 +293,17 @@ pub(crate) enum Source<'q> {
     Id(&'q Expr),
     Index {
         name: String,
+        /// The property `seek` reads.
         key: String,
+        /// Values for the properties before `key` (a composite index).
+        prefix: Vec<(String, &'q Expr)>,
         seek: Seek<'q>,
         /// Nodes it is estimated to find.
         rows: f64,
+        /// An index on edges: the start is the end of each edge found on
+        /// this side (`Out`: where it leaves, `In`: where it arrives,
+        /// `Both`: either).
+        edges: Option<grafeno::Direction>,
     },
     Label {
         label: String,
@@ -284,9 +360,15 @@ impl Source<'_> {
             Source::Index {
                 name,
                 key,
+                prefix,
                 seek,
                 rows,
+                edges,
             } => {
+                let before: String = prefix
+                    .iter()
+                    .map(|(key, _)| format!("{key} = …, "))
+                    .collect();
                 let how = match seek {
                     Seek::Equal(_) => format!("{key} = …"),
                     Seek::In(_) => format!("{key} IN […]"),
@@ -303,8 +385,14 @@ impl Source<'_> {
                         format!("{low}{key}{high}")
                     }
                 };
+                let what = match edges {
+                    None => "index".to_owned(),
+                    Some(grafeno::Direction::Out) => "edge index, where the edges leave".into(),
+                    Some(grafeno::Direction::In) => "edge index, where the edges arrive".into(),
+                    Some(grafeno::Direction::Both) => "edge index, either end".into(),
+                };
                 format!(
-                    "start at {node} (index {name}: {how}, ~{} nodes)",
+                    "start at {node} ({what} {name}: {before}{how}, ~{} nodes)",
                     rows.ceil() as u64
                 )
             }
@@ -348,14 +436,19 @@ fn source_for<'q>(
     for def in info
         .indexes
         .iter()
-        .filter(|def| !def.fuzzy && node.labels.contains(&def.label))
+        .filter(|def| !def.fuzzy && !def.edges && def.covers(&node.labels))
     {
-        if let Some(seek) = seek_for(node, &def.key, is_bound, conditions) {
+        let var = node.var.as_deref();
+        if let Some((prefix, key, seek)) =
+            seek_for_keys(&node.props, var, &def.keys(), is_bound, conditions)
+        {
             consider(Source::Index {
                 name: def.name.clone(),
-                key: def.key.clone(),
-                rows: info.seek_rows(def, &seek, value_of),
+                rows: info.seek_rows(def, &prefix, &seek, value_of),
+                key,
+                prefix,
                 seek,
+                edges: None,
             });
         }
     }
@@ -368,23 +461,109 @@ fn source_for<'q>(
     best.unwrap_or(Source::Scan { nodes: info.nodes })
 }
 
+/// Ways to start at node `anchor` of `pattern` from an index on the edges
+/// of a step next to it: the pattern's `[r:label {key: value}]` or
+/// conditions on `r.key`, with the edges' end on the anchor's side.
+fn edge_sources<'q>(
+    pattern: &'q Pattern,
+    anchor: usize,
+    is_bound: &dyn Fn(&str) -> bool,
+    conditions: &[&'q Expr],
+    info: &PlanInfo,
+    value_of: ValueOf,
+) -> Vec<Source<'q>> {
+    let mut out = Vec::new();
+    for (step, (rel, _)) in pattern.steps.iter().enumerate() {
+        // The step joins node `step` (its left) and node `step + 1`.
+        let left = if anchor == step {
+            true
+        } else if anchor == step + 1 {
+            false
+        } else {
+            continue;
+        };
+        if rel.length.is_some() || rel.labels.is_empty() {
+            continue;
+        }
+        use grafeno::Direction::{Both, In, Out};
+        let end = match (rel.direction, left) {
+            (Both, _) => Both,
+            (Out, true) | (In, false) => Out,
+            (Out, false) | (In, true) => In,
+        };
+        for def in info.indexes.iter().filter(|def| {
+            def.edges
+                && !def.fuzzy
+                && rel
+                    .labels
+                    .iter()
+                    .all(|label| def.labels().contains(&label.as_str()))
+        }) {
+            if let Some((prefix, key, seek)) = seek_for_keys(
+                &rel.props,
+                rel.var.as_deref(),
+                &def.keys(),
+                is_bound,
+                conditions,
+            ) {
+                let found = info.seek_rows(def, &prefix, &seek, value_of);
+                out.push(Source::Index {
+                    name: def.name.clone(),
+                    rows: if end == Both { found * 2.0 } else { found },
+                    key,
+                    prefix,
+                    seek,
+                    edges: Some(end),
+                });
+            }
+        }
+    }
+    out
+}
+
+/// A way to read an index on `keys`: values equal for a prefix of them,
+/// then a seek on the next one (the prefix's last when nothing else).
+#[allow(clippy::type_complexity)]
+fn seek_for_keys<'q>(
+    props: &'q [(Key, Expr)],
+    var: Option<&str>,
+    keys: &[&str],
+    is_bound: &dyn Fn(&str) -> bool,
+    conditions: &[&'q Expr],
+) -> Option<(Vec<(String, &'q Expr)>, String, Seek<'q>)> {
+    let mut prefix: Vec<(String, &'q Expr)> = Vec::new();
+    for (at, key) in keys.iter().enumerate() {
+        match seek_for(props, var, key, is_bound, conditions) {
+            Some(Seek::Equal(expr)) if at + 1 < keys.len() => {
+                prefix.push(((*key).to_owned(), expr));
+            }
+            Some(seek) => return Some((prefix, (*key).to_owned(), seek)),
+            None => {
+                let (key, expr) = prefix.pop()?;
+                return Some((prefix, key, Seek::Equal(expr)));
+            }
+        }
+    }
+    None
+}
+
 /// A way to read the index on `key`: the pattern's own `{key: value}`, or
 /// conditions such as `n.key = …`, `n.key IN …`, `n.key STARTS WITH …` and
 /// ranges, whose other side can be computed before matching.
 fn seek_for<'q>(
-    node: &'q NodePattern,
+    props: &'q [(Key, Expr)],
+    var: Option<&str>,
     key: &str,
     is_bound: &dyn Fn(&str) -> bool,
     conditions: &[&'q Expr],
 ) -> Option<Seek<'q>> {
-    if let Some((_, expr)) = node
-        .props
+    if let Some((_, expr)) = props
         .iter()
         .find(|(k, expr)| *k == Key::Prop(key.to_owned()) && evaluable(expr, is_bound))
     {
         return Some(Seek::Equal(expr));
     }
-    let var = node.var.as_deref()?;
+    let var = var?;
     let is_property = |expr: &Expr| {
         matches!(expr, Expr::Property(target, Key::Prop(name))
             if name == key && matches!(target.as_ref(), Expr::Var(v) if v == var))
@@ -452,17 +631,24 @@ pub(crate) fn plan_anchor<'q>(
         if any_ready && !ready(node) {
             continue;
         }
-        let source = source_for(node, is_bound, conditions, info, value_of);
-        let cost = pattern_cost(pattern, &nodes, index, &source, is_bound, info);
-        let wins = best.as_ref().is_none_or(|(_, current, current_cost)| {
-            let (a, b) = (source.rank(), current.rank());
-            a.0.cmp(&b.0)
-                .then(cost.total_cmp(current_cost))
-                .then(a.2.cmp(&b.2))
-                .is_lt()
-        });
-        if wins {
-            best = Some((index, source, cost));
+        let mut sources = vec![source_for(node, is_bound, conditions, info, value_of)];
+        if !matches!(sources[0], Source::Bound | Source::Id(_)) {
+            sources.extend(edge_sources(
+                pattern, index, is_bound, conditions, info, value_of,
+            ));
+        }
+        for source in sources {
+            let cost = pattern_cost(pattern, &nodes, index, &source, is_bound, info);
+            let wins = best.as_ref().is_none_or(|(_, current, current_cost)| {
+                let (a, b) = (source.rank(), current.rank());
+                a.0.cmp(&b.0)
+                    .then(cost.total_cmp(current_cost))
+                    .then(a.2.cmp(&b.2))
+                    .is_lt()
+            });
+            if wins {
+                best = Some((index, source, cost));
+            }
         }
     }
     best.expect("a pattern has at least one node")
@@ -502,7 +688,17 @@ fn pattern_cost(
     // The candidates' own properties not used to find them.
     let used = |key: &Key| match source {
         Source::Id(_) => *key == Key::Meta("id".into()),
-        Source::Index { key: index_key, .. } => *key == Key::Prop(index_key.clone()),
+        Source::Index {
+            key: index_key,
+            prefix,
+            edges: None,
+            ..
+        } => {
+            *key == Key::Prop(index_key.clone())
+                || prefix
+                    .iter()
+                    .any(|(name, _)| *key == Key::Prop(name.clone()))
+        }
         _ => false,
     };
     let extra = start.props.iter().filter(|(key, _)| !used(key)).count();
@@ -570,7 +766,7 @@ pub(crate) fn order_patterns(
 }
 
 /// A value the index can look up: numbers, strings and booleans.
-fn indexable(value: &Value) -> Option<Json> {
+pub(crate) fn indexable(value: &Value) -> Option<Json> {
     match value {
         Value::Int(i) => Some(Json::from(*i)),
         Value::Float(f) if f.is_finite() => serde_json::Number::from_f64(*f).map(Json::Number),

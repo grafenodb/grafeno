@@ -58,7 +58,9 @@ pub use access::{
 pub use backup::BackupStats;
 pub use changes::{Change, ChangeOp, ChangePage, Part, Retention};
 pub use check::{CheckReport, CompactReport, RebuildReport};
-pub use constraints::{Action, Constraint, ConstraintEvent, HistoryEntry, OnConflict, Scope};
+pub use constraints::{
+    Action, Constraint, ConstraintEvent, HistoryEntry, OnConflict, PropertyType, Scope,
+};
 pub use db::{
     Actor, DEFAULT_CACHE, Durability, FileIntegrity, Grafeno, OpenOptions, ReadTx, SCHEMA_VERSION,
     WriteTx, upgrade_copies, upgrade_copy_path,

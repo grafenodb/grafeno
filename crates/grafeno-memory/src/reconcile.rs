@@ -390,7 +390,7 @@ fn value_node(
 /// `email`.
 fn by_email(tx: &WriteTx, ns: &str, email: &str, surface: &str) -> Result<Option<NodeId>> {
     for def in tx.index_defs(ns)? {
-        if def.key == "email" && !def.fuzzy {
+        if def.key == "email" && !def.fuzzy && def.is_simple() {
             for value in [email, surface] {
                 let found =
                     tx.index_lookup(ns, &def.name, &IndexRange::Equal(Value::from(value)), 2)?;

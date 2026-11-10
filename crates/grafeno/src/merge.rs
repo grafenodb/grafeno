@@ -177,6 +177,7 @@ fn strong_keys_for(
     let mut keys = options.strong_keys.clone();
     for def in tx.index_defs(ns)? {
         if def.unique
+            && def.is_simple()
             && (a.has_label(&def.label) || b.has_label(&def.label))
             && !keys.contains(&def.key)
         {

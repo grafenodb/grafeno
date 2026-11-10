@@ -19,14 +19,11 @@ pub(crate) struct Statement {
 /// Index and constraint commands.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum Schema {
-    /// `CREATE INDEX` or, with `unique`, `CREATE CONSTRAINT … IS UNIQUE`.
+    /// `CREATE [FUZZY] INDEX`, or `CREATE CONSTRAINT … IS UNIQUE | KEY`
+    /// (an index with `unique`, and `required` for a key). Its name is
+    /// empty when not given.
     Create {
-        name: Option<String>,
-        label: String,
-        key: String,
-        unique: bool,
-        /// `CREATE FUZZY INDEX`: trigrams for `db.searchFuzzy`.
-        fuzzy: bool,
+        def: grafeno::IndexDef,
         if_not_exists: bool,
     },
     /// `DROP INDEX` / `DROP CONSTRAINT`.
@@ -35,8 +32,9 @@ pub(crate) enum Schema {
         constraint: bool,
         if_exists: bool,
     },
-    /// `CREATE CONSTRAINT … REQUIRE ONE PER SOURCE` or `… IS FUNCTIONAL`
-    /// (the name is empty when not given).
+    /// `CREATE CONSTRAINT … REQUIRE ONE PER SOURCE`, `… IS FUNCTIONAL`,
+    /// `… IS NOT NULL` or `… IS :: type` (the name is empty when not
+    /// given).
     Constrain {
         constraint: grafeno::Constraint,
         if_not_exists: bool,
@@ -244,7 +242,7 @@ pub(crate) enum Key {
     Meta(String),
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct NodePattern {
     pub(crate) var: Option<String>,
     pub(crate) labels: Vec<String>,

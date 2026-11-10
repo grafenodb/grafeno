@@ -15,6 +15,7 @@ fn def(label: &str, key: &str, unique: bool) -> IndexDef {
         key: key.into(),
         unique,
         fuzzy: false,
+        ..IndexDef::default()
     }
 }
 

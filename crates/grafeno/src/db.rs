@@ -512,6 +512,7 @@ impl Grafeno {
             actor: None,
             constraint_cache: None,
             constraint_log: Vec::new(),
+            deferred_rules: None,
             log_changes: self.shared.changes.retention().enabled,
             pending_changes: crate::changes::Pending::default(),
             capture: self
@@ -1367,9 +1368,12 @@ pub struct WriteTx {
     pub(crate) shared: Arc<Shared>,
     pub(crate) actor: Option<Actor>,
     /// The constraints of the namespace last written, read once.
-    pub(crate) constraint_cache: Option<(String, Vec<crate::constraints::Constraint>)>,
+    pub(crate) constraint_cache: Option<(String, Arc<Vec<crate::constraints::Constraint>>)>,
     /// What constraints did in this transaction.
     pub(crate) constraint_log: Vec<crate::constraints::ConstraintEvent>,
+    /// Records whose property rules (16.5) are checked at
+    /// [`WriteTx::check_deferred`] instead of at each write, when on.
+    pub(crate) deferred_rules: Option<Vec<(String, bool, u128)>>,
     /// Whether commits append to the change log.
     pub(crate) log_changes: bool,
     /// What this transaction changed, for the log.
@@ -1995,6 +1999,7 @@ impl WriteTx {
     pub fn delete_edge(&mut self, ns: &str, id: EdgeId) -> Result<()> {
         let edge = self.edge_to_act(crate::Act::Delete, ns, id)?;
         self.note(Touch::Edge(ns.to_owned(), id.as_u128()));
+        self.index_edge(ns, None, Some(&edge))?;
         let (from, to, edge_id) = (edge.from.as_u128(), edge.to.as_u128(), id.as_u128());
         let label = edge.label.as_str();
         self.tx
@@ -2034,10 +2039,12 @@ impl WriteTx {
             .insert((ns, id), bytes.as_slice())
             .map_err(storage)?;
 
-        self.index_node(ns, Some(node), previous)?;
+        let defs = self.index_defs(ns)?;
+        self.index_node_with(&defs, ns, Some(node), previous)?;
         if !self.applying {
             self.record_history(ns, node, previous)?;
         }
+        self.check_rules_later(ns, false, id, &defs, &node.labels, &node.props, true)?;
         let op = if previous.is_some() {
             ChangeOp::Updated
         } else {
@@ -2088,13 +2095,20 @@ impl WriteTx {
         let bytes = encode(edge)?;
         let (from, to, id) = (edge.from.as_u128(), edge.to.as_u128(), edge.id.as_u128());
         let label = edge.label.as_str();
-        let existed = self
+        let previous: Option<Edge> = self
             .tx
             .open_table(EDGES)
             .map_err(storage)?
             .insert((ns, id), bytes.as_slice())
             .map_err(storage)?
-            .is_some();
+            .map(|old| decode(old.value()))
+            .transpose()?;
+        let existed = previous.is_some();
+        let defs = self.index_defs(ns)?;
+        self.index_edge_with(&defs, ns, Some(edge), previous.as_ref())?;
+        let labels = [edge.label.clone()];
+        let live = !edge.is_retracted();
+        self.check_rules_later(ns, true, id, &defs, &labels, &edge.props, live)?;
         self.log_edge(
             ns,
             edge,

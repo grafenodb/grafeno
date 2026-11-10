@@ -326,8 +326,9 @@ impl ReadTx {
         };
         let defs = self.index_defs(ns)?;
         let index = |key: &str, fuzzy: bool| {
-            defs.iter()
-                .find(|def| def.label == rule.label && def.key == key && def.fuzzy == fuzzy)
+            defs.iter().find(|def| {
+                def.is_simple() && def.label == rule.label && def.key == key && def.fuzzy == fuzzy
+            })
         };
         let mut candidates: BTreeSet<NodeId> = BTreeSet::new();
         let mut indexed = false;

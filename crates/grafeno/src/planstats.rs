@@ -25,7 +25,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value as Json;
 
 use crate::ReadTx;
-use crate::index::{IndexDef, IndexKey, IndexRange, byte_range, decode_value, encode_value};
+use crate::index::{IndexDef, IndexKey, IndexRange, decode_value, encode_value, seek_bytes};
 use crate::store::{Adj, AdjKey, storage};
 
 /// The most common values kept per index.
@@ -38,13 +38,15 @@ pub const BUCKETS: usize = 64;
 pub struct IndexStats {
     pub name: String,
     pub label: String,
+    /// Its properties, joined by `,` (one for most indexes).
     pub key: String,
     pub unique: bool,
     pub entries: u64,
     pub distinct: u64,
-    /// Nodes with the label when the statistics were built.
+    /// Records with the label(s) when the statistics were built.
     pub label_nodes: u64,
-    /// The most common values and how many nodes hold each, most first.
+    /// The most common values and how many records hold each, most first
+    /// (of a single-property index).
     pub common: Vec<(Json, u64)>,
     #[serde(skip)]
     common_bytes: Vec<(Vec<u8>, u64)>,
@@ -60,7 +62,6 @@ impl IndexStats {
         if self.entries == 0 {
             return 0.0;
         }
-        let entries = self.entries as f64;
         if let IndexRange::Equal(value) = range {
             if self.unique {
                 return 1.0;
@@ -79,21 +80,56 @@ impl IndexStats {
             }
             return (self.entries.saturating_sub(listed) as f64 / rest as f64).max(1.0);
         }
-        let Some((low, high)) = byte_range(range) else {
+        let Some((low, high)) = crate::index::byte_range(range) else {
             return 0.0;
         };
+        self.estimate_bytes(&low, &high)
+    }
+
+    /// Records estimated in a lookup of a composite index (`def`, whose
+    /// statistics these are): equal values for its first properties, then
+    /// `range` on the next (anything when `None`).
+    pub fn estimate_seek(
+        &self,
+        def: &IndexDef,
+        prefix: &[Json],
+        range: Option<&IndexRange>,
+    ) -> f64 {
+        if self.entries == 0 {
+            return 0.0;
+        }
+        let complete = prefix.len() + usize::from(matches!(range, Some(IndexRange::Equal(_))))
+            == def.keys().len();
+        if complete && self.unique {
+            return 1.0;
+        }
+        let Some((low, high)) = seek_bytes(def, prefix, range) else {
+            return 0.0;
+        };
+        if complete {
+            // `low` is then the whole entry.
+            if let Some((_, count)) = self.common_bytes.iter().find(|(b, _)| *b == low) {
+                return *count as f64;
+            }
+            return self.per_value().max(1.0);
+        }
+        self.estimate_bytes(&low, &high)
+    }
+
+    fn estimate_bytes(&self, low: &[u8], high: &[u8]) -> f64 {
+        let entries = self.entries as f64;
         if self.bounds.len() < 2 {
             return entries;
         }
         let buckets = (self.bounds.len() - 1) as f64;
         let mut share = 0.0;
         for pair in self.bounds.windows(2) {
-            let (start, end) = (&pair[0], &pair[1]);
-            if *start > high || *end < low {
+            let (start, end) = (pair[0].as_slice(), pair[1].as_slice());
+            if start > high || end < low {
                 continue;
             }
             // A bucket inside the range counts whole, one it crosses half.
-            share += if low <= *start && *end <= high {
+            share += if low <= start && end <= high {
                 1.0
             } else {
                 0.5
@@ -255,7 +291,7 @@ impl PlannerStats {
             || self.indexes.len() != defs.iter().filter(|def| !def.fuzzy).count()
             || defs.iter().filter(|def| !def.fuzzy).any(|def| {
                 self.index(&def.name)
-                    .is_none_or(|index| index.key != def.key)
+                    .is_none_or(|index| index.key != def.keys().join(","))
             })
     }
 }
@@ -352,11 +388,19 @@ fn build(
     let started = Instant::now();
     let mut indexes = Vec::new();
     for def in defs.iter().filter(|def| !def.fuzzy) {
-        let label_nodes = read
-            .label_counts
-            .get((ns, def.label.as_str()))
-            .map_err(storage)?
-            .map_or(0, |guard| guard.value());
+        let counts = if def.edges {
+            &read.edge_label_counts
+        } else {
+            &read.label_counts
+        };
+        // Several labels may share nodes: their sum is an upper bound.
+        let mut label_nodes = 0;
+        for label in def.labels() {
+            label_nodes += counts
+                .get((ns, label))
+                .map_err(storage)?
+                .map_or(0, |guard| guard.value());
+        }
         indexes.push(index_stats(&read.index_entries, ns, def, label_nodes)?);
     }
     let mut by_label: HashMap<String, EdgeLabelStats> = HashMap::new();
@@ -474,15 +518,19 @@ fn index_stats(
     Ok(IndexStats {
         name: def.name.clone(),
         label: def.label.clone(),
-        key: def.key.clone(),
+        key: def.keys().join(","),
         unique: def.unique,
         entries,
         distinct,
         label_nodes,
-        common: common
-            .iter()
-            .filter_map(|(bytes, count)| decode_value(bytes).map(|value| (value, *count)))
-            .collect(),
+        common: if def.more_keys.is_empty() {
+            common
+                .iter()
+                .filter_map(|(bytes, count)| decode_value(bytes).map(|value| (value, *count)))
+                .collect()
+        } else {
+            Vec::new()
+        },
         common_bytes: common,
         bounds,
     })

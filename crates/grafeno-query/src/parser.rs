@@ -620,15 +620,16 @@ impl Parser<'_> {
         // CREATE FUZZY INDEX … ON (n.key)
         let fuzzy =
             self.at_keyword("CREATE") && self.keyword_at(1, "FUZZY") && self.keyword_at(2, "INDEX");
-        let unique = if fuzzy {
+        let constraint = if fuzzy {
             self.position += 3;
             false
         } else {
-            let Some(unique) = self.at_keyword("CREATE").then(|| what(self, 1)).flatten() else {
+            let Some(constraint) = self.at_keyword("CREATE").then(|| what(self, 1)).flatten()
+            else {
                 return Ok(None);
             };
             self.position += 2;
-            unique
+            constraint
         };
         let mut name = None;
         if matches!(self.peek(), Token::Ident(_))
@@ -643,76 +644,78 @@ impl Parser<'_> {
         if if_not_exists {
             self.position += 3;
         }
+        let index = |labels: Vec<String>, keys: Vec<String>, edges: bool| {
+            let mut keys = keys.into_iter();
+            grafeno::IndexDef {
+                name: name.clone().unwrap_or_default(),
+                label: labels[0].clone(),
+                key: keys.next().unwrap_or_default(),
+                more_keys: keys.collect(),
+                more_labels: labels[1..].to_vec(),
+                edges,
+                fuzzy,
+                ..grafeno::IndexDef::default()
+            }
+        };
         // The older form: CREATE INDEX ON :Label(key)
-        if !unique && self.eat_keyword("ON") {
+        if !constraint && self.eat_keyword("ON") {
             self.expect(Token::Colon, "`:Label`")?;
             let label = self.ident("a label")?;
             self.expect(Token::LParen, "`(`")?;
             let key = self.ident("a property")?;
             self.expect(Token::RParen, "`)`")?;
             return Ok(Some(Schema::Create {
-                name,
-                label,
-                key,
-                unique,
-                fuzzy,
+                def: index(vec![label], vec![key], false),
                 if_not_exists,
             }));
         }
         self.expect_keyword("FOR")?;
-        // FOR ()-[r:label]->() REQUIRE ONE PER SOURCE | TARGET | PAIR
-        if unique && self.peek() == &Token::LParen && self.peek_at(1) == &Token::RParen {
+        // On edges: FOR ()-[r:label]-() …
+        let (var, labels, edges) = if self.peek() == &Token::LParen
+            && self.peek_at(1) == &Token::RParen
+        {
             let pattern = self.pattern()?;
-            let label = match pattern.steps.as_slice() {
-                [(rel, _)] if rel.labels.len() == 1 && rel.direction == grafeno::Direction::Out => {
-                    rel.labels[0].clone()
-                }
-                _ => {
-                    return Err(self.error(
-                        "an edge constraint is on one label: FOR ()-[r:label]->() REQUIRE ONE PER SOURCE",
-                    ));
-                }
+            let [(rel, end)] = pattern.steps.as_slice() else {
+                return Err(self.error("an edge rule is on one edge: FOR ()-[r:label]-()"));
             };
-            self.expect_keyword("REQUIRE")?;
-            self.expect_keyword("ONE")?;
-            self.expect_keyword("PER")?;
-            let scope = if self.eat_keyword("SOURCE") {
-                grafeno::Scope::Source
-            } else if self.eat_keyword("TARGET") {
-                grafeno::Scope::Target
-            } else if self.eat_keyword("PAIR") {
-                grafeno::Scope::Pair
-            } else {
-                return Err(self.unexpected("SOURCE, TARGET or PAIR"));
-            };
-            let mut on_conflict = grafeno::OnConflict::Invalidate;
-            if self.eat_keyword("ON") {
-                self.expect_keyword("CONFLICT")?;
-                on_conflict = if self.eat_keyword("INVALIDATE") {
-                    grafeno::OnConflict::Invalidate
-                } else if self.eat_keyword("FLAG") {
-                    grafeno::OnConflict::Flag
-                } else if self.eat_keyword("REJECT") {
-                    grafeno::OnConflict::Reject
-                } else {
-                    return Err(self.unexpected("INVALIDATE, FLAG or REJECT"));
-                };
+            if rel.labels.is_empty()
+                || rel.length.is_some()
+                || !rel.props.is_empty()
+                || pattern.start != NodePattern::default()
+                || *end != NodePattern::default()
+            {
+                return Err(self.error(
+                    "an edge rule names the edge's label and nothing else: FOR ()-[r:label]-()",
+                ));
             }
-            return Ok(Some(Schema::Constrain {
-                constraint: grafeno::Constraint::Edge {
-                    name: name.unwrap_or_default(),
-                    label,
-                    scope,
-                    on_conflict,
-                },
-                if_not_exists,
-            }));
-        }
-        self.expect(Token::LParen, "`(`")?;
-        let var = self.ident("a variable")?;
-        self.expect(Token::Colon, "`:Label`")?;
-        let label = self.ident("a label")?;
-        self.expect(Token::RParen, "`)`")?;
+            // FOR ()-[r:label]->() REQUIRE ONE PER SOURCE | TARGET | PAIR
+            if constraint && self.at_keyword("REQUIRE") && self.keyword_at(1, "ONE") {
+                self.position += 2;
+                if rel.labels.len() != 1 || rel.direction != grafeno::Direction::Out {
+                    return Err(self.error(
+                            "a one-per constraint is on one label, pointing out: FOR ()-[r:label]->() REQUIRE ONE PER SOURCE",
+                        ));
+                }
+                let label = rel.labels[0].clone();
+                return self.one_per(name, label, if_not_exists).map(Some);
+            }
+            let var = rel.var.clone().ok_or_else(|| {
+                self.error("name the edge to say which property: FOR ()-[r:label]-()")
+            })?;
+            (var, rel.labels.clone(), true)
+        } else {
+            // FOR (n:Label) or (n:A|B)
+            self.expect(Token::LParen, "`(`")?;
+            let var = self.ident("a variable")?;
+            self.expect(Token::Colon, "`:Label`")?;
+            let mut labels = vec![self.ident("a label")?];
+            while self.eat(&Token::Pipe) {
+                self.eat(&Token::Colon);
+                labels.push(self.ident("a label")?);
+            }
+            self.expect(Token::RParen, "`)`")?;
+            (var, labels, false)
+        };
         let property = |parser: &mut Self| -> Result<String, QueryError> {
             let start = parser.start();
             let owner = parser.ident("a variable")?;
@@ -726,40 +729,135 @@ impl Parser<'_> {
             parser.expect(Token::Dot, "`.`")?;
             parser.ident("a property")
         };
-        let key = if unique {
-            self.expect_keyword("REQUIRE")?;
-            let key = property(self)?;
-            self.expect_keyword("IS")?;
-            if self.eat_keyword("FUNCTIONAL") {
-                return Ok(Some(Schema::Constrain {
-                    constraint: grafeno::Constraint::Functional {
-                        name: name.unwrap_or_default(),
-                        label,
-                        key,
-                    },
-                    if_not_exists,
-                }));
+        // `n.key` or `(n.a, n.b, …)`
+        let properties = |parser: &mut Self, parens: bool| -> Result<Vec<String>, QueryError> {
+            if !parens && parser.peek() != &Token::LParen {
+                return Ok(vec![property(parser)?]);
             }
-            self.expect_keyword("UNIQUE")?;
-            key
-        } else {
-            self.expect_keyword("ON")?;
-            self.expect(Token::LParen, "`(`")?;
-            let key = property(self)?;
-            if self.peek() == &Token::Comma {
-                return Err(self.error("an index covers one property"));
+            parser.expect(Token::LParen, "`(`")?;
+            let mut keys = vec![property(parser)?];
+            while parser.eat(&Token::Comma) {
+                keys.push(property(parser)?);
             }
-            self.expect(Token::RParen, "`)`")?;
-            key
+            parser.expect(Token::RParen, "`)`")?;
+            Ok(keys)
         };
-        Ok(Some(Schema::Create {
-            name,
-            label,
-            key,
-            unique,
-            fuzzy,
+        if !constraint {
+            self.expect_keyword("ON")?;
+            let keys = properties(self, true)?;
+            if fuzzy && (keys.len() > 1 || labels.len() > 1 || edges) {
+                return Err(self.error("a fuzzy index is on one property of one node label"));
+            }
+            return Ok(Some(Schema::Create {
+                def: index(labels, keys, edges),
+                if_not_exists,
+            }));
+        }
+        self.expect_keyword("REQUIRE")?;
+        let keys = properties(self, false)?;
+        self.expect_keyword("IS")?;
+        if self.eat_keyword("UNIQUE") || self.at_keyword("KEY") {
+            let key = self.eat_keyword("KEY");
+            let mut def = index(labels, keys, edges);
+            def.unique = true;
+            def.required = key;
+            return Ok(Some(Schema::Create { def, if_not_exists }));
+        }
+        let one = |parser: &Self, rule: &str| -> Result<(String, String), QueryError> {
+            match (labels.as_slice(), keys.as_slice()) {
+                ([label], [key]) => Ok((label.clone(), key.clone())),
+                _ => Err(parser.error(format!("{rule} is on one property of one label"))),
+            }
+        };
+        let name = name.clone().unwrap_or_default();
+        let constraint = if self.eat_keyword("FUNCTIONAL") {
+            if edges {
+                return Err(self.error("IS FUNCTIONAL is on node properties"));
+            }
+            let (label, key) = one(self, "IS FUNCTIONAL")?;
+            grafeno::Constraint::Functional { name, label, key }
+        } else if self.at_keyword("NOT") && self.keyword_at(1, "NULL") {
+            self.position += 2;
+            let (label, key) = one(self, "IS NOT NULL")?;
+            grafeno::Constraint::Exists {
+                name,
+                label,
+                key,
+                edges,
+            }
+        } else if self.eat_keyword("TYPED")
+            || (self.peek() == &Token::Colon && self.peek_at(1) == &Token::Colon && {
+                self.position += 2;
+                true
+            })
+        {
+            let start = self.start();
+            let word = self.ident("a type")?;
+            let of = grafeno::PropertyType::from_keyword(&word).ok_or_else(|| {
+                QueryError::at(
+                    self.source,
+                    start,
+                    format!(
+                        "unknown type {word}: BOOLEAN, INTEGER, FLOAT, STRING, LIST, MAP or DATETIME"
+                    ),
+                )
+            })?;
+            let (label, key) = one(self, "IS :: type")?;
+            grafeno::Constraint::Typed {
+                name,
+                label,
+                key,
+                of,
+                edges,
+            }
+        } else {
+            return Err(self.unexpected("UNIQUE, KEY, NOT NULL, :: type or FUNCTIONAL after IS"));
+        };
+        Ok(Some(Schema::Constrain {
+            constraint,
             if_not_exists,
         }))
+    }
+
+    /// The end of `REQUIRE ONE PER SOURCE | TARGET | PAIR [ON CONFLICT …]`.
+    fn one_per(
+        &mut self,
+        name: Option<String>,
+        label: String,
+        if_not_exists: bool,
+    ) -> Result<Schema, QueryError> {
+        self.expect_keyword("PER")?;
+        let scope = if self.eat_keyword("SOURCE") {
+            grafeno::Scope::Source
+        } else if self.eat_keyword("TARGET") {
+            grafeno::Scope::Target
+        } else if self.eat_keyword("PAIR") {
+            grafeno::Scope::Pair
+        } else {
+            return Err(self.unexpected("SOURCE, TARGET or PAIR"));
+        };
+        let mut on_conflict = grafeno::OnConflict::Invalidate;
+        if self.eat_keyword("ON") {
+            self.expect_keyword("CONFLICT")?;
+            on_conflict = if self.eat_keyword("INVALIDATE") {
+                grafeno::OnConflict::Invalidate
+            } else if self.eat_keyword("FLAG") {
+                grafeno::OnConflict::Flag
+            } else if self.eat_keyword("REJECT") {
+                grafeno::OnConflict::Reject
+            } else {
+                return Err(self.unexpected("INVALIDATE, FLAG or REJECT"));
+            };
+        }
+        Ok(Schema::Constrain {
+            constraint: grafeno::Constraint::Edge {
+                name: name.unwrap_or_default(),
+                label,
+                scope,
+                on_conflict,
+            },
+            if_not_exists,
+        })
     }
 
     fn query(&mut self) -> Result<Query, QueryError> {
