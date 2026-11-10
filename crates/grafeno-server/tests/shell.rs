@@ -383,3 +383,97 @@ fn roles_and_grants_from_the_command_line() {
     run(&["roles", "delete", "team-reader"]);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn namespaces_from_scripts_and_the_command_line() {
+    let dir = std::env::temp_dir().join(format!("grafeno-ns-script-{}", NodeId::new()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let db = dir.join("ns.redb");
+    let db = db.to_str().unwrap();
+    let script = dir.join("setup.gq");
+    std::fs::write(
+        &script,
+        "CREATE NAMESPACE crm IF NOT EXISTS COMMENT 'customers';\n\
+         CREATE NAMESPACE crm IF NOT EXISTS;\n\
+         \\use crm\n\
+         CREATE INDEX FOR (c:Customer) ON (c.email);\n\
+         CREATE (:Customer {email: 'a@example.org'});\n",
+    )
+    .unwrap();
+    let output = shell(&["--db", db, "-f", script.to_str().unwrap()], None);
+    assert!(output.status.success(), "{}", text(&output.stderr));
+
+    // Stops at the first failure only when asked.
+    let bad = "CREATE NAMESPACE crm;\nCREATE NAMESPACE later;";
+    let output = shell(&["--db", db, "-c", bad], None);
+    assert!(!output.status.success());
+    let output = shell(&["--db", db, "-c", "SHOW NAMESPACES;"], None);
+    assert!(text(&output.stdout).contains("later"), "the rest ran");
+    let output = shell(
+        &[
+            "--db",
+            db,
+            "--stop-on-error",
+            "-c",
+            "CREATE NAMESPACE crm;\nCREATE NAMESPACE never;",
+        ],
+        None,
+    );
+    assert!(!output.status.success());
+
+    let run = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_grafeno"))
+            .args(args)
+            .output()
+            .unwrap()
+    };
+    let listing = run(&["namespaces", "--db", db]);
+    let listing = text(&listing.stdout);
+    assert!(
+        listing.contains("crm") && !listing.contains("never"),
+        "{listing}"
+    );
+    assert!(
+        run(&[
+            "namespaces",
+            "--db",
+            db,
+            "create",
+            "logs",
+            "--description",
+            "app logs"
+        ])
+        .status
+        .success()
+    );
+    assert!(
+        !run(&["namespaces", "--db", db, "create", "logs"])
+            .status
+            .success()
+    );
+    assert!(
+        run(&[
+            "namespaces",
+            "--db",
+            db,
+            "create",
+            "logs",
+            "--if-not-exists"
+        ])
+        .status
+        .success()
+    );
+    assert!(
+        !run(&["namespaces", "--db", db, "drop", "logs"])
+            .status
+            .success(),
+        "needs --yes"
+    );
+    let dropped = run(&["namespaces", "--db", db, "drop", "crm", "--yes"]);
+    assert!(
+        text(&dropped.stdout).contains("1 nodes"),
+        "{}",
+        text(&dropped.stdout)
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

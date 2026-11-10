@@ -17,6 +17,12 @@ version (now 17) is upgraded in place, with a copy kept first.
   Apache License 2.0, at the user's choice (`LICENSE-MIT`,
   `LICENSE-APACHE`). The packages, the Windows setup (a license page),
   the archives and the winget manifest carry it.
+- **Added**: `CREATE NAMESPACE name [IF NOT EXISTS] [COMMENT '…']`,
+  `ALTER NAMESPACE name SET COMMENT '…' | REMOVE COMMENT` and `DROP
+  NAMESPACE name [IF EXISTS]` in GQ, checked on the namespace they name;
+  `grafeno namespaces create | describe | drop` on a database file; and
+  `grafeno shell --stop-on-error` for scripts that must stop at the first
+  failure.
 - **Changed**: a `null` property is a value. `SET n.x = null`, a `null` in
   `SET n += {…}`, in a new node's properties (GQ `CREATE`, HTTP, MCP) and
   in an HTTP `PATCH` or the MCP `update` tool store `null` and keep the

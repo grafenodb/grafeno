@@ -743,6 +743,46 @@ given: CREATE (:N {n: 1})
 when: MATCH (a) RETURN size(id(a))
 then: [[36]]
 
+# ---------------------------------------------------------------- namespaces (16.3)
+
+=== CREATE NAMESPACE with a comment
+when: CREATE NAMESPACE crm COMMENT 'customers'
+then: [["crm", 0, 0, "*", "customers"]]
+
+=== a name in quotes may hold a dash
+given: CREATE NAMESPACE 'team-a'
+when: SHOW NAMESPACES
+then: [["team-a", 0, 0, "*", null]]
+
+=== CREATE NAMESPACE twice fails, IF NOT EXISTS does not
+given: CREATE NAMESPACE crm COMMENT 'first'
+when: CREATE NAMESPACE crm
+then error: already exists
+
+=== IF NOT EXISTS leaves it as it is
+given: CREATE NAMESPACE crm COMMENT 'first'
+when: CREATE NAMESPACE crm IF NOT EXISTS COMMENT 'second'
+then: [["crm", 0, 0, "*", "first"]]
+
+=== ALTER NAMESPACE sets and removes the comment
+given: CREATE NAMESPACE crm
+given: ALTER NAMESPACE crm SET COMMENT 'customers'
+when: ALTER NAMESPACE crm REMOVE COMMENT
+then: [["crm", 0, 0, "*", null]]
+
+=== DROP NAMESPACE deletes what is in it
+given: CREATE (:N {n: 1})
+when: DROP NAMESPACE conformance
+then: [["conformance", 1, 0, null, null]]
+
+=== DROP NAMESPACE of a missing one fails, IF EXISTS does not
+when: DROP NAMESPACE nothing IF EXISTS
+then: []
+
+=== DROP NAMESPACE of a missing one
+when: DROP NAMESPACE nothing
+then error: nothing
+
 # ---------------------------------------------------------------- access (14.3)
 # Run without a caller, as the owner; passwords need the server's hasher.
 

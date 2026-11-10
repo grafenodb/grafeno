@@ -100,7 +100,10 @@ History is kept in `~/.grafeno_history`.
 
 Without a terminal it runs scripts and exits, with an error code if a
 statement failed: `-c "…"`, `-f FILE` (`-` for standard input), or a script
-piped into it. `--json` prints results as JSON.
+piped into it. `--json` prints results as JSON; `--stop-on-error` stops at
+the first statement that fails (by default the rest still runs). Scripts
+can create their namespace with `CREATE NAMESPACE … IF NOT EXISTS`
+(see the query language guide).
 
 ```bash
 grafeno shell --db memory.redb -n vault -c "MATCH (n) RETURN count(*);"
@@ -113,6 +116,9 @@ They open the file directly (stop the server first):
 | Command                                   | What it does                                                   |
 | ----------------------------------------- | -------------------------------------------------------------- |
 | `grafeno namespaces --db F`               | Namespaces with their node and edge counts.                    |
+| `grafeno namespaces --db F create NAME [--description TEXT] [--if-not-exists]` | Creates an empty namespace. |
+| `grafeno namespaces --db F describe NAME [TEXT]` | Sets (or, without TEXT, removes) its description.      |
+| `grafeno namespaces --db F drop NAME --yes` | Deletes a namespace and everything in it.                    |
 | `grafeno stats --db F [-n NS]...`         | Statistics as JSON: counts per label, texts, vectors.          |
 | `grafeno check --db F [-n NS]...`         | Integrity check; exits with an error if anything is wrong.     |
 | `grafeno rebuild --db F (-n NS... \| --all)` | Rebuilds indexes and counters from the records.             |

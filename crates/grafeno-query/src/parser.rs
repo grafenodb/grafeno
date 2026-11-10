@@ -5,9 +5,9 @@ use grafeno::Direction;
 use crate::QueryError;
 use crate::access::{Access, Target, UserSet};
 use crate::ast::{
-    BinOp, Clause, Expr, Key, MapItem, Mode, NodePattern, Pattern, PatternKind, ProcedureCall,
-    Projection, Quantifier, Query, RelPattern, RemoveItem, ReturnItem, Schema, SetItem, Statement,
-    UnOp,
+    BinOp, Clause, Expr, Key, MapItem, Mode, NamespaceOp, NodePattern, Pattern, PatternKind,
+    ProcedureCall, Projection, Quantifier, Query, RelPattern, RemoveItem, ReturnItem, Schema,
+    SetItem, Statement, UnOp,
 };
 use crate::lexer::{Spanned, Token, lex};
 use crate::value::Value;
@@ -442,6 +442,62 @@ impl Parser<'_> {
     }
 
     /// A name: an identifier or a string (for names with `-`).
+    /// `CREATE NAMESPACE`, `ALTER NAMESPACE` and `DROP NAMESPACE`, if one
+    /// starts here.
+    fn namespace_statement(&mut self) -> Result<Option<NamespaceOp>, QueryError> {
+        if !self.keyword_at(1, "NAMESPACE") {
+            return Ok(None);
+        }
+        let comment = |parser: &mut Self| -> Result<String, QueryError> {
+            match parser.peek().clone() {
+                Token::Str(text) => {
+                    parser.advance();
+                    Ok(text)
+                }
+                _ => Err(parser.unexpected("the comment, as a string")),
+            }
+        };
+        if self.at_keyword("CREATE") {
+            self.position += 2;
+            let name = self.access_name("the namespace's name")?;
+            let if_not_exists = self.if_not_exists();
+            let comment = if self.eat_keyword("COMMENT") {
+                Some(comment(self)?)
+            } else {
+                None
+            };
+            return Ok(Some(NamespaceOp::Create {
+                name,
+                if_not_exists,
+                comment,
+            }));
+        }
+        if self.at_keyword("ALTER") {
+            self.position += 2;
+            let name = self.access_name("the namespace's name")?;
+            let comment = if self.at_keyword("SET") && self.keyword_at(1, "COMMENT") {
+                self.position += 2;
+                Some(comment(self)?)
+            } else if self.at_keyword("REMOVE") && self.keyword_at(1, "COMMENT") {
+                self.position += 2;
+                None
+            } else {
+                return Err(self.unexpected("SET COMMENT 'text' or REMOVE COMMENT"));
+            };
+            return Ok(Some(NamespaceOp::Alter { name, comment }));
+        }
+        if self.at_keyword("DROP") {
+            self.position += 2;
+            let name = self.access_name("the namespace's name")?;
+            let if_exists = self.at_keyword("IF") && self.keyword_at(1, "EXISTS");
+            if if_exists {
+                self.position += 2;
+            }
+            return Ok(Some(NamespaceOp::Drop { name, if_exists }));
+        }
+        Ok(None)
+    }
+
     fn access_name(&mut self, expected: &str) -> Result<String, QueryError> {
         match self.peek().clone() {
             Token::Ident(name) | Token::Str(name) => {
@@ -523,6 +579,9 @@ impl Parser<'_> {
                 None
             }
         };
+        if let Some(op) = self.namespace_statement()? {
+            return Ok(Some(Schema::Namespace(op)));
+        }
         if self.at_keyword("SHOW") {
             self.advance();
             if self.at_keyword("NAMESPACES") {

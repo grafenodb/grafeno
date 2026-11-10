@@ -605,3 +605,92 @@ async fn vector_recall_and_compact_over_http() {
     assert_eq!(report["vectors"], 1);
     assert_eq!(report["unreachable_after"], 0);
 }
+
+#[tokio::test]
+async fn namespace_statements_need_rights_on_the_namespace_they_name() {
+    let app = router(AppState::new(
+        Arc::new(Grafeno::in_memory().unwrap()),
+        Some(OWNER),
+    ));
+    let query = |q: &str| json!({ "query": q });
+    // The owner creates, describes and drops through any namespace.
+    let (status, body) = call(
+        &app,
+        OWNER,
+        "POST",
+        "/v1/home/query",
+        Some(query("CREATE NAMESPACE 'team-a' COMMENT 'first team'")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["rows"][0][0], "team-a");
+    assert_eq!(body["rows"][0][4], "first team");
+    let (_, info) = call(&app, OWNER, "GET", "/v1/namespaces/team-a", None).await;
+    assert_eq!(info["description"], "first team", "{info}");
+
+    // Admin of `team-*` (which includes creating namespaces that match),
+    // reading `home`: may create team-b, not other.
+    let team = key(
+        &app,
+        "team-admin",
+        json!([{ "namespace": "team-*", "role": "admin" }, { "namespace": "home", "role": "read" }]),
+        false,
+    )
+    .await;
+    let (status, body) = call(
+        &app,
+        &team,
+        "POST",
+        "/v1/home/query",
+        Some(query("CREATE NAMESPACE 'team-b'")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, body) = call(
+        &app,
+        &team,
+        "POST",
+        "/v1/home/query",
+        Some(query("CREATE NAMESPACE other")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    let (status, _) = call(
+        &app,
+        &team,
+        "POST",
+        "/v1/home/query",
+        Some(query("ALTER NAMESPACE 'team-a' SET COMMENT 'renamed'")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    // A reader may not drop.
+    let reader = key(
+        &app,
+        "reader",
+        json!([{ "namespace": "team-*", "role": "read" }]),
+        false,
+    )
+    .await;
+    let (status, _) = call(
+        &app,
+        &reader,
+        "POST",
+        "/v1/team-a/query",
+        Some(query("DROP NAMESPACE 'team-a'")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let (status, body) = call(
+        &app,
+        &team,
+        "POST",
+        "/v1/home/query",
+        Some(query("DROP NAMESPACE 'team-a'")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, _) = call(&app, OWNER, "GET", "/v1/namespaces/team-a", None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}

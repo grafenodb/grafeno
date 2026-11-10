@@ -142,6 +142,10 @@ enum Command {
         /// Print results as JSON instead of tables.
         #[arg(long)]
         json: bool,
+        /// With -c or -f: stop at the first statement that fails (by default
+        /// the rest still runs, and the exit code says something failed).
+        #[arg(long)]
+        stop_on_error: bool,
     },
     /// API keys: names with grants per namespace (read, write, admin).
     #[command(subcommand)]
@@ -176,10 +180,14 @@ enum Command {
         /// The new database file (it must not exist).
         output: PathBuf,
     },
-    /// List the namespaces with their node and edge counts.
+    /// List the namespaces with their node and edge counts, or create,
+    /// describe or drop one (on a database file; on a server, use GQ:
+    /// `CREATE NAMESPACE`, `ALTER NAMESPACE`, `DROP NAMESPACE`).
     Namespaces {
         #[command(flatten)]
         db: FileArgs,
+        #[command(subcommand)]
+        action: Option<NamespacesCommand>,
     },
     /// Print statistics as JSON (of every namespace, or of the given ones).
     Stats {
@@ -686,6 +694,32 @@ enum ServiceCommand {
     },
 }
 
+#[derive(Subcommand)]
+enum NamespacesCommand {
+    /// Create an empty namespace.
+    Create {
+        name: String,
+        /// What the namespace is for.
+        #[arg(long)]
+        description: Option<String>,
+        /// Succeed if it exists already.
+        #[arg(long)]
+        if_not_exists: bool,
+    },
+    /// Set the description of a namespace (none: remove it).
+    Describe {
+        name: String,
+        description: Option<String>,
+    },
+    /// Delete a namespace and everything in it.
+    Drop {
+        name: String,
+        /// Confirm: everything in the namespace is deleted.
+        #[arg(long)]
+        yes: bool,
+    },
+}
+
 /// The database file of an administration command. Stop any server using
 /// it first: only one process can open it.
 #[derive(Args)]
@@ -894,6 +928,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             command,
             file,
             json,
+            stop_on_error,
         } => {
             let (url, token) = match config {
                 Some(path) => {
@@ -921,6 +956,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 eprintln!("Signed in as {name}.");
             }
             let mut shell = Shell::new(backend, namespace, json);
+            shell.stop_on_error = stop_on_error;
             if let Some(command) = command {
                 shell.run_script(&command);
             } else if let Some(file) = file {
@@ -1165,7 +1201,51 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 )?,
             }
         }
-        Command::Namespaces { db } => {
+        Command::Namespaces {
+            db,
+            action: Some(action),
+        } => {
+            let db = db.open()?;
+            match action {
+                NamespacesCommand::Create {
+                    name,
+                    description,
+                    if_not_exists,
+                } => {
+                    let exists = db.begin_read()?.namespace(&name)?.is_some();
+                    if exists && if_not_exists {
+                        println!("namespace {name:?} exists already");
+                    } else {
+                        db.write(|tx| tx.create_namespace(&name, description.as_deref()))?;
+                        println!("created namespace {name:?}");
+                    }
+                }
+                NamespacesCommand::Describe { name, description } => {
+                    if db.begin_read()?.namespace(&name)?.is_none() {
+                        return Err(format!("no namespace {name:?}").into());
+                    }
+                    db.write(|tx| tx.describe_namespace(&name, description.as_deref()))?;
+                    println!("described namespace {name:?}");
+                }
+                NamespacesCommand::Drop { name, yes } => {
+                    if db.begin_read()?.namespace(&name)?.is_none() {
+                        return Err(format!("no namespace {name:?}").into());
+                    }
+                    if !yes {
+                        return Err(format!(
+                            "dropping {name:?} deletes everything in it: add --yes to confirm"
+                        )
+                        .into());
+                    }
+                    let dropped = db.write(|tx| tx.drop_namespace(&name))?;
+                    println!(
+                        "dropped namespace {name:?}: {} nodes and {} edges",
+                        dropped.nodes, dropped.edges
+                    );
+                }
+            }
+        }
+        Command::Namespaces { db, action: None } => {
             let namespaces = db.open()?.begin_read()?.namespaces()?;
             let width = namespaces
                 .iter()

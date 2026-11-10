@@ -13,8 +13,8 @@ use serde::Serialize;
 use crate::QueryError;
 use crate::aggregate::{Groups, Spec};
 use crate::ast::{
-    Clause, Expr, Key, Mode, NodePattern, Pattern, ProcedureCall, Projection, Query, RelPattern,
-    RemoveItem, Schema, SetItem, Statement,
+    Clause, Expr, Key, Mode, NamespaceOp, NodePattern, Pattern, ProcedureCall, Projection, Query,
+    RelPattern, RemoveItem, Schema, SetItem, Statement,
 };
 use crate::eval::{Context, Params, Row, Scope, eval, property, to_time, truth};
 use crate::limits::{Budget, Limits};
@@ -47,6 +47,9 @@ pub struct WriteStats {
     pub properties_set: u64,
     pub labels_added: u64,
     pub labels_removed: u64,
+    /// `CREATE NAMESPACE` and `DROP NAMESPACE` (16.3).
+    pub namespaces_created: u64,
+    pub namespaces_dropped: u64,
 }
 
 impl WriteStats {
@@ -301,6 +304,78 @@ fn run_schema(
         Schema::Access(access) => {
             crate::access::run(read, tx, access, params, limits.access.as_ref())
         }
+        Schema::Namespace(op) => {
+            let tx = tx.ok_or_else(|| {
+                QueryError::runtime("namespace statements need a write transaction")
+            })?;
+            let mut stats = WriteStats::default();
+            let row = |info: grafeno::NamespaceInfo| {
+                vec![
+                    Value::Str(info.name),
+                    Value::Int(info.nodes as i64),
+                    Value::Int(info.edges as i64),
+                    Value::Time(info.created_at),
+                    info.description.map_or(Value::Null, Value::Str),
+                ]
+            };
+            let columns: Vec<String> = ["name", "nodes", "edges", "created_at", "description"]
+                .iter()
+                .map(|c| (*c).to_owned())
+                .collect();
+            let rows = match op {
+                NamespaceOp::Create {
+                    name,
+                    if_not_exists,
+                    comment,
+                } => {
+                    if tx.namespace(name)?.is_some() {
+                        if !*if_not_exists {
+                            return Err(QueryError::runtime(format!(
+                                "namespace {name:?} already exists (IF NOT EXISTS leaves it as it is)"
+                            )));
+                        }
+                    } else {
+                        tx.create_namespace(name, comment.as_deref())?;
+                        stats.namespaces_created += 1;
+                    }
+                    tx.namespace(name)?.map(row).into_iter().collect()
+                }
+                NamespaceOp::Alter { name, comment } => {
+                    if tx.namespace(name)?.is_none() {
+                        return Err(grafeno::Error::NamespaceNotFound(name.clone()).into());
+                    }
+                    tx.describe_namespace(name, comment.as_deref())?;
+                    tx.namespace(name)?.map(row).into_iter().collect()
+                }
+                NamespaceOp::Drop { name, if_exists } => {
+                    if tx.namespace(name)?.is_none() {
+                        if *if_exists {
+                            Vec::new()
+                        } else {
+                            return Err(grafeno::Error::NamespaceNotFound(name.clone()).into());
+                        }
+                    } else {
+                        let dropped = tx.drop_namespace(name)?;
+                        stats.namespaces_dropped += 1;
+                        stats.nodes_deleted += dropped.nodes;
+                        stats.edges_deleted += dropped.edges;
+                        vec![vec![
+                            Value::Str(name.clone()),
+                            Value::Int(dropped.nodes as i64),
+                            Value::Int(dropped.edges as i64),
+                            Value::Null,
+                            Value::Null,
+                        ]]
+                    }
+                }
+            };
+            Ok(QueryResult {
+                columns,
+                rows,
+                stats,
+                profile: None,
+            })
+        }
         Schema::ShowNamespaces => Ok(QueryResult {
             columns: ["name", "nodes", "edges", "created_at", "description"]
                 .iter()
@@ -500,12 +575,19 @@ pub enum StatementKind {
     /// Manages or lists users, roles and grants: the statement checks what
     /// the caller may manage itself ([`Limits::access`]).
     Access,
+    /// Creates, changes or drops a namespace: needs
+    /// [`Requirements::namespace`] on the namespace it names, not on the
+    /// one it runs in (16.3).
+    Namespace,
 }
 
 pub fn statement_kind(query: &str) -> Result<StatementKind, QueryError> {
     let statement = crate::cache::parsed(query)?;
     if statement.mode != Mode::Explain && matches!(statement.schema, Some(Schema::Access(_))) {
         return Ok(StatementKind::Access);
+    }
+    if statement.mode != Mode::Explain && matches!(statement.schema, Some(Schema::Namespace(_))) {
+        return Ok(StatementKind::Namespace);
     }
     Ok(if statement.mode == Mode::Explain || !statement.writes() {
         StatementKind::Read
@@ -525,6 +607,9 @@ pub struct Requirements {
     pub kind: StatementKind,
     /// For an access statement, the server privilege `context` lacks.
     pub lacking: Option<&'static str>,
+    /// For a namespace statement: the namespace it names and the action it
+    /// takes on it (`CreateNamespace`, `Schema` or `Drop`).
+    pub namespace: Option<(String, grafeno::Act)>,
 }
 
 /// [`Requirements`] of a statement, for a caller described by `context`.
@@ -533,8 +618,13 @@ pub fn requirements(
     context: Option<&crate::access::AccessContext>,
 ) -> Result<Requirements, QueryError> {
     let statement = crate::cache::parsed(query)?;
+    let namespace = match &statement.schema {
+        Some(Schema::Namespace(op)) => Some((op.name().to_owned(), op.act())),
+        _ => None,
+    };
     let (kind, lacking) = match &statement.schema {
         Some(Schema::Access(access)) => (StatementKind::Access, access.lacking(context)),
+        Some(Schema::Namespace(_)) => (StatementKind::Namespace, None),
         Some(_) if statement.writes() => (StatementKind::Schema, None),
         _ if statement.writes() => (StatementKind::Write, None),
         _ => (StatementKind::Read, None),
@@ -543,6 +633,7 @@ pub fn requirements(
         explain: statement.mode == Mode::Explain,
         kind,
         lacking,
+        namespace,
     })
 }
 
@@ -2586,6 +2677,13 @@ fn explain(
             Schema::Drop { name, .. } => format!("drop {name}"),
             Schema::Show { .. } => "list the indexes".into(),
             Schema::ShowNamespaces => "list the namespaces".into(),
+            Schema::Namespace(op) => match op {
+                NamespaceOp::Create { name, .. } => format!("create the namespace {name:?}"),
+                NamespaceOp::Alter { name, .. } => format!("change the comment of {name:?}"),
+                NamespaceOp::Drop { name, .. } => {
+                    format!("drop the namespace {name:?} and everything in it")
+                }
+            },
             Schema::Access(access) => access.describe(),
         };
         return Ok(QueryResult {

@@ -2337,13 +2337,32 @@ async fn run_query_counted(
                 caller.name()
             )
         }),
+        // On the namespace it names, as the namespace routes check (16.3).
+        grafeno_query::StatementKind::Namespace => needs
+            .namespace
+            .as_ref()
+            .filter(|(target, act)| !caller.can(*act, target))
+            .map(|(target, act)| caller.refusal(target, &[*act])),
     };
     if let (Some(message), false) = (&missing, needs.explain) {
         return Err(ApiError::forbidden(message.clone()));
     }
     // Even under EXPLAIN, a plan of a namespace is for those who read it.
-    if needs.kind != grafeno_query::StatementKind::Access {
+    if !matches!(
+        needs.kind,
+        grafeno_query::StatementKind::Access | grafeno_query::StatementKind::Namespace
+    ) {
         require(&ns, Role::Read)?;
+    }
+    // With several groups, a namespace lives in the group the directory
+    // says (group 0 when it says nothing): a statement on it must run there.
+    if let (Some((target, _)), Some(registry)) = (&needs.namespace, state.groups.get()) {
+        let home = registry.placement(target).group;
+        if home != state.group {
+            return Err(ApiError::bad_request(format!(
+                "namespace {target:?} belongs to group {home}: run this statement against a namespace of that group, or use /v1/namespaces"
+            )));
+        }
     }
     let denied = missing.filter(|_| needs.explain);
     let access = needs.kind == grafeno_query::StatementKind::Access;

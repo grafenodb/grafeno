@@ -2,7 +2,7 @@
 
 [All phases](README.md) · [← Phase 15: Engine and interface apart](phase-15-engine-and-interface-apart.md) · [Phase 17: Integrations →](phase-17-integrations.md)
 
-**Status:** in progress: 16.1 and 16.2 done.
+**Status:** in progress: 16.1 to 16.3 done.
 
 What the engine still lacks as a database people build on: a free
 license, null as a value, namespaces made from scripts, transactions that
@@ -18,7 +18,7 @@ Steps:
 
 - [16.1 A free license, and documentation about Grafeno only (done)](#161-a-free-license-and-documentation-about-grafeno-only-done)
 - [16.2 Null as a stored value (done)](#162-null-as-a-stored-value-done)
-- [16.3 Namespaces from scripts (planned)](#163-namespaces-from-scripts-planned)
+- [16.3 Namespaces from scripts (done)](#163-namespaces-from-scripts-done)
 - [16.4 Explicit transactions (planned)](#164-explicit-transactions-planned)
 - [16.5 Advanced indexes and constraints (planned)](#165-advanced-indexes-and-constraints-planned)
 - [16.6 Full-text search (planned)](#166-full-text-search-planned)
@@ -153,7 +153,7 @@ As built:
   maps), and an HTTP test of `PATCH` with `remove_props` and the
   capability.
 
-## 16.3 Namespaces from scripts (planned)
+## 16.3 Namespaces from scripts (done)
 
 **Where it starts from.** A namespace is created with `POST
 /v1/namespaces` or implicitly by its first write; the command line can
@@ -173,6 +173,42 @@ only list them (`grafeno namespaces`), and GQ has `SHOW NAMESPACES` only.
 
 Done when: the statements work in the shell, over HTTP and in scripts,
 are audited (14.5) and replicated (13.x).
+
+As built:
+
+- GQ `CREATE NAMESPACE`, `ALTER NAMESPACE … SET COMMENT | REMOVE COMMENT`
+  and `DROP NAMESPACE`, with `IF NOT EXISTS` and `IF EXISTS`
+  (`Schema::Namespace(NamespaceOp)`; a name is a word or a quoted string).
+  They return the namespace's row, as `SHOW NAMESPACES` does, and count
+  `namespaces_created` and `namespaces_dropped` in the write stats.
+- `requirements()` gives them a kind of their own,
+  `StatementKind::Namespace`, with the namespace they name and the action
+  they take (`CreateNamespace`, `Schema`, `Drop`), so the server checks
+  rights there, as the namespace routes do, not on the namespace the
+  statement was sent through (which needs no right for it). With several
+  groups (13.5) the statement is refused unless sent through the group
+  the named namespace belongs to, since a new namespace lives in group 0
+  unless the directory says otherwise.
+- Replicated as any write: they run in the write transaction, whose entry
+  carries the namespace record (`Touch::Namespace`). Not audited, as the
+  `/v1/namespaces` routes are not: the audit log (14.5) records security
+  events (sign-ins, refusals, changes to accounts and rights), and a
+  refused namespace statement is recorded as any 403 is.
+- The command line: `grafeno namespaces create | describe | drop` on a
+  database file (`drop` wants `--yes`); `grafeno namespaces` alone lists
+  them, as before.
+- Scripts: `grafeno shell -f` (and `-c`, and the shell's `\ns create` and
+  `\ns drop`) existed; scripts keep running after a failure, as phase 5
+  documented and tested, so instead of changing that, `--stop-on-error`
+  stops at the first failure. `grafeno run --file` was not added: the
+  shell is the one way to run scripts. The query language guide has an
+  example `setup.gq`.
+- Tests: eight conformance scenarios (create with a comment, quoted
+  names, duplicates, `IF NOT EXISTS`, `ALTER`, `DROP` and `IF EXISTS`), an
+  access test (the owner, an admin of `team-*` who may create `team-b` but
+  not `other`, a reader who may not drop), and a shell test (a setup
+  script, `--stop-on-error`, the command line's create, describe and
+  drop).
 
 ## 16.4 Explicit transactions (planned)
 

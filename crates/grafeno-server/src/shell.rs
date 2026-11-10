@@ -425,6 +425,8 @@ pub struct Shell {
     timing: bool,
     /// Whether anything failed (the exit code of scripts).
     pub failed: bool,
+    /// Scripts stop at the first statement or meta-command that fails.
+    pub stop_on_error: bool,
 }
 
 impl Shell {
@@ -435,15 +437,17 @@ impl Shell {
             format: if json { Format::Json } else { Format::Table },
             timing: false,
             failed: false,
+            stop_on_error: false,
         }
     }
 
     /// Runs a script: statements separated by `;` and meta-command lines.
     pub fn run_script(&mut self, script: &str) {
+        let stop = |shell: &Self| shell.stop_on_error && shell.failed;
         let mut pending = String::new();
         for line in script.lines() {
             if pending.trim().is_empty() && line.trim_start().starts_with('\\') {
-                if !self.meta(line.trim()) {
+                if !self.meta(line.trim()) || stop(self) {
                     return;
                 }
                 continue;
@@ -453,6 +457,9 @@ impl Shell {
             let (statements, rest) = split_statements(&pending);
             for statement in statements {
                 self.statement(&statement);
+                if stop(self) {
+                    return;
+                }
             }
             pending = rest;
         }

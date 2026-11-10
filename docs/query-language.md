@@ -729,6 +729,50 @@ deep. Past either, the query fails with an error instead of exhausting the
 stack. The library and the local shell run without the other limits
 (`grafeno_query::execute_with` takes them).
 
+## Namespaces
+
+A namespace is created by its first write, or explicitly, with a comment
+that says what it is for:
+
+```text
+CREATE NAMESPACE crm COMMENT 'customers and their orders';
+CREATE NAMESPACE 'team-a' IF NOT EXISTS;     // quote names with a dash
+ALTER NAMESPACE crm SET COMMENT 'customers';
+ALTER NAMESPACE crm REMOVE COMMENT;
+DROP NAMESPACE 'team-a' IF EXISTS;           // with everything in it
+SHOW NAMESPACES;
+```
+
+Each returns the namespace's row (`name`, `nodes`, `edges`, `created_at`,
+`description`); a `DROP` returns how many nodes and edges went, and the
+write stats count `namespaces_created` and `namespaces_dropped`. Run over
+HTTP, a statement may be sent through any namespace's `/query`; what it
+needs is on the namespace it names: creating needs the right to create
+that namespace, `ALTER` the namespace's `schema` privilege, `DROP` its
+`drop` privilege (as `POST /v1/namespaces`, `PATCH` and `DELETE
+/v1/namespaces/{ns}` need). In a cluster with several groups, it must be
+sent through a namespace of the group the named one belongs to (group 0
+for a new one).
+
+A namespace, its indexes and constraints and some first data can be set
+up from one script, kept with an application's code:
+
+```text
+// setup.gq
+CREATE NAMESPACE crm IF NOT EXISTS COMMENT 'customers and their orders';
+\use crm
+CREATE INDEX IF NOT EXISTS FOR (c:Customer) ON (c.name);
+CREATE CONSTRAINT IF NOT EXISTS FOR (c:Customer) REQUIRE c.email IS UNIQUE;
+MERGE (:Customer {email: 'ana@example.org', name: 'Ana'});
+```
+
+```bash
+grafeno shell --config /etc/grafeno/grafeno.toml --stop-on-error -f setup.gq
+```
+
+`--stop-on-error` stops at the first statement that fails; without it the
+rest of the script still runs and the exit code says something failed.
+
 ## Users, roles and privileges
 
 Accounts and roles (see the server's README) are managed in GQ by those who

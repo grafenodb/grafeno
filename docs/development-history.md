@@ -277,6 +277,10 @@ presentan el proyecto y los primeros pasos.
 - **Phase 16.2, null as a stored value:** setting a property to `null`
   keeps the key; `REMOVE` and `remove_props` delete it; `hasKey`; indexes
   hold no nulls, and unique indexes take several.
+- **Phase 16.3, namespaces from scripts:** `CREATE`, `ALTER` and `DROP
+  NAMESPACE` in GQ, checked on the namespace they name;
+  `grafeno namespaces create | describe | drop`; `grafeno shell
+  --stop-on-error`.
 
 Next, the rest of phase 16 (data model, search, analysis and events), then
 phase 17: integrations (client libraries for more languages). The plan is in

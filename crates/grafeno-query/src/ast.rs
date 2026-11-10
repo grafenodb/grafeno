@@ -45,8 +45,47 @@ pub(crate) enum Schema {
     Show { constraints: bool },
     /// `SHOW NAMESPACES`.
     ShowNamespaces,
+    /// `CREATE`, `ALTER` and `DROP NAMESPACE`.
+    Namespace(NamespaceOp),
     /// Users, roles and grants (14.3).
     Access(crate::access::Access),
+}
+
+/// A statement on a namespace as a whole (16.3).
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum NamespaceOp {
+    /// `CREATE NAMESPACE name [IF NOT EXISTS] [COMMENT 'text']`
+    Create {
+        name: String,
+        if_not_exists: bool,
+        comment: Option<String>,
+    },
+    /// `ALTER NAMESPACE name SET COMMENT 'text' | REMOVE COMMENT`
+    Alter {
+        name: String,
+        comment: Option<String>,
+    },
+    /// `DROP NAMESPACE name [IF EXISTS]`
+    Drop { name: String, if_exists: bool },
+}
+
+impl NamespaceOp {
+    pub(crate) fn name(&self) -> &str {
+        match self {
+            NamespaceOp::Create { name, .. }
+            | NamespaceOp::Alter { name, .. }
+            | NamespaceOp::Drop { name, .. } => name,
+        }
+    }
+
+    /// What the caller needs on the namespace it names: as the HTTP routes.
+    pub(crate) fn act(&self) -> grafeno::Act {
+        match self {
+            NamespaceOp::Create { .. } => grafeno::Act::CreateNamespace,
+            NamespaceOp::Alter { .. } => grafeno::Act::Schema,
+            NamespaceOp::Drop { .. } => grafeno::Act::Drop,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
