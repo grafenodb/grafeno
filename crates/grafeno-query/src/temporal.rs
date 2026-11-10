@@ -223,7 +223,7 @@ impl Duration {
             + self.micros as f64
     }
 
-    /// A component, as in Cypher: `years`, `quarters` and `months` read the
+    /// A component: `years`, `quarters` and `months` read the
     /// months; `weeks` and `days` the days; `hours` … `microseconds` the
     /// time part; `*OfYear`-style names the remainder within the larger
     /// unit.

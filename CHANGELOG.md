@@ -11,6 +11,21 @@ API version (`GET /v1/about`, now 1) changes only when a change would
 break a client of the previous one, and the database files' layout
 version (now 17) is upgraded in place, with a copy kept first.
 
+## Unreleased
+
+- **License**: Grafeno is free software under the MIT license or the
+  Apache License 2.0, at the user's choice (`LICENSE-MIT`,
+  `LICENSE-APACHE`). The packages, the Windows setup (a license page),
+  the archives and the winget manifest carry it.
+- **Changed**: the text-similarity functions answer only to their `text.*`
+  names; the five compatibility aliases outside that prefix are gone, and a
+  query that uses one fails with "unknown function". Their replacements:
+  the Levenshtein distance is `text.levenshtein`, the Jaro-Winkler
+  similarity `text.jaroWinkler`, the Sørensen-Dice similarity
+  `text.dice(a, b, 2)`, the phonetic key `text.soundex`, and the
+  normalized Levenshtein similarity is closest to
+  `text.similarity(a, b, 'levenshtein')`.
+
 ## 0.1.0 (2026-11-07)
 
 The first release: everything built in phases 1 to 15 (the story, step by
@@ -20,7 +35,7 @@ step, is in [docs/development-history.md](https://github.com/grafenodb/grafeno/b
   valid and record time, full-text (BM25) and vector (HNSW, int8 copies)
   search, hybrid recall and context for prompts, memory upkeep (importance,
   decay, consolidation, summaries).
-- **Queries**: GQ, a Cypher-like language with `EXPLAIN`, batches,
+- **Queries**: GQ, a declarative graph query language with `EXPLAIN`, batches,
   traversals, graph algorithms, a cost-based planner, batched and parallel
   execution.
 - **Knowledge upkeep**: entity resolution and record linkage, extraction of

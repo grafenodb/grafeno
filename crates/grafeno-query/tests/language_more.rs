@@ -1,4 +1,4 @@
-//! The Cypher of phase 12.1: path variables, shortestPath, CALL { }
+//! The GQ of phase 12.1: path variables, shortestPath, CALL { }
 //! subqueries, COUNT { }, pattern comprehensions, map projections, `=~`
 //! and more list, string and math functions.
 

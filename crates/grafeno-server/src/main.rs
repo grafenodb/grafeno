@@ -58,7 +58,7 @@ enum Command {
         #[arg(long)]
         stop_with_stdin: bool,
     },
-    /// Initialize an instance, as initdb does: its data folder, settings
+    /// Initialize an instance: its data folder, settings
     /// (a fresh token), first administrator and service, enabled and
     /// started. Asks what the flags leave open, unless --unattended.
     Setup(SetupArgs),
@@ -102,7 +102,7 @@ enum Command {
         #[arg(long, requires = "actor")]
         own_only: bool,
     },
-    /// An interactive console for GQ queries and administration, like psql.
+    /// An interactive console for GQ queries and administration.
     Shell {
         /// Connect to the server of this settings file (its address and token).
         #[arg(long, conflicts_with_all = ["url", "db", "memory"])]

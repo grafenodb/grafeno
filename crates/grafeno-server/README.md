@@ -3,9 +3,9 @@
 The `grafeno` binary serves and manages a Grafeno database (installers:
 [docs/install.md](../../docs/install.md)):
 
-- `grafeno serve`: a JSON HTTP API, for applications such as Grafito, and
+- `grafeno serve`: a JSON HTTP API, for applications and agents, and
   no interface (Grafeno Studio is installed apart and connects to this API).
-- `grafeno setup`: initializes an instance, as `initdb` does: its data
+- `grafeno setup`: initializes an instance: its data
   folder, settings (a fresh token), first administrator and service,
   enabled and started; interactive, or every answer as a flag or an
   answers file (`--unattended`, `--answers FILE`).
@@ -20,12 +20,11 @@ The `grafeno` binary serves and manages a Grafeno database (installers:
   server (`grafeno.toml`).
 - `grafeno service install [--account "NT SERVICE\Grafeno"] | uninstall`:
   the Windows service (LocalSystem unless an account is given).
-- `grafeno mcp`: an MCP server over stdio, for agents (Claude Code, Claude
-  Desktop and any other MCP client).
+- `grafeno mcp`: an MCP server over stdio, for agents (any MCP client).
 - `grafeno shell`: an interactive console for GQ queries and
-  administration, on a file or on a running server (like `psql`).
+  administration, on a file or on a running server.
 - `grafeno namespaces | stats | check | rebuild | export | import`:
-  administration commands on a file (like `pg_dump`).
+  administration commands on a file.
 - `grafeno keys list | create | revoke`: API keys, on a file or through a
   running server (see *Access* below).
 - `grafeno backup OUT`: a consistent copy of the whole database, from a
@@ -405,7 +404,7 @@ requests accept either that or an ISO 8601 string (`2024-05-01`,
 | `GET`    | `/v1/{ns}/contradictions`             | `?limit=`                                               | `[{constraint, action, new_edge, old_edge, replacement, at, by}]`, newest first |
 | `GET`    | `/v1/{ns}/nodes/{id}/history/{key}`   |                                                         | `[{value, from, to, by}]`: earlier values of a functional property |
 | `GET`    | `/v1/{ns}/export.graphml`             |                                                         | the namespace as GraphML (retracted facts left out) |
-| `GET`    | `/v1/{ns}/export/nodes.csv`, `/export/edges.csv` |                                              | as CSV, in `neo4j-admin import` headers |
+| `GET`    | `/v1/{ns}/export/nodes.csv`, `/export/edges.csv` |                                              | as CSV, with typed headers (`name:int`, `:LABEL`) |
 | `POST`   | `/v1/{ns}/import/graphml`, `/import/nodes.csv`, `/import/edges.csv` | the file (admin)          | `{nodes, edges, failed, errors}`; Grafeno ids update, other ids map to new nodes |
 | `GET`    | `/v1/{ns}/changes`                    | `?since=&limit=`; `Accept: text/event-stream` or `?stream=true` for a stream | `{changes, last, oldest, gap}`, or server-sent events (`id` = sequence number; resume with `Last-Event-ID`) |
 | `POST`   | `/v1/{ns}/ingest`                     | NDJSON: `{"key", "node": {…}}` or `{"key", "edge": {from, label, to, …}}` per line; ends may be `$key` | `{lines, nodes, edges, duplicates, failed, errors}`; a key sent again writes nothing |
@@ -615,13 +614,8 @@ user who starts it, but it fences the agent it serves:
 | `--as NAME` | its writes are recorded as `NAME` (`@recorded_by`) |
 | `--own-only` | with `--as`: it may change only what it recorded |
 
-Claude Code:
-
-```bash
-claude mcp add grafeno -- grafeno mcp --db ~/.grafeno/memory.redb --namespace me
-```
-
-Claude Desktop (`claude_desktop_config.json`) or other clients:
+An MCP client's configuration (the file and its place depend on the
+client):
 
 ```json
 {

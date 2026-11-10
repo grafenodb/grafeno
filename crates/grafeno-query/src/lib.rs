@@ -1,5 +1,5 @@
-//! GQ, the Grafeno query language: a subset of Cypher/GQL with Grafeno's
-//! time and memory features.
+//! GQ, the Grafeno query language: graph patterns, filters, aggregates,
+//! subqueries and writes, with Grafeno's time and memory features.
 //!
 //! ```text
 //! MATCH (a:Person {name: 'Ana'})-[w:works_at]->(c:Company)

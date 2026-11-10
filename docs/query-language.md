@@ -1,7 +1,8 @@
 # GQ, the Grafeno query language
 
-GQ is a subset of Cypher (and of ISO GQL's pattern style) plus Grafeno's own
-features: facts with valid time and record time, retraction, and
+GQ is Grafeno's declarative graph query language: patterns of nodes and
+edges, filters, projections, aggregates, subqueries and writes, plus
+features of its own: facts with valid time and record time, retraction, and
 pseudo-properties for what is not a property (ids, indexed text,
 embeddings). It runs in `grafeno shell`, over HTTP (`POST /v1/{ns}/query`),
 over MCP (the read-only `query` tool), and from Rust
@@ -44,7 +45,7 @@ labels, property names and variables are not. `//` starts a comment.
 - One edge is used at most once per pattern.
 - A variable-length edge's variable holds the list of edges of the path.
   Variable-length matches are shortest paths: each end node is reached once,
-  at its shortest distance (Cypher returns every path).
+  at its shortest distance (not once per path).
 - Several `MATCH` clauses can follow each other; each extends the rows of
   the previous one.
 - `OPTIONAL MATCH` keeps each row even when its patterns do not match: the
@@ -79,7 +80,7 @@ MATCH (p)-[r]->(q) KNOWN AT '2026-11-01T12:00:00Z' RETURN p, r, q;
 
 Comparisons `= <> != < <= > >=`, `AND`, `OR`, `XOR`, `NOT`,
 `IS [NOT] NULL`, `IN [list]`, `STARTS WITH`, `ENDS WITH`, `CONTAINS`, and
-label tests (`n:Admin`). Logic is three-valued as in SQL and Cypher: a
+label tests (`n:Admin`). Logic is three-valued, as in SQL: a
 comparison with `null` is unknown, and `WHERE` keeps only rows where the
 condition is true.
 
@@ -502,7 +503,7 @@ ones decide it.
 
 | Function | |
 | --- | --- |
-| `id(x)`, `labels(n)`, `type(r)` / `label(r)` | Cypher-style access |
+| `id(x)`, `labels(n)`, `type(r)` / `label(r)` | a record's id, labels and edge label |
 | `properties(x)`, `keys(x)`, `text(n)`, `startNode(r)`, `endNode(r)` | |
 | `size(x)` / `length(x)`, `head(list)`, `last(list)`, `range(a, b[, step])` | |
 | `lower`, `upper`, `trim`, `substring(s, start[, length])`, `replace(s, a, b)`, `split(s, sep)` | |
@@ -573,7 +574,6 @@ functions compare what they get. A `null` argument gives `null`.
 | `text.soundex(s)`, `text.phonetic(s[, 'es' \| 'en'])` | how it sounds: Soundex (English), or a Spanish key (`b`/`v`, `c`/`s`/`z`, silent `h`, `ll`/`y`) |
 | `text.normalize(s)`, `text.ngrams(s[, n])` | the normalized text, its n-grams |
 | `text.similarity(a, b[, measure])` | any measure by name: `exact`, `edit`, `jaro`, `jaro_winkler` (default), `dice`, `bigram`, `jaccard`, `tokens` (shared words), `lcs`, `soundex`, `phonetic_es`, `date` (1 the same day, 0.8 with day and month swapped, falling to 0 a year apart), `number` |
-| `apoc.text.levenshteinDistance`, `levenshteinSimilarity`, `jaroWinklerDistance`, `sorensenDiceSimilarity`, `phonetic` | the same under APOC's names |
 
 ```text
 RETURN text.jaroWinkler('martha', 'marhta');                   // 0.961
@@ -722,7 +722,7 @@ may: `manage_accounts` for users and for giving roles to them,
 superusers. These statements need no privilege on the namespace they are
 sent to. Names with `-`, and namespace patterns, are quoted.
 
-```cypher
+```text
 CREATE USER ana SET PASSWORD $password;          // a user signs in
 CREATE SERVICE ACCOUNT indexer;                 // a service account uses API keys
 ALTER USER ana SET STATUS SUSPENDED;            // or ACTIVE; ends its sessions
@@ -753,7 +753,7 @@ Record policies (14.4) limit a role to the records that match a condition,
 for reads, writes or both; they narrow, like denials, so a record must
 match every policy that covers it:
 
-```cypher
+```text
 RESTRICT analyst ON NAMESPACE crm NODES Customer WHERE tenant = $account.tenant;
 RESTRICT writer ON NAMESPACE 'team-*' FOR WRITES WHERE @recorded_by = current_user();
 RESTRICT auditor ON NAMESPACE crm FOR READS WHERE region = 'eu';
@@ -774,7 +774,7 @@ privilege; records it may not see are not matched.
 The audit log (14.5) is read with `db.audit(since, limit)`, by an account
 with the `audit` privilege:
 
-```cypher
+```text
 CALL db.audit(0, 1000) YIELD seq, at, kind, account, via, address, target, outcome, detail
 WHERE kind IN ['signin_failed', 'lockout', 'refused']
 RETURN seq, at, kind, target, address ORDER BY seq DESC LIMIT 20;
@@ -787,17 +787,16 @@ statement the caller may not run says which privilege it lacks, in a
 (`EXPLAIN MATCH (n) DETACH DELETE n` names `create`, `update` or `delete`
 when one is missing).
 
-## Differences from Cypher
+## Choices to know
 
 These are pinned in `crates/grafeno-query/tests/conformance/scenarios.txt`,
-which holds hand-written scenarios in the openCypher TCK's form. The
-official TCK has not been run against Grafeno.
+the language's conformance scenarios.
 
 - Every node needs a label: `CREATE ({n: 1})` is refused.
 - A variable-length edge reaches each end node once, at its shortest
-  distance. Cypher returns every path, so where it gives several rows
-  Grafeno gives one, and `(a)-[:T*2]->(x)` does not find a node that also
-  has a shorter way from `a`.
+  distance, not once per path: where several paths lead to a node there is
+  one row, and `(a)-[:T*2]->(x)` does not find a node that also has a
+  shorter way from `a`.
 - `allShortestPaths` therefore gives one path per end.
 - `id(x)` is a string (a UUID), not an integer.
 
@@ -805,7 +804,7 @@ official TCK has not been run against Grafeno.
 
 - `UNION` inside `CALL { … }`, `IN TRANSACTIONS`, and path variables in
   `CREATE` and `MERGE`.
-- The Bolt protocol: Neo4j drivers cannot connect.
+- A binary wire protocol: clients use the HTTP API or MCP.
 - Indexes on several properties at once, or on edge properties.
 - Graph algorithms over several namespaces at once. Hybrid recall is in
   the shell's `\recall` and `\context`, and in the HTTP API.

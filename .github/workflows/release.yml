@@ -85,7 +85,7 @@ jobs:
             & $iscc /Q "/DAppVersion=$version" packaging\windows\grafeno.iss
           }
           New-Item -ItemType Directory -Force dist\zip | Out-Null
-          Copy-Item target\release\grafeno.exe, README.md dist\zip\
+          Copy-Item target\release\grafeno.exe, README.md, LICENSE-MIT, LICENSE-APACHE dist\zip\
           Compress-Archive -Path dist\zip\* -DestinationPath dist\grafeno-x86_64-pc-windows-msvc.zip
           $setup = "grafeno-$version-windows-x64-setup.exe"
           # The setup also under a name without the version: what links to

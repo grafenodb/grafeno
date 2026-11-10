@@ -1119,7 +1119,7 @@ impl Parser<'_> {
                     "shortestPath takes one edge pattern: shortestPath((a)-[:knows*]-(b))",
                 ));
             }
-            // As in Cypher, a single edge without `*` is one hop.
+            // A single edge without `*` is one hop.
             if steps[0].0.length.is_none() {
                 steps[0].0.length = Some((1, Some(1)));
             }
@@ -1889,7 +1889,7 @@ mod tests {
     }
 
     #[test]
-    fn parses_the_cypher_clauses() {
+    fn parses_the_clauses() {
         let clauses = clauses(
             "MATCH (a) OPTIONAL MATCH (a)-[:x]->(b) WITH a, count(b) AS n WHERE n > 1
              UNWIND [1, 2] AS i CALL db.labels() YIELD label AS l WHERE l <> 'X'

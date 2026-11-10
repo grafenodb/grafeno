@@ -1,4 +1,4 @@
-//! Functions of common Cypher that the core evaluator does not need:
+//! Functions of GQ that the core evaluator does not need:
 //! paths, more list and string functions, conversions and trigonometry.
 //! A `null` argument gives `null` (checked before these run).
 

@@ -522,7 +522,7 @@ fn text_similarity_functions() {
         serde_json::json!([3, 1, 0.961, "R163", true, "ana garcia", 1.0, 4, null, 4])
     );
     let row = rows(
-        "RETURN apoc.text.levenshteinDistance('a', 'b'), text.similarity('1990-03-12', '1990-12-03', 'date'), \
+        "RETURN text.levenshtein('a', 'b'), text.similarity('1990-03-12', '1990-12-03', 'date'), \
          text.dice('ana garcia', 'ana garcia')",
     );
     assert_eq!(row, serde_json::json!([1, 0.8, 1.0]));

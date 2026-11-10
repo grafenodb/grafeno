@@ -21,7 +21,7 @@ and an `own_only` rule (change only what you recorded). The token in
 `grafeno.toml` is the owner; a server without one is open until its first
 key. Every surface (HTTP, MCP, shell, GQ, export, the desktop bridge)
 checks the same grants, and writes record who made them (`recorded_by`).
-What is missing next to a database such as PostgreSQL or Neo4j: people who
+What is missing next to a mature database server: people who
 sign in with a password and get a session, roles you define and nest,
 privileges finer than three levels (per operation, per label, per
 property, per record), `GRANT` and `REVOKE` in the query language, expiry
@@ -159,8 +159,8 @@ As built (`grafeno/src/access.rs`, `grafeno-server/src/auth.rs`,
   account has) and roles defined by administrators. Roles are granted to
   accounts and to other roles (a hierarchy, cycles refused); an account's
   rights are the union of its roles'. Privileges can be granted and, where
-  a broad grant needs an exception, denied; a denial wins over any grant
-  (as in Neo4j), so "read everything in `crm` except `Salary`" is one grant
+  a broad grant needs an exception, denied; a denial wins over any grant,
+  so "read everything in `crm` except `Salary`" is one grant
   and one denial.
 - Effective rights are computed once per account and cached, recomputed
   when a grant changes, so checking a request stays a lookup.
@@ -347,8 +347,8 @@ the Studio's Access view):
   changes nothing and fails with the privilege it lacks.
 - Record-level policies, generalizing `own_only`: a role can be limited to
   records that match a condition (`n.@recorded_by = current_user()`,
-  `n.tenant = $account.tenant`), for reads, writes or both, as
-  PostgreSQL's row-level security does.
+  `n.tenant = $account.tenant`), for reads, writes or both (row-level
+  security).
 - Done when: the leak matrix covers every privilege on every surface, and
   property tests check that random queries under random rights never return
   a hidden node, edge or property, and never change one; the overhead of
@@ -371,7 +371,7 @@ routes):
   `@recorded_by = current_user()`, or a property equal to the caller's
   name, one of its attributes (`$account.team`, `Account.attributes`, new)
   or a value. They narrow, like denials: a record must match every policy
-  that covers it (PostgreSQL's restrictive policies), so a role cannot
+  that covers it (restrictive policies), so a role cannot
   widen what another one limited. In GQ: `RESTRICT role ON NAMESPACE p
   [NODES Label] [FOR READS | FOR WRITES] WHERE …`, `UNRESTRICT …`, `ALTER
   USER … SET ATTRIBUTE key = value`; `SHOW PRIVILEGES FOR` lists policies.
@@ -516,7 +516,7 @@ As built (`grafeno/src/audit.rs`, the access tables' writes,
   member's standard error).
 
 Identities from outside (OpenID Connect, client certificates) are not
-planned: as in PostgreSQL or Oracle, the accounts are the engine's own,
+planned: as in most database servers, the accounts are the engine's own,
 created in the engine (`CREATE USER`, `grafeno users`). An application with
 its own users signs them in itself and reaches Grafeno as its accounts.
 

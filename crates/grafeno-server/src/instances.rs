@@ -1,7 +1,6 @@
-//! Instances of the engine on one machine (phase 15.2), as PostgreSQL's
-//! clusters are: `grafeno setup` initializes one (as `initdb` and
-//! `postgresql-setup` do), `grafeno instances` lists, drops and rolls them
-//! back, and `grafeno doctor` checks them.
+//! Instances of the engine on one machine (phase 15.2), each a database
+//! server of its own: `grafeno setup` initializes one, `grafeno instances`
+//! lists, drops and rolls them back, and `grafeno doctor` checks them.
 //!
 //! On Linux an instance is a settings file in `/etc/grafeno` and a systemd
 //! unit: `default` is `grafeno.toml`, served by `grafeno.service` with its

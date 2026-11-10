@@ -2,6 +2,7 @@
   "name": "grafeno-client",
   "version": "0.2.0",
   "description": "TypeScript client for the Grafeno HTTP API",
+  "license": "MIT OR Apache-2.0",
   "type": "module",
   "exports": {
     ".": {

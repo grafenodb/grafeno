@@ -23,7 +23,7 @@ all-or-nothing, a read sees whole transactions, an acknowledged write is
 never lost).
 
 The guidelines of phases 10 to 12 hold (local, agent-agnostic, CPU only),
-plus: no external coordinator (no etcd, no ZooKeeper, no shared disk), one
+plus: no external coordinator (no separate consensus service, no shared disk), one
 binary, and a single server keeps working exactly as now, with the cluster
 off. Each step ends with tests (fault injection where it applies), a
 measurement, documentation and its own commit.
@@ -143,9 +143,9 @@ As built (`crates/grafeno/src/replication.rs`, layout version 14):
   timeouts, log replication with quorum commit, a pre-vote phase so that a
   member that was cut off does not depose a working leader on return, and
   membership changes (joint consensus) to add, remove or replace a member
-  without stopping. To evaluate first: `openraft` (an async Rust
-  implementation used in production) against writing the protocol, which is
-  small but subtle; the choice is recorded here with its reasons.
+  without stopping. To evaluate first: an existing async Rust library
+  against writing the protocol, which is small but subtle; the choice is
+  recorded here with its reasons.
 - The leader's writer proposes each group and acknowledges its writes once
   the entry is committed (a majority has it durably); followers apply
   committed entries in order. Durability settings (immediate, eventual)
@@ -165,7 +165,7 @@ As built (`crates/grafeno/src/replication.rs`, layout version 14):
 As built (`crates/grafeno-raft`, `crates/grafeno-cluster`,
 `crates/grafeno-server/src/cluster.rs`):
 
-- The choice: Raft written here, not `openraft`. As a deterministic state
+- The choice: Raft written here, not an existing library. As a deterministic state
   machine (`Raft::tick`, `step`, `propose`, `change_membership`, `compact`,
   and a `Ready` with the hard state and entries to persist, the messages to
   send after persisting, and the committed entries to apply), the protocol
@@ -266,7 +266,7 @@ As built (`crates/grafeno-raft`, `crates/grafeno-cluster`,
 - Done when: fault injection on real processes (a docker compose of three
   and five members, killing, pausing and partitioning them with
   `iptables`/`tc`) under a workload of reads and writes, checked by a
-  linearizability checker (registers and counters, as Jepsen does), finds
+  linearizability checker (registers and counters), finds
   no anomaly; failover time and lost availability measured.
 
 As built (`crates/grafeno-raft`, `crates/grafeno-cluster`,
@@ -428,7 +428,7 @@ As built (`crates/grafeno-query/src/split.rs`, `grafeno-cluster`,
 - Reads spread: the TypeScript client with `spread: true` starts each
   request on the next member (writes are forwarded, and read-your-writes
   holds through positions). No server-side balancing.
-- Equality: the conformance, planner, Cypher, query, traversal and batch
+- Equality: the conformance, planner, language, query, traversal and batch
   suites check every read that can be split, whole against 2, 3 and 5
   parts sent through JSON (70 of the 146 conformance scenarios split; the
   others write, or start without a `MATCH`); a control that merges the

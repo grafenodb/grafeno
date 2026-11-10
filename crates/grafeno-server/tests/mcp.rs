@@ -465,7 +465,7 @@ fn agents_are_fenced_and_recorded() {
     let server = McpServer::new(db, "agent".into()).with_access(McpAccess {
         allow: vec!["agent".into(), "team-*".into()],
         read_only: false,
-        actor: Some(grafeno::Actor::new("claude")),
+        actor: Some(grafeno::Actor::new("assistant")),
     });
     let call = |name: &str, arguments: serde_json::Value| {
         let request = serde_json::json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": { "name": name, "arguments": arguments } });
@@ -480,7 +480,7 @@ fn agents_are_fenced_and_recorded() {
         "query",
         serde_json::json!({ "query": "MATCH (n:Note) RETURN n.@recorded_by" }),
     );
-    assert!(who.to_string().contains("claude"), "{who}");
+    assert!(who.to_string().contains("assistant"), "{who}");
     let fenced = call(
         "recall",
         serde_json::json!({ "query": "Rust", "namespace": "other" }),

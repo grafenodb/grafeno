@@ -111,7 +111,7 @@ pub(crate) const PROCEDURES: &[Procedure] = &[
     },
 ];
 
-/// Accepted alternative names, from Cypher.
+/// Accepted alternative names.
 fn canonical(name: &str) -> &str {
     match name {
         "db.relationshiptypes" => "db.edgelabels",

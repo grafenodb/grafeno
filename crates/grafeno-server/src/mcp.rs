@@ -1529,7 +1529,7 @@ fn tools() -> Value {
         {
             "name": "query",
             "title": "Query",
-            "description": "Run a read-only GQ query (Cypher-like) for structured questions, such as \
+            "description": "Run a read-only GQ query (graph patterns) for structured questions, such as \
                 MATCH (p:Person)-[:works_at]->(c) VALID AT '2024-01-01' RETURN p.name, c.name. \
                 Pseudo-properties: n.@id, n.@text, n.@importance, e.@valid_from, e.@valid_to. \
                 Also OPTIONAL MATCH, WITH (… WHERE for aggregates), UNWIND, UNION, CASE, list \

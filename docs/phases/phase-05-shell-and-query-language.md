@@ -4,7 +4,7 @@
 
 **Status:** done.
 
-`grafeno shell` (a console like `psql`, on a file or a server) and GQ, a Cypher-style language with time travel ([docs/query-language.md](../query-language.md)).
+`grafeno shell` (a console on a file or a server) and GQ, a declarative graph query language with time travel ([docs/query-language.md](../query-language.md)).
 
 ## Query language and shell (phase 5)
 
@@ -21,7 +21,7 @@
 - Grafeno-specific parts: pseudo-properties (`@id`, `@text`, `@embedding`,
   `@valid_from`, …), `RETRACT`, and `SET r.@valid_to` to invalidate a fact.
 - **Shell** (`grafeno shell`): a line editor (rustyline) with history,
-  statements ending with `;`, psql-style meta-commands, table or JSON
+  statements ending with `;`, backslash meta-commands, table or JSON
   output, and script mode. The same code drives a file (through the
   library) or a server (through the HTTP API, with `ureq`).
 - GQ is also the HTTP API's `POST /v1/{ns}/query` and the MCP `query`

@@ -19,9 +19,9 @@ presentan el proyecto y los primeros pasos.
   listings, integrity check and index rebuild, export/import, and property,
   durability and concurrency tests plus benchmarks
   ([docs/benchmarks.md](benchmarks.md)).
-- **Phase 5, shell and query language:** `grafeno shell`, a console like
-  `psql` for a file or a server, and [GQ](query-language.md), a
-  Cypher-style language with time travel (`VALID AT`, `KNOWN AT`).
+- **Phase 5, shell and query language:** `grafeno shell`, a console for
+  a file or a server, and [GQ](query-language.md), a declarative graph
+  query language with time travel (`VALID AT`, `KNOWN AT`).
 - **Phase 6, Studio and installers:** Grafeno Studio, the web interface
   (explorer, graph view with time travel, query editor, search and context
   lab, administration) served by `grafeno serve` at `/studio/`; a Windows
@@ -144,11 +144,11 @@ presentan el proyecto y los primeros pasos.
   `changes` tool; NDJSON ingestion with idempotency keys; extraction and
   community summaries can follow the log in the background
   (`[background]`).
-- **Phase 12.1, wider Cypher and tools:** path variables, `shortestPath`,
+- **Phase 12.1, a wider query language and tools:** path variables, `shortestPath`,
   `CALL { … }`, `COUNT { … }`, pattern comprehensions, map projections,
   `=~` and more functions; import and export in CSV and GraphML; 146
-  hand-written conformance scenarios in the TCK's form (the official TCK is
-  not run, and Bolt is not built).
+  hand-written conformance scenarios (no external conformance suite is run,
+  and no binary wire protocol is built).
 - **Phase 12.2, query optimization and concurrency:** planner statistics
   (common values and buckets per index, edge degrees by direction) kept in
   memory and rebuilt as data drifts; starts and pattern order by estimated
@@ -236,14 +236,14 @@ presentan el proyecto y los primeros pasos.
 
 - **Phase 15.1, the engine alone:** the engine has no interface; Grafeno
   Studio and the desktop app moved to their own repository (Grafeno Studio), to
-  be installed on their own, as pgAdmin is next to PostgreSQL. The engine's
+  be installed on their own as a separate product. The engine's
   packages install the engine only.
 
 - **Phase 15.2, the engine installed like a database server:** a
   one-liner that adds signed APT and DNF repositories and installs the
   package (x86_64 and aarch64), or the static binary with a system or user
-  service, checking checksums and signatures; `grafeno setup` (instances
-  as PostgreSQL clusters, `grafeno@<name>.service`), `grafeno instances`
+  service, checking checksums and signatures; `grafeno setup` (several
+  instances on one machine, `grafeno@<name>.service`), `grafeno instances`
   and `grafeno doctor`; the engine copies a database before upgrading its
   layout, and `grafeno instances rollback` goes back; AppArmor and SELinux
   policies; a guided Windows setup with a virtual service account, the
@@ -270,6 +270,11 @@ presentan el proyecto y los primeros pasos.
   release apart, and install side by side without touching each other's
   files or data, as tests on Debian and Fedora show.
 
-Next, phase 16:
-integrations (Grafito, Python bindings). The plan is in
+- **Phase 16.1, a free license and documentation about Grafeno only:** MIT
+  or Apache-2.0 everywhere a package carries metadata; the documentation
+  and sources name no other product (a test checks it); GQ is named on its
+  own; the compatibility aliases of the text functions are gone.
+
+Next, the rest of phase 16 (data model, search, analysis and events), then
+phase 17: integrations (client libraries for more languages). The plan is in
 [docs/phases](phases/README.md), one file per phase.

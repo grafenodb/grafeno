@@ -6,7 +6,7 @@
 ; grafeno-server). The engine alone: Grafeno Studio is installed apart.
 ; The installer writes dist\grafeno-<version>-windows-x64-setup.exe.
 ;
-; A guided setup, as PostgreSQL's is: the program folder, the data folder,
+; A guided setup: the program folder, the data folder,
 ; the port, whether other computers may connect (with a firewall rule), the
 ; account the service runs as, the first administrator, the service and the
 ; PATH. Unattended, the same answers are parameters:
@@ -52,6 +52,7 @@ SolidCompression=yes
 ChangesEnvironment=yes
 WizardStyle=modern
 SetupIconFile=grafeno.ico
+LicenseFile=license.txt
 UninstallDisplayIcon={app}\grafeno.exe
 UninstallDisplayName=Grafeno {#AppVersion}
 SetupLogging=yes
@@ -68,6 +69,8 @@ Name: path; Description: "Add grafeno to the system PATH (to use it from any ter
 [Files]
 Source: "..\..\target\release\grafeno.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\..\README.md"; DestDir: "{app}"; DestName: "README.md"; Flags: ignoreversion
+Source: "..\..\LICENSE-MIT"; DestDir: "{app}"; DestName: "LICENSE-MIT.txt"; Flags: ignoreversion
+Source: "..\..\LICENSE-APACHE"; DestDir: "{app}"; DestName: "LICENSE-APACHE.txt"; Flags: ignoreversion
 Source: "..\..\docs\install.md"; DestDir: "{app}\docs"; Flags: ignoreversion
 Source: "..\..\docs\query-language.md"; DestDir: "{app}\docs"; Flags: ignoreversion
 

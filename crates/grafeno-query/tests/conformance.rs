@@ -1,5 +1,5 @@
-//! Runs `conformance/scenarios.txt`: Cypher scenarios in the style of the
-//! openCypher TCK, written by hand (not the official TCK's files). Every
+//! Runs `conformance/scenarios.txt`: GQ's conformance scenarios (a graph, a
+//! query, the expected result), written by hand. Every
 //! scenario runs on a new database; all failures are listed together.
 
 mod common;
@@ -8,7 +8,7 @@ use grafeno::Grafeno;
 use grafeno_query::{Params, execute};
 use serde_json::Value as Json;
 
-const NS: &str = "tck";
+const NS: &str = "conformance";
 const SCENARIOS: &str = include_str!("conformance/scenarios.txt");
 
 #[derive(Default)]

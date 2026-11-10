@@ -4,6 +4,8 @@ description = "Grafeno servers kept in sync by Raft"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
 
 [dependencies]
 grafeno.workspace = true

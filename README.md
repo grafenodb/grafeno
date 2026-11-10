@@ -14,13 +14,12 @@
 
 Grafeno is a **Rust graph engine for agent memory and knowledge**. It connects
 entities, documents and facts; preserves provenance and history; and combines
-text, vector and graph retrieval to assemble context. Its first client is
-[Grafito](https://github.com/Seerendo/grafito).
+text, vector and graph retrieval to assemble context.
 
-Grafeno is the engine alone, as PostgreSQL is: a server (HTTP API, MCP for
-agents, clustering), a console (`grafeno shell`) and administration commands,
-with no graphical interface. **Grafeno Studio**, the interface, is a separate
-product installed on its own (as pgAdmin is), and connects to engines through
+Grafeno is the engine alone, as a database server is: a server (HTTP API,
+MCP for agents, clustering), a console (`grafeno shell`) and administration
+commands, with no graphical interface. **Grafeno Studio**, the interface, is
+a separate product installed on its own, and connects to engines through
 their API like any other client. Grafeno also embeds as a Rust library.
 
 ## What you can do
@@ -31,7 +30,7 @@ their API like any other client. Grafeno also embeds as a Rust library.
 | **Query the past** | Distinguish when a fact was valid from when the system knew it using `VALID AT` and `KNOWN AT`. |
 | **Retrieve context** | Combine BM25 text search, HNSW vectors and graph expansion; pack context into a token budget. |
 | **Maintain memory** | Resolve entities, review possible duplicates, record reversible merges and summarize communities without a model. |
-| **Query** | GQ, a Cypher-like language, from the console, the HTTP API, MCP or any client. |
+| **Query** | GQ, Grafeno's declarative graph query language, from the console, the HTTP API, MCP or any client. |
 | **Operate the database** | Accounts that sign in, roles with grants and denials down to labels, properties and records, API keys, backups, import and export, integrity checks and index rebuilds. |
 | **Run a cluster** | Several servers kept in sync with Raft: a leader elected, failover, linearizable reads, large reads split across members, namespaces on several groups. |
 
@@ -42,7 +41,8 @@ aarch64 (signed APT and DNF repositories, `.deb`, `.rpm`, and a `curl`
 one-liner that also suits AlmaLinux, Rocky and RHEL) and a `.tar.gz`: see
 the [installation guide](docs/install.md). The engine runs as a service on
 `127.0.0.1:7810`; its settings are in `grafeno.toml`. `grafeno setup` adds
-instances, as PostgreSQL clusters are, and `grafeno doctor` checks them.
+instances (several databases on one machine, each with its own service),
+and `grafeno doctor` checks them.
 The engine's releases are tagged `v<version>`; what each one
 changes is in [CHANGELOG.md](CHANGELOG.md).
 
@@ -68,7 +68,7 @@ grafeno shell --db ejemplo.redb -n demo
 
 Create a person and a relationship with a starting date:
 
-```cypher
+```text
 CREATE (a:Person {name: 'Ana'})
   -[:works_at {@valid_from: '2024-01-01'}]->
   (h:Organization {name: 'Hospital Central'})
@@ -77,7 +77,7 @@ RETURN a.name, h.name;
 
 Query what was valid on a particular date:
 
-```cypher
+```text
 MATCH (p:Person)-[r:works_at]->(o:Organization)
 VALID AT '2024-06-01'
 RETURN p.name, o.name, r.@valid_from;
@@ -151,7 +151,13 @@ Embeddings are provided by the client. Context uses an estimated token count by
 default; the Rust library accepts a model-specific counter. The engine supports
 multiple readers and one writer per Raft group; a cluster replicates every
 write to its members (phase 13).
-The license remains an open decision in the design.
+
+## License
+
+Grafeno is free software, licensed under either of the
+[MIT license](LICENSE-MIT) or the [Apache License 2.0](LICENSE-APACHE), at
+your option. Unless you say otherwise, a contribution you submit is
+licensed the same way.
 
 Created by [Seerendo](https://github.com/Seerendo). The visual identity depicts
 three fused carbon rings from a graphene lattice.

@@ -1,6 +1,5 @@
-# Cypher conformance scenarios, in the style of the openCypher TCK:
-# a graph, a query, the expected result. Written by hand from the language's
-# semantics; these are NOT the official TCK's files. Each scenario runs on a
+# GQ's conformance scenarios: a graph, a query, the expected result.
+# Written by hand from the language's semantics. Each scenario runs on a
 # new database.
 #
 #   === name
@@ -16,8 +15,7 @@
 # return properties rather than whole records.
 #
 # Grafeno's model needs a label on every node, so the graphs are built with
-# `:N` where Cypher would allow none (see "Differences from Cypher" in
-# docs/query-language.md).
+# `:N` (see "Choices to know" in docs/query-language.md).
 
 # ---------------------------------------------------------------- MATCH
 
@@ -686,30 +684,29 @@ then error: needs a name
 when: unwind [1] as x return x
 then: [[1]]
 
-# ---------------------------------------------------------------- differences
-# Where Grafeno differs from Cypher on purpose, pinned so a change is seen.
-# Each says what Cypher gives.
+# ---------------------------------------------------------------- choices
+# Choices GQ makes on purpose, pinned so a change is seen.
 
-=== difference: every new node needs a label (Cypher allows none)
+=== choice: every new node needs a label
 when: CREATE ({n: 1})
 then error: at least one label
 
-=== difference: a variable-length edge reaches each end once (Cypher: 2 rows, one per path)
+=== choice: a variable-length edge reaches each end once, not once per path
 given: CREATE (a:N {n: 1}), (b:N {n: 2}), (c:N {n: 3}), (d:N {n: 4}), (a)-[:T]->(b), (a)-[:T]->(c), (b)-[:T]->(d), (c)-[:T]->(d)
 when: MATCH ({n: 1})-[:T*2]->(x) RETURN x.n
 then: [[4]]
 
-=== difference: a longer way to a closer node is not found (Cypher: [[3]])
+=== choice: a longer way to a closer node is not followed
 given: CREATE (a:N {n: 1}), (b:N {n: 2}), (c:N {n: 3}), (a)-[:T]->(b), (b)-[:T]->(c), (a)-[:T]->(c)
 when: MATCH ({n: 1})-[:T*2]->(x) RETURN x.n
 then: []
 
-=== difference: allShortestPaths gives one path per end (Cypher: 2 rows)
+=== choice: allShortestPaths gives one path per end
 given: CREATE (a:N {n: 1}), (b:N {n: 2}), (c:N {n: 3}), (d:N {n: 4}), (a)-[:T]->(b), (a)-[:T]->(c), (b)-[:T]->(d), (c)-[:T]->(d)
 when: MATCH p = allShortestPaths(({n: 1})-[:T*]->({n: 4})) RETURN length(p)
 then: [[2]]
 
-=== difference: ids are strings (Cypher: integers)
+=== choice: ids are strings (UUIDs)
 given: CREATE (:N {n: 1})
 when: MATCH (a) RETURN size(id(a))
 then: [[36]]

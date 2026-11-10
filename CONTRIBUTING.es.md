@@ -78,3 +78,15 @@ Estas comprobaciones no sustituyen las pruebas de los instaladores en máquinas
 limpias. Trabaja en una rama y abre un PR acotado. Describe el problema, el
 comportamiento resultante y las comprobaciones ejecutadas, incluyendo las que
 no pudiste realizar. Conserva los nombres técnicos y comandos del proyecto.
+
+## Licencia
+
+Grafeno tiene licencia MIT (`LICENSE-MIT`) o Apache 2.0 (`LICENSE-APACHE`),
+a tu elección. Salvo que indiques lo contrario, toda contribución que envíes
+para incluirla queda bajo las mismas licencias, sin términos ni condiciones
+adicionales.
+
+La documentación y el código describen Grafeno por sí mismo: sin nombrar
+otras empresas, productos, aplicaciones cliente ni videojuegos (los sistemas
+operativos y las dependencias de Grafeno sí se nombran).
+`crates/grafeno/tests/names.rs` lo comprueba.

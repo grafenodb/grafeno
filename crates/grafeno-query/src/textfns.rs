@@ -1,5 +1,4 @@
 //! Text similarity in GQ: `text.*` functions over `grafeno::textsim`, and
-//! the `apoc.text.*` names other tools use for the same measures.
 //!
 //! A `null` argument gives `null`, as other functions do.
 
@@ -37,17 +36,10 @@ pub(crate) fn function(name: &str, args: &[Value]) -> Option<Result<Value, Query
     let (min, max) = match name {
         "text.normalize" | "text.soundex" => (1, 1),
         "text.phonetic" | "text.ngrams" => (1, 2),
-        "text.levenshtein"
-        | "text.damerau"
-        | "text.jaro"
-        | "text.jarowinkler"
-        | "text.lcs"
-        | "apoc.text.levenshteindistance"
-        | "apoc.text.levenshteinsimilarity"
-        | "apoc.text.sorensendicesimilarity"
-        | "apoc.text.jarowinklerdistance" => (2, 2),
+        "text.levenshtein" | "text.damerau" | "text.jaro" | "text.jarowinkler" | "text.lcs" => {
+            (2, 2)
+        }
         "text.dice" | "text.jaccard" | "text.similarity" => (2, 3),
-        "apoc.text.phonetic" => (1, 1),
         _ => return None,
     };
     Some(run(name, args, min, max))
@@ -67,8 +59,7 @@ fn run(name: &str, args: &[Value], min: usize, max: usize) -> Result<Value, Quer
     }
     // The strings compared: one or two; a null among them gives null.
     let strings = match name {
-        "text.normalize" | "text.soundex" | "text.phonetic" | "text.ngrams"
-        | "apoc.text.phonetic" => 1,
+        "text.normalize" | "text.soundex" | "text.phonetic" | "text.ngrams" => 1,
         _ => 2,
     };
     if args[..strings].iter().any(Value::is_null) {
@@ -78,7 +69,7 @@ fn run(name: &str, args: &[Value], min: usize, max: usize) -> Result<Value, Quer
     let b = || text(name, &args[1]);
     Ok(match name {
         "text.normalize" => Value::Str(grafeno::normalize_name(a)),
-        "text.soundex" | "apoc.text.phonetic" => Value::Str(textsim::soundex(a)),
+        "text.soundex" => Value::Str(textsim::soundex(a)),
         "text.phonetic" => {
             let language = match args.get(1) {
                 None | Some(Value::Null) => "es",
@@ -102,27 +93,12 @@ fn run(name: &str, args: &[Value], min: usize, max: usize) -> Result<Value, Quer
             grams.sort();
             Value::List(grams.into_iter().map(Value::Str).collect())
         }
-        "text.levenshtein" | "apoc.text.levenshteindistance" => {
-            Value::Int(textsim::levenshtein(a, b()?) as i64)
-        }
+        "text.levenshtein" => Value::Int(textsim::levenshtein(a, b()?) as i64),
         "text.damerau" => Value::Int(textsim::damerau_levenshtein(a, b()?) as i64),
-        "apoc.text.levenshteinsimilarity" => {
-            let (a, b) = (a, b()?);
-            let longest = a.chars().count().max(b.chars().count());
-            Value::Float(if longest == 0 {
-                1.0
-            } else {
-                1.0 - textsim::levenshtein(a, b) as f64 / longest as f64
-            })
-        }
         "text.lcs" => Value::Int(textsim::lcs(a, b()?) as i64),
         "text.jaro" => Value::Float(textsim::jaro(a, b()?)),
         "text.jarowinkler" => Value::Float(textsim::jaro_winkler(a, b()?)),
-        // APOC calls the Jaro-Winkler similarity a distance; it is the same
-        // number.
-        "apoc.text.jarowinklerdistance" => Value::Float(textsim::jaro_winkler(a, b()?)),
         "text.dice" => Value::Float(textsim::dice(a, b()?, count(name, args.get(2), 3)?)),
-        "apoc.text.sorensendicesimilarity" => Value::Float(textsim::dice(a, b()?, 2)),
         "text.jaccard" => Value::Float(textsim::jaccard(a, b()?, count(name, args.get(2), 3)?)),
         "text.similarity" => {
             let measure = match args.get(2) {

@@ -1410,7 +1410,7 @@ export class Namespace {
   }
 
   /**
-   * Runs one GQ statement (Cypher-like), such as
+   * Runs one GQ statement, such as
    * `MATCH (p:Person)-[:works_at]->(c) RETURN p.name, c.name`. Statements
    * with writes run in one transaction.
    */

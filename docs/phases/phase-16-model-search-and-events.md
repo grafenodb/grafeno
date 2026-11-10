@@ -2,7 +2,7 @@
 
 [All phases](README.md) · [← Phase 15: Engine and interface apart](phase-15-engine-and-interface-apart.md) · [Phase 17: Integrations →](phase-17-integrations.md)
 
-**Status:** planned, in ten steps.
+**Status:** in progress: 16.1 done.
 
 What the engine still lacks as a database people build on: a free
 license, null as a value, namespaces made from scripts, transactions that
@@ -16,7 +16,7 @@ listed in the change log of the release that brings it.
 
 Steps:
 
-- [16.1 A free license, and documentation about Grafeno only (planned)](#161-a-free-license-and-documentation-about-grafeno-only-planned)
+- [16.1 A free license, and documentation about Grafeno only (done)](#161-a-free-license-and-documentation-about-grafeno-only-done)
 - [16.2 Null as a stored value (planned)](#162-null-as-a-stored-value-planned)
 - [16.3 Namespaces from scripts (planned)](#163-namespaces-from-scripts-planned)
 - [16.4 Explicit transactions (planned)](#164-explicit-transactions-planned)
@@ -33,7 +33,7 @@ the user's choice; null is stored as a value; transactions become explicit
 the new events are off by default. The documentation names no other
 company, product or game.
 
-## 16.1 A free license, and documentation about Grafeno only (planned)
+## 16.1 A free license, and documentation about Grafeno only (done)
 
 **Where it starts from.** The repository has no license file; the Linux
 packages say `license = "Unspecified"` and the crates say nothing. The
@@ -57,6 +57,38 @@ integrations, in the history and in the READMEs).
 
 Done when: the license files and fields are everywhere a package carries
 metadata, the deny-list test passes, and nothing else changes.
+
+As built:
+
+- `LICENSE-MIT` (copyright "The Grafeno authors") and `LICENSE-APACHE`;
+  `license = "MIT OR Apache-2.0"` and `repository` in `[workspace.package]`,
+  inherited by every crate; the `.deb` installs both texts in
+  `/usr/share/doc/grafeno`, the `.rpm` in `/usr/share/licenses/grafeno`;
+  the `.tar.gz` and the Windows zip carry them; the Windows setup shows a
+  license page (`packaging/windows/license.txt`) and installs both texts;
+  the winget manifest and the TypeScript client say the same. "License"
+  sections in both READMEs and both CONTRIBUTING files.
+- The owner's choices on naming (2026-11-10): the query language is
+  called GQ only, described as Grafeno's declarative graph query
+  language, and the documentation's "Differences" section became "Choices
+  to know", stating GQ's own semantics; the compatibility aliases of the
+  text-similarity functions (five names outside the `text.` prefix) were
+  removed (a change listed in `CHANGELOG.md`). Two test files were renamed
+  `language.rs` and `language_more.rs`; the conformance scenarios' choices
+  are named `choice: …`.
+- About 140 mentions rewritten in the READMEs, `DESIGN.md`, the change
+  log, the guides, the phase files, the server's README (the MCP section
+  shows a client configuration without naming a client), help texts, the
+  MCP tool descriptions, comments and test names. Kept: operating systems
+  and distributions (the installation guide needs them, "Oracle Linux"
+  included), standards (SQL, GraphML, CSV, MCP, Raft) and Grafeno's own
+  dependencies.
+- `crates/grafeno/tests/names.rs` walks every text file of the repository
+  (not `target`, `node_modules`, `dist` or `.git`) and fails on a short
+  deny list of names, matched without case at word boundaries, with the
+  platform exception above; a second test checks the matching itself.
+- Not covered by the test: the separate documentation site, whose same
+  pass is left uncommitted for its owner.
 
 ## 16.2 Null as a stored value (planned)
 

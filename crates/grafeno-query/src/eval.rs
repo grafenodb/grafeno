@@ -733,7 +733,7 @@ pub(crate) fn eval(ctx: &Context, expr: &Expr, scope: Scope) -> Result<Value, Qu
                     None => unknown += 1,
                 }
             }
-            // Three-valued, as in Cypher: unknown items make the answer
+            // Three-valued: unknown items make the answer
             // unknown unless the known ones already decide it.
             Ok(match quantifier {
                 Quantifier::All if no > 0 => Value::Bool(false),
@@ -923,7 +923,7 @@ fn binary(op: BinOp, left: &Value, right: &Value) -> Result<Value, QueryError> {
         BinOp::Mul => arithmetic(op, left, right, i64::checked_mul, |a, b| a * b)?,
         BinOp::Div => arithmetic(op, left, right, i64::checked_div, |a, b| a / b)?,
         BinOp::Mod => arithmetic(op, left, right, i64::checked_rem, |a, b| a % b)?,
-        // As in Cypher, `^` always gives a float.
+        // `^` always gives a float.
         BinOp::Pow => match (number(left), number(right)) {
             (Some(a), Some(b)) => Value::Float(a.powf(b)),
             _ => {
@@ -985,7 +985,7 @@ fn binary(op: BinOp, left: &Value, right: &Value) -> Result<Value, QueryError> {
     })
 }
 
-/// Whether the whole of `text` matches `pattern` (as Cypher's `=~`).
+/// Whether the whole of `text` matches `pattern` (GQ's `=~`).
 /// Compiled expressions are kept per thread; their size is bounded, and
 /// matching takes linear time, so a pattern cannot stall a query.
 fn regex_matches(pattern: &str, text: &str) -> Result<bool, QueryError> {
@@ -1719,12 +1719,10 @@ fn function(ctx: &Context, name: &str, args: Vec<Value>) -> Result<Value, QueryE
             }
             Value::List(out)
         }
-        other if other.starts_with("text.") || other.starts_with("apoc.text.") => {
-            match crate::textfns::function(other, &args) {
-                Some(result) => result?,
-                None => return Err(error(format!("unknown function {other}()"))),
-            }
-        }
+        other if other.starts_with("text.") => match crate::textfns::function(other, &args) {
+            Some(result) => result?,
+            None => return Err(error(format!("unknown function {other}()"))),
+        },
         // `toIntegerOrNull(x)` and the like: null instead of an error.
         other if other.ends_with("ornull") && other.starts_with("to") => {
             let base = &other[..other.len() - "ornull".len()];

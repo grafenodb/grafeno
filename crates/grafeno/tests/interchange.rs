@@ -175,7 +175,7 @@ fn files_from_other_tools() {
     );
     drop(read);
 
-    // GraphML as NetworkX writes it: keys d0, d1; undirected.
+    // GraphML as analysis libraries write it: keys d0, d1; undirected.
     let graphml = r#"<?xml version='1.0' encoding='utf-8'?>
 <graphml xmlns="http://graphml.graphdrawing.org/xmlns">
   <key id="d0" for="node" attr.name="name" attr.type="string"/>

@@ -4,6 +4,8 @@ description = "HTTP and MCP server for Grafeno"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
 
 build = "build.rs"
 
@@ -71,13 +73,15 @@ assets = [
     ["../../packaging/linux/stop-all.sh", "usr/share/grafeno/stop-all.sh", "755"],
     ["../../packaging/linux/apparmor/grafeno", "etc/apparmor.d/grafeno", "644"],
     ["../../README.md", "usr/share/doc/grafeno/README.md", "644"],
+    ["../../LICENSE-MIT", "usr/share/doc/grafeno/LICENSE-MIT", "644"],
+    ["../../LICENSE-APACHE", "usr/share/doc/grafeno/LICENSE-APACHE", "644"],
 ]
 
 # `cargo generate-rpm`.
 [package.metadata.generate-rpm]
 name = "grafeno"
 summary = "Graph engine for agent memory and knowledge"
-license = "Unspecified"
+license = "MIT OR Apache-2.0"
 post_install_script = "../../packaging/linux/rpm/post.sh"
 pre_uninstall_script = "../../packaging/linux/rpm/preun.sh"
 post_uninstall_script = "../../packaging/linux/rpm/postun.sh"
@@ -89,6 +93,8 @@ assets = [
     { source = "../../packaging/linux/stop-all.sh", dest = "/usr/share/grafeno/stop-all.sh", mode = "755" },
     { source = "../../target/selinux/grafeno.pp", dest = "/usr/share/selinux/packages/grafeno.pp", mode = "644" },
     { source = "../../README.md", dest = "/usr/share/doc/grafeno/README.md", mode = "644", doc = true },
+    { source = "../../LICENSE-MIT", dest = "/usr/share/licenses/grafeno/LICENSE-MIT", mode = "644", doc = true },
+    { source = "../../LICENSE-APACHE", dest = "/usr/share/licenses/grafeno/LICENSE-APACHE", mode = "644", doc = true },
 ]
 
 [target.'cfg(windows)'.build-dependencies]

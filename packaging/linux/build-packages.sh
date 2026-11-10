@@ -25,7 +25,7 @@ for TARGET in $TARGETS; do
     staging="$(mktemp -d)"
     cp "target/$TARGET/release/grafeno" packaging/linux/grafeno.service \
         packaging/linux/grafeno@.service packaging/linux/setup.sh packaging/linux/stop-all.sh \
-        README.md "$staging/"
+        README.md LICENSE-MIT LICENSE-APACHE "$staging/"
     tar -czf "/out/grafeno-$TARGET.tar.gz" -C "$staging" .
     rm -rf "$staging"
 done

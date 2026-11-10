@@ -1,9 +1,8 @@
 # Grafeno design
 
 Grafeno is a graph database engine written in Rust, built as **memory and a
-knowledge base for agents**. Its first client is
-[Grafito](https://github.com/Seerendo/grafito), but it does not depend on it:
-any agent should be able to use it embedded (like SQLite), as a server, or over
+knowledge base for agents**. It depends on no particular application: any
+agent or program can use it embedded as a library, as a server, or over
 MCP.
 
 ## Goals
@@ -31,9 +30,9 @@ MCP.
 ### Out of scope (for now)
 
 - A custom storage engine (pager, WAL): an embedded KV store is used.
-- Full Cypher or GQL: GQ covers patterns, filters, aggregates and writes;
-  `OPTIONAL MATCH`, `MERGE`, `WITH` and the rest come when needed.
-- An external coordinator (etcd, ZooKeeper) or a distributed storage layer:
+- Every graph query form there is: GQ covers patterns, filters,
+  aggregates, subqueries and writes, and grows when a need is shown.
+- An external coordinator or a distributed storage layer:
   replication and failover (phase 13) live in the `grafeno` binary itself.
 - Splitting one namespace across servers: phase 13 replicates whole
   databases and, at most, places whole namespaces on different groups.
@@ -326,14 +325,14 @@ real binary. The ones that carry each guarantee:
 | Vector search keeps its quality | `grafeno/tests/vector_churn.rs` | deletes, reinserts, three rounds of churn and a compaction keep recall@10 at 0.95 or more, and reinserted vectors are found |
 | Records are matched by rule, with reasons | `grafeno/tests/resolve.rs`, `property_index.rs` (fuzzy), `src/textsim.rs` tests | measures against published values; strong keys decide either way; typos, swapped dates and namesakes; neighbors as evidence (and no links as no evidence); scans without indexes; pairs for deduplication; fuzzy indexes through updates, check and export |
 | Contradicting facts are ended, not lost | `grafeno/tests/constraints.rs` | invalidation as a new version (`KNOWN AT` sees what was believed), late facts shortened, facts without dates starting now, the same fact again, flag, reject, target and pair scopes, `own_only` agents flagged, existing contradictions, property history |
-| Common Cypher behaves as expected | `grafeno-query/tests/conformance.rs` (hand-written scenarios, not the official TCK), `cypher_more.rs`, `adversarial.rs`, `fuzz.rs` | 146 scenarios over MATCH, paths, RETURN, WITH, UNION, aggregation, nulls, numbers, strings, lists, subqueries, writes and errors; differences from Cypher pinned; nesting and budgets for the new forms |
+| GQ behaves as specified | `grafeno-query/tests/conformance.rs` (hand-written scenarios), `language_more.rs`, `adversarial.rs`, `fuzz.rs` | 146 scenarios over MATCH, paths, RETURN, WITH, UNION, aggregation, nulls, numbers, strings, lists, subqueries, writes and errors; GQ's own choices pinned; nesting and budgets for the new forms |
 | Graphs go out and come back | `grafeno/tests/interchange.rs`, `grafeno-server/tests/http.rs` | CSV and GraphML round trips with types, text and dates; re-imports that update; files from other tools with their own ids; bad rows reported |
 | Every write is in the change log | `grafeno/tests/changes.rs`, `grafeno-server/tests/events.rs`, `upgrade.rs` | entries folded per record and numbered per namespace, nothing from aborted or failed writes in a group commit, the window and the gap, listeners; pages and server-sent events resuming after `Last-Event-ID`; NDJSON with keys, references and failing lines, retries as duplicates; signed webhooks, label filters, failures kept in place; extraction and summaries from the log; layout 11 upgrades with an empty log |
 | Communities summarize themselves | `grafeno-memory/tests/communities.rs`, `grafeno-server/tests/http.rs` and `mcp.rs` community tests | a summary per community naming its center and topic, refreshes that change nothing, members joining in place, an agent's text kept and marked stale, levels as communities of communities, global search, drill-down, recall without summaries, context with an overview |
 | Texts link to what they mention | `grafeno-memory/tests/extraction.rs`, `src/extract.rs` tests | patterns and their normalized values and offsets, phrases and sentence openers, the gazetteer on normalized text; known names, emails by index, value nodes, new names after two texts, namesakes settled by context or queued, decisions that last, dismissals, incremental runs, an agent's mentions through match rules |
 | Merges are right and reversible | `grafeno/tests/merges.rs`, `grafeno-memory/tests/maintenance.rs` | strong keys, labels, conflicting facts and functional edges; namesakes, typos, nicknames, translations; a merge undone exactly (indexes, counters and the check agree) |
 | Isolation between principals | `grafeno-server/tests/access.rs` | a matrix of keys, grants and endpoints: no read or write outside a key's grants, `own_only` keys change only their own records |
-| GQ follows Cypher | `grafeno-query/tests/cypher.rs`, `queries.rs`, `statistics.rs`, `indexes.rs`, `algorithms.rs` | clauses, functions, aggregates, indexes, planner choices and algorithms on known graphs |
+| GQ's clauses and functions | `grafeno-query/tests/language.rs`, `queries.rs`, `statistics.rs`, `indexes.rs`, `algorithms.rs` | clauses, functions, aggregates, indexes, planner choices and algorithms on known graphs |
 | The planner estimates from the data, and parallel scans change nothing | `grafeno-query/tests/planner.rs` | statistics against known distributions and degrees; starts chosen by value distribution, parameters and pattern cost; join order; statistics rebuilt after drift and index changes; a cached statement after its index is dropped; parallel rows and order equal one thread's, and limits hold across threads |
 | Folded aggregates equal row-at-a-time ones and hold no rows | `grafeno-query/tests/batch.rs` | every aggregate with DISTINCT, nesting, ties, empty groups, overflow and duration sums; 90 000 rows counted under a `max_rows` of 2 000; parallel folds equal to one thread's |
 | Batched and parallel traversal give the same rows in the same order | `grafeno-query/tests/traversal.rs` | eight pattern shapes (both directions from a middle anchor, edge variables and properties, targets filtered by earlier nodes, edge uniqueness, variable length with paths, bound nodes, row filters) against one anchor at a time; a hub's 12 000 two-hop rows on one and four threads; shared nodes read once; `max_rows` across slices |
@@ -341,7 +340,7 @@ real binary. The ones that carry each guarantee:
 | A replica that applies the log holds the same data | `grafeno/tests/replication.rs`, `model.rs`, `grafeno-query/tests/replication.rs` | every kind of write replayed onto an empty database and compared (exports, counters, change log, constraints and their events, merges, state, principals); idempotence, gaps, catching up from a backup after truncation, group commits with failures; the model's random sequences replayed |
 | Raft never loses an acknowledged write and members agree | `grafeno-raft/tests/simulation.rs`, `grafeno-cluster/tests/cluster.rs`, `grafeno-server/tests/cluster.rs` | random schedules of drops, delays, duplicates, partitions, crashes, membership changes and snapshots checked for one leader per term, one entry per index, no lost acknowledged write and convergence; members in one process and three real processes through failover, restart, joining and leaving |
 | Reads and writes stay linearizable through failures | `grafeno-cluster/tests/linearizable.rs`, `grafeno-server/tests/faults.rs`, `grafeno-cluster/src/check.rs`, `clients/typescript/test/cluster.test.ts` | a register written and read by concurrent clients while members are cut off, restarted, compacted and killed, every history checked by a linearizability checker (which rejects the unsafe control); forwarding, read-your-writes and keyed writes across real processes |
-| A read split across members returns one server's rows | `grafeno-query/tests/common/mod.rs` (used by `conformance.rs`, `planner.rs`, `cypher.rs`, `queries.rs`, `traversal.rs`, `batch.rs`), `grafeno-server/tests/split.rs`, `aggregate.rs` tests | every read of those suites that can be split, whole against 2, 3 and 5 parts through JSON, row order included; exact sums independent of order; three processes, with a member down |
+| A read split across members returns one server's rows | `grafeno-query/tests/common/mod.rs` (used by `conformance.rs`, `planner.rs`, `language.rs`, `queries.rs`, `traversal.rs`, `batch.rs`), `grafeno-server/tests/split.rs`, `aggregate.rs` tests | every read of those suites that can be split, whole against 2, 3 and 5 parts through JSON, row order included; exact sums independent of order; three processes, with a member down |
 | A namespace moves between groups without losing or doubling a write | `grafeno/tests/replication.rs` (copy, catch-up, fence), `grafeno-server/tests/groups.rs` | a namespace copied and caught up equals the source, change log numbers included; a fenced namespace refuses writes; three processes with two more groups, writes routed through any member, a move under three writers retrying busy answers, every acknowledged write found once on every member |
 | A cluster restarts, rejoins and upgrades without anomalies | `grafeno-cluster/tests/operations.rs`, `packaging/compose/drill.sh` | a new cluster from a follower's backup, a member joining from an older backup without a snapshot, a restart; the leader refusing an entry format a voter cannot read; on the compose, every runbook under load checked for linearizability |
 | Every security event is audited once, and the log survives | `grafeno/tests/audit.rs`, `grafeno-server/tests/audit.rs`, `cluster.rs`, `upgrade.rs` | changes of access in their transaction; sign-ins, lockouts, refusals over HTTP; replication, failover, reopening, backups |
@@ -426,13 +425,12 @@ docker run --rm --memory 512m --memory-swap 512m -e CACHE_MB=128 -e PROJECTION_C
 
 ## Open decisions
 
-- License (Grafito is AGPL-3.0; an engine for any agent may prefer
-  MIT/Apache-2.0).
 - Binary record format (postcard, rkyv).
-- Whether Grafito's graph moves entirely to Grafeno or is only mirrored.
-- Whether an application in front (Grafito) signs its users in itself and
+- Whether an application in front of Grafeno signs its users in itself and
   calls Grafeno as one service account, or maps them to Grafeno accounts
   (phase 14 allows both).
+- (Decided in 16.1: the license is MIT or Apache-2.0, at the user's
+  choice.)
 - On Windows, building needs the MSVC toolchain (Visual Studio Build Tools):
   tokio's `windows-sys` does not build with the self-contained GNU toolchain.
 - Phase 13: TLS between members (13.2 authenticates with a shared secret
@@ -441,7 +439,7 @@ docker run --rm --memory 512m --memory-swap 512m -e CACHE_MB=128 -e PROJECTION_C
   ReadIndex, not leases. In 13.4: sums do not depend on the order
   of the rows, so split aggregates equal one server's.)
 - Phase 14: whether denials exist (they make exceptions to broad grants
-  easy, as in Neo4j, but PostgreSQL does without them); whether hidden
+  easy, but a model can do without them); whether hidden
   properties are absent or masked; session tokens signed (stateless,
   checked on any member) or stored (revocable at once); and the names of
   the built-in roles.

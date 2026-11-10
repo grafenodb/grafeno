@@ -1,5 +1,5 @@
 //! The engine has no interface (phase 15.1): Grafeno Studio is installed on
-//! its own, as pgAdmin is next to PostgreSQL, and connects to the engine
+//! its own, as a separate product, and connects to the engine
 //! through its HTTP API. `/` and `/studio/` (where the Studio used to be)
 //! say so.
 

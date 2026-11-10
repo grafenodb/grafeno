@@ -52,7 +52,7 @@ test("health and auth", async () => {
   });
 });
 
-test("sync a note like Grafito would", async () => {
+test("sync a note as a notes application would", async () => {
   const vault = new Grafeno({ url, token }).namespace("user-1");
   const noteId = "0190f5c2-7a3e-7cde-8f01-00000000000a";
   const otherId = "0190f5c2-7a3e-7cde-8f01-00000000000b";

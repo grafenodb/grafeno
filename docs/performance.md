@@ -251,8 +251,8 @@ the same memory.
   <img alt="200 000 records: CSV exports at 397 000 records per second and imports at 27 600; GraphML at 341 000 and 25 900" src="assets/charts/interchange-light.svg">
 </picture>
 
-A namespace goes out as CSV or GraphML for spreadsheets, Gephi, yEd,
-NetworkX or APOC, and comes back the same. Importing takes about as long as
+A namespace goes out as CSV or GraphML for spreadsheets and graph tools,
+and comes back the same. Importing takes about as long as
 any other write of those records, since each goes through every index.
 
 ## Following the writes

@@ -4,30 +4,30 @@
 
 **Status:** done, in five steps.
 
-Wider Cypher and tool compatibility, query optimization under concurrency, batched execution, batched and parallel traversal, compact storage and vector quantization.
+A wider query language and tool compatibility, query optimization under concurrency, batched execution, batched and parallel traversal, compact storage and vector quantization.
 
 Phases 10 to 12 were planned together: their guidelines are in [Phase 10](phase-10-hardening.md).
 
 Steps:
 
-- [12.1 Wider Cypher and tool compatibility (done, except the two items named below)](#121-wider-cypher-and-tool-compatibility-done-except-the-two-items-named-below)
+- [12.1 A wider query language and tool compatibility (done, except the two items named below)](#121-a-wider-query-language-and-tool-compatibility-done-except-the-two-items-named-below)
 - [12.2 Query optimization and performance under concurrency (done)](#122-query-optimization-and-performance-under-concurrency-done)
 - [12.3 Batched execution (done)](#123-batched-execution-done)
 - [12.4 Batched and parallel traversal (done)](#124-batched-and-parallel-traversal-done)
 - [12.5 Compact storage and vector quantization (done, without the compressed postings and adjacency blocks; see below)](#125-compact-storage-and-vector-quantization-done-without-the-compressed-postings-and-adjacency-blocks-see-below)
 
-## 12.1 Wider Cypher and tool compatibility (done, except the two items named below)
+## 12.1 A wider query language and tool compatibility (done, except the two items named below)
 
 
 
-- The rest of common Cypher: path variables (`p = (…)`, `nodes(p)`,
-  `relationships(p)`, `shortestPath`), `CALL { … }` subqueries, `EXISTS
-  { … }` and `COUNT { … }`, pattern comprehensions, map projections, `=~`,
-  more list, string and math functions; a subset of the openCypher TCK
-  run in CI.
-- Tools: import and export in CSV and GraphML; a Bolt protocol endpoint
-  (a subset) so Neo4j drivers and tools can connect, if the TCK subset is
-  far enough along.
+- The rest of a common graph query language: path variables (`p = (…)`,
+  `nodes(p)`, `relationships(p)`, `shortestPath`), `CALL { … }`
+  subqueries, `EXISTS { … }` and `COUNT { … }`, pattern comprehensions,
+  map projections, `=~`, more list, string and math functions; a
+  conformance suite run in CI.
+- Tools: import and export in CSV and GraphML; a binary wire protocol for
+  drivers of other languages, if the conformance suite is far enough
+  along.
 
 As built:
 
@@ -53,9 +53,10 @@ As built:
 - Nested `CALL { }` and `FOREACH` count against the parser's depth limit;
   all the new forms run under the query budget
   (`tests/adversarial.rs`).
-- `crates/grafeno/src/interchange.rs`: CSV in `neo4j-admin import` headers
-  (`id:ID`, `:LABEL`, `name:type`, `:TEXT`; `:START_ID`, `:END_ID`, `:TYPE`,
-  `valid_from`, `valid_to`) and GraphML (APOC's `labels` and `label`).
+- `crates/grafeno/src/interchange.rs`: CSV with typed headers (`id:ID`,
+  `:LABEL`, `name:type`, `:TEXT`; `:START_ID`, `:END_ID`, `:TYPE`,
+  `valid_from`, `valid_to`) and GraphML (node labels in a `labels` key,
+  edge labels in `label`).
   Exports hold current knowledge: retracted facts stay out. Imports keep
   Grafeno ids, so a re-import updates; other ids map to new nodes,
   remembered per namespace (state kind `import.id`), so a later edges file
@@ -63,13 +64,14 @@ As built:
   `grafeno import` take `--format csv|graphml`; the server has
   `/v1/{ns}/export.graphml`, `/export/nodes.csv`, `/export/edges.csv` and
   the same under `/import/` (admin role).
-- Conformance: `tests/conformance/scenarios.txt` holds 146 scenarios in the
-  TCK's form, run by `cargo test`. They are written by hand from the
-  language's semantics. **The official openCypher TCK is not vendored or
-  run**, so this suite is not a TCK score; five scenarios pin where Grafeno
-  differs on purpose.
-- **Not built: Bolt.** It depended on the TCK subset being far enough along,
-  and without running the official TCK there is no number to judge that by.
+- Conformance: `tests/conformance/scenarios.txt` holds 146 scenarios
+  (a graph, a query, the expected result), run by `cargo test`. They are
+  written by hand from the language's semantics, so they guard against
+  regressions rather than measure conformance to an outside standard;
+  five scenarios pin choices GQ makes on purpose.
+- **Not built: a binary wire protocol.** It depended on the conformance
+  suite being far enough along, and a hand-written suite gives no number
+  to judge that by.
 - Measured (`examples/interchange_bench.rs`, 200 000 records): CSV exports
   at 397 000 records a second and imports at 27 600; GraphML at 341 000 and
   25 900.

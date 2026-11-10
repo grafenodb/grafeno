@@ -1,9 +1,11 @@
 [package]
 name = "grafeno-query"
-description = "A Cypher-style query language for Grafeno"
+description = "GQ, the declarative graph query language of Grafeno"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
 
 [dependencies]
 grafeno.workspace = true

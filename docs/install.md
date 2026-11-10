@@ -1,11 +1,11 @@
 # Installing Grafeno
 
 This guide installs **the engine**: the `grafeno` program, as a service
-that starts with the system. It has no graphical interface, as PostgreSQL
-has none: work with it from its console (`grafeno shell`), its HTTP API,
-MCP, or any client. **Grafeno Studio**, the graphical interface, is a
-separate product with its own installers (as pgAdmin is), which connects to
-engines through their API.
+that starts with the system. It has no graphical interface, as a database
+server has none: work with it from its console (`grafeno shell`), its HTTP
+API, MCP, or any client. **Grafeno Studio**, the graphical interface, is a
+separate product with its own installers, which connects to engines through
+their API.
 
 ## The Grafeno server
 
@@ -149,10 +149,9 @@ removes an instance's data before the package is removed.
 
 ### Instances: `grafeno setup`
 
-An instance is a settings file, a data folder and a service, as a
-PostgreSQL cluster is. The packages make the default one; `grafeno setup`
-makes others, as `initdb` and `postgresql-setup` do, asking what its flags
-leave open:
+An instance is a settings file, a data folder and a service: one database
+server among others on the same machine. The packages make the default
+one; `grafeno setup` makes others, asking what its flags leave open:
 
 ```bash
 sudo grafeno setup --instance team
@@ -230,8 +229,7 @@ starts it again.
 ### Windows
 
 Run `grafeno-<version>-windows-x64-setup.exe` (it asks for administrator
-rights), or `winget install GrafenoDB.Grafeno`. As PostgreSQL's setup does,
-it asks:
+rights), or `winget install GrafenoDB.Grafeno`. It asks:
 
 - the **program folder** (`C:\Program Files\Grafeno` by default);
 - the **data folder**, where the service keeps its database
@@ -430,7 +428,7 @@ metrics only, for a monitoring agent) and give it to accounts with
 The same in GQ (14.3), from the shell or the Studio's Scripts view, by an
 account that may manage roles:
 
-```cypher
+```text
 CREATE ROLE team_reader;
 GRANT read, export ON NAMESPACE 'team-*' TO team_reader;
 DENY read ON NAMESPACE 'team-secret' TO team_reader;
@@ -481,8 +479,8 @@ It verifies every page against its checksum, then the indexes. Exports
 (`grafeno export`) are the other kind of copy: JSON Lines, readable and
 portable between versions, but without the keys.
 
-To move a namespace to or from other tools (spreadsheets, Gephi, yEd,
-NetworkX, APOC), use CSV or GraphML. They hold current knowledge, without
+To move a namespace to or from other tools (spreadsheets, graph drawing
+and analysis programs, other databases), use CSV or GraphML. They hold current knowledge, without
 retracted facts or the history behind them, so they do not replace a
 backup:
 

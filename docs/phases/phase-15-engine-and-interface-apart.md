@@ -4,7 +4,7 @@
 
 **Status:** done, in five steps.
 
-The engine's installers install only the engine (Windows `.exe`, Linux `.deb`, `.rpm` and a `curl` one-liner), as a professional installation in the way PostgreSQL's is, with no Docker needed; and the interface becomes a separate desktop product with installers of its own, talking to engines only through their public API.
+The engine's installers install only the engine (Windows `.exe`, Linux `.deb`, `.rpm` and a `curl` one-liner), as a professional installation of a database server, with no Docker needed; and the interface becomes a separate desktop product with installers of its own, talking to engines only through their public API.
 
 Steps:
 
@@ -29,8 +29,8 @@ releases:
 
 - **Grafeno**, the engine: the `grafeno` binary (server, HTTP API, MCP,
   shell, administration commands) and nothing else, for servers and
-  machines without a screen. Installed natively, as a database server is
-  (PostgreSQL is the model): Windows setup `.exe` (with the service), Linux
+  machines without a screen. Installed natively, as a database server is:
+  Windows setup `.exe` (with the service), Linux
   `.deb` and `.rpm` from signed package repositories (with the systemd
   unit), a `curl … | sh` one-liner, and a `.tar.gz` for offline machines.
   No Docker image is published (the installers make it unnecessary); a
@@ -70,8 +70,7 @@ As built:
   checks; their history up to here stays in this one (14.5, `87dc149`). The
   desktop app came as it was, to be rebuilt there to talk to engines only
   over HTTP. The TypeScript client stays here as the engine's client
-  library (the API's contract, 15.3), as node-postgres is next to
-  PostgreSQL; no installer of the engine carries it.
+  library (the API's contract, 15.3); no installer of the engine carries it.
 - The engine serves no interface: no `studio` feature, no `include_dir`, no
   `build.rs` step but the Windows icon; `/` and `/studio/` answer a short
   page saying the engine has no interface and Grafeno Studio is installed
@@ -101,7 +100,7 @@ archive, checks its SHA-256 and installs the binary, and with `--service`
 creates the `grafeno` user, `/etc/grafeno/grafeno.toml` and the systemd
 service; the `.deb` and `.rpm` do the same from a downloaded file; the
 Windows setup (Inno Setup) installs the binary, the configuration and the
-service. Missing, next to how PostgreSQL installs: package repositories, a
+service. Missing, next to how a database server installs: package repositories, a
 setup step that initializes an instance, several instances on one machine,
 upgrades that protect the data, a guided Windows setup, and signatures.
 
@@ -117,13 +116,13 @@ upgrades that protect the data, a guided Windows setup, and signatures.
   for a version, a prefix, installing without root (into the user's home,
   with a systemd user service), and unattended use (all choices as flags or
   environment variables).
-- Initializing an instance, apart from installing the program, as `initdb`
-  and `postgresql-setup` are: `grafeno setup` creates the data directory
+- Initializing an instance, apart from installing the program:
+  `grafeno setup` creates the data directory
   with its permissions, writes `/etc/grafeno/<instance>.toml` (address,
   port, durability, memory, TLS), creates the first administrator (a
   password, with phase 14) and enables and starts the service. Interactive
   by default; every answer as a flag or an answers file for automation.
-- Several instances on one machine (as PostgreSQL clusters): a templated
+- Several instances on one machine: a templated
   unit (`grafeno@<name>.service`), each instance with its own data
   directory, configuration, port and logs; `grafeno instances` lists them.
 - Upgrades that protect the data: the package's upgrade backs up each
@@ -131,7 +130,7 @@ upgrades that protect the data, a guided Windows setup, and signatures.
   layout, keeps the backup until the first clean start, and can roll back
   to the previous version with it. Removing the package keeps the data;
   purging (`apt purge`, an explicit `--purge`) removes it.
-- Windows, a guided setup as PostgreSQL's installers have: install folder,
+- Windows, a guided setup: install folder,
   data folder, port and address, the account the service runs as, the first
   administrator's password, a firewall rule, `grafeno` on the `PATH`; the
   same answers as parameters for a silent install (`/VERYSILENT /DATADIR=…
@@ -181,8 +180,7 @@ As built (in two parts: the installers, then the rest):
   branch for GitHub Pages, and signs every release file with minisign, the
   repositories with GnuPG, and the Windows program and setup with a
   code-signing certificate, each when its secret is set.
-- `grafeno setup` initializes an instance as `initdb` and
-  `postgresql-setup` do: the data folder (0750, the `grafeno` user's), the
+- `grafeno setup` initializes an instance: the data folder (0750, the `grafeno` user's), the
   settings (a fresh token; address, port, network, durability, memory;
   0640 root:grafeno), the database and its first administrator (a
   superuser with a password; or none, with `--no-admin`), and the service,

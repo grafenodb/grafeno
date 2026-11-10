@@ -75,3 +75,15 @@ These checks do not replace tests of the installers on clean machines. Work on
 a branch and open a focused PR. Describe the problem, resulting behavior and
 checks performed, including any you could not run. Preserve the project's
 technical names and commands.
+
+## License
+
+Grafeno is licensed under either of the MIT license (`LICENSE-MIT`) or the
+Apache License 2.0 (`LICENSE-APACHE`), at your option. Unless you state
+otherwise, any contribution you submit for inclusion is licensed the same
+way, without any additional terms or conditions.
+
+Documentation and sources describe Grafeno on its own terms: no other
+company, product, client application or game by name (operating systems
+and Grafeno's dependencies are fine). `crates/grafeno/tests/names.rs`
+checks it.

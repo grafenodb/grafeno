@@ -20,7 +20,7 @@ its own commit.
 ## 8.1 GQ completeness (done)
 
 The executor became a pipeline of clauses
-(rows flow from one clause to the next), which the remaining Cypher clauses
+(rows flow from one clause to the next), which the remaining clauses
 need. Reads in a writing statement go through its write transaction, so
 later clauses (and `MERGE` on later rows) see earlier writes.
 
@@ -70,7 +70,7 @@ from 233 ms to 11 ms. Values are encoded so that byte order is value order
 inclusive ranges that the query's own conditions then narrow. Queries read
 candidates in pages, and limits are checked on every read.
 
-- Declared indexes, as in Postgres and Neo4j:
+- Declared indexes:
   `CREATE INDEX FOR (n:Person) ON (n.age)`, `DROP INDEX`, `SHOW INDEXES`,
   also from the Studio. An index table keyed by `(ns, index, sortable
   value, node)` (layout version 5) serves equality, ranges,

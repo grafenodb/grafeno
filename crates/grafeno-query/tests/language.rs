@@ -1,4 +1,4 @@
-//! The Cypher clauses and expressions of phase 8.1: OPTIONAL MATCH, WITH,
+//! GQ's clauses and expressions of phase 8.1: OPTIONAL MATCH, WITH,
 //! UNWIND, UNION, CALL, MERGE, FOREACH, CASE, list comprehensions,
 //! quantifiers, reduce, pattern predicates, EXPLAIN and PROFILE.
 

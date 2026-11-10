@@ -52,7 +52,7 @@ As built:
   words, the longest common subsequence, American Soundex, a Spanish
   phonetic key, and date and number similarities with tolerances. A
   `Measure` names one with its settings and compares normalized text. GQ
-  exposes them as `text.*` functions (and APOC's names for the common ones).
+  exposes them as `text.*` functions.
 - A fuzzy index is an `IndexDef` with `fuzzy: true` whose entries, in the
   same table as the others, are the trigrams of the normalized text (of
   each string of a list), tagged apart from values. Creating, dropping,

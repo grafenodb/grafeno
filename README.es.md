@@ -15,12 +15,11 @@
 Grafeno es un **motor de grafos en Rust para memoria y conocimiento de agentes**.
 Conecta entidades, documentos y hechos; conserva su procedencia e historial;
 y combina búsqueda por texto, vectores y relaciones para recuperar contexto.
-Su primer cliente es [Grafito](https://github.com/Seerendo/grafito).
 
-Grafeno es solo el motor, como lo es PostgreSQL: un servidor (API HTTP, MCP
-para agentes, clúster), una consola (`grafeno shell`) y comandos de
-administración, sin interfaz gráfica. **Grafeno Studio**, la interfaz, es un
-producto aparte que se instala por su cuenta (como pgAdmin) y se conecta a los
+Grafeno es solo el motor, como lo es un servidor de bases de datos: un
+servidor (API HTTP, MCP para agentes, clúster), una consola (`grafeno shell`)
+y comandos de administración, sin interfaz gráfica. **Grafeno Studio**, la
+interfaz, es un producto aparte que se instala por su cuenta y se conecta a los
 motores a través de su API, como cualquier otro cliente. Grafeno también se
 integra como biblioteca Rust.
 
@@ -32,7 +31,7 @@ integra como biblioteca Rust.
 | **Consultar el pasado** | Distinguir cuándo un hecho era válido y cuándo el sistema lo conoció mediante `VALID AT` y `KNOWN AT`. |
 | **Encontrar contexto** | Combinar búsqueda BM25, vectores HNSW y expansión del grafo; preparar contexto con un presupuesto de tokens. |
 | **Mantener la memoria** | Resolver entidades, revisar posibles duplicados, registrar fusiones reversibles y resumir comunidades sin un modelo. |
-| **Consultar** | GQ, un lenguaje parecido a Cypher, desde la consola, la API HTTP, MCP o cualquier cliente. |
+| **Consultar** | GQ, el lenguaje declarativo de consultas de grafos de Grafeno, desde la consola, la API HTTP, MCP o cualquier cliente. |
 | **Operar la base** | Cuentas que inician sesión, roles con concesiones y denegaciones hasta etiquetas, propiedades y registros, claves de API, respaldos, importación y exportación, comprobaciones de integridad y reconstrucción de índices. |
 | **Operar un clúster** | Varios servidores sincronizados con Raft: elección de líder, recuperación ante fallos, lecturas linealizables, lecturas grandes repartidas entre miembros y namespaces en varios grupos. |
 
@@ -43,8 +42,8 @@ aarch64 (repositorios APT y DNF firmados, `.deb`, `.rpm` y un instalador de
 una línea con `curl` que también sirve para AlmaLinux, Rocky y RHEL) y un
 `.tar.gz`: consulta la [guía de instalación](docs/install.md). El motor se
 ejecuta como servicio en `127.0.0.1:7810`; su configuración está en
-`grafeno.toml`. `grafeno setup` agrega instancias, como los clústeres de
-PostgreSQL, y `grafeno doctor` las revisa. Las versiones del motor se
+`grafeno.toml`. `grafeno setup` agrega instancias (varias bases de datos en
+una máquina, cada una con su servicio), y `grafeno doctor` las revisa. Las versiones del motor se
 etiquetan `v<versión>`; lo que cambia cada una está en
 [CHANGELOG.md](CHANGELOG.md).
 
@@ -70,7 +69,7 @@ grafeno shell --db ejemplo.redb -n demo
 
 Crea una persona y una relación con fecha de inicio:
 
-```cypher
+```text
 CREATE (a:Person {name: 'Ana'})
   -[:works_at {@valid_from: '2024-01-01'}]->
   (h:Organization {name: 'Hospital Central'})
@@ -79,7 +78,7 @@ RETURN a.name, h.name;
 
 Consulta qué era válido en una fecha:
 
-```cypher
+```text
 MATCH (p:Person)-[r:works_at]->(o:Organization)
 VALID AT '2024-06-01'
 RETURN p.name, o.name, r.@valid_from;
@@ -151,8 +150,13 @@ requiere Node: solo lo usan las pruebas del cliente.
 Los embeddings los proporciona el cliente. El presupuesto de contexto utiliza
 una estimación de tokens por defecto; la biblioteca Rust permite proporcionar
 el contador del modelo. El motor admite múltiples lectores y un escritor;
-en un clúster, cada escritura se replica a sus miembros (fase 13). La licencia sigue como decisión abierta
-en el diseño.
+en un clúster, cada escritura se replica a sus miembros (fase 13).
+
+## Licencia
+
+Grafeno es software libre, con licencia [MIT](LICENSE-MIT) o
+[Apache 2.0](LICENSE-APACHE), a tu elección. Salvo que digas lo contrario,
+una contribución que envíes queda bajo las mismas licencias.
 
 Creado por [Seerendo](https://github.com/Seerendo). La identidad gráfica representa
 tres anillos de carbono fusionados de una red de grafeno.

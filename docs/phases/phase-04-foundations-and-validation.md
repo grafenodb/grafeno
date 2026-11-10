@@ -22,11 +22,11 @@ Layout versioning, counters, namespaces and statistics, paging, integrity check 
 - All of this is available from the library, the HTTP API
   (`/v1/namespaces`, `/v1/{ns}/stats`, `/check`, `/rebuild`, `/v1/export`,
   `/v1/import`) and the CLI (`grafeno namespaces | stats | check | rebuild |
-  export | import`), which opens the file directly, like `pg_dump`.
+  export | import`), which opens the file directly.
 - **Tests**: a property test against an in-memory model, a kill-the-writer
   durability test, a concurrency test, corruption tests, benchmarks and a
   recall measurement. Results and bottlenecks: [docs/benchmarks.md](../benchmarks.md).
 
-Node bindings (napi-rs) were left out: Grafito runs Grafeno as a sidecar
-container and talks HTTP, so a native addon would add per-platform builds
-without a current user. They remain possible for embedded use.
+Node bindings (napi-rs) were left out: applications reach Grafeno over
+HTTP, so a native addon would add per-platform builds without a current
+user. They remain possible for embedded use.

@@ -2694,7 +2694,7 @@ async fn property_history(
     Ok(Json(entries))
 }
 
-/// A namespace as GraphML (Gephi, yEd, NetworkX, igraph, APOC).
+/// A namespace as GraphML, for graph drawing and analysis tools.
 async fn export_graphml(
     State(state): State<AppState>,
     Path(ns): Path<String>,
@@ -2708,7 +2708,7 @@ async fn export_graphml(
     Ok(([(header::CONTENT_TYPE, "application/graphml+xml")], body).into_response())
 }
 
-/// A namespace's nodes as CSV (`neo4j-admin import` headers).
+/// A namespace's nodes as CSV, with typed headers.
 async fn export_nodes_csv(
     State(state): State<AppState>,
     Path(ns): Path<String>,

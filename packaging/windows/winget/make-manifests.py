@@ -65,7 +65,8 @@ Publisher: GrafenoDB
 PublisherUrl: https://github.com/grafenodb
 PackageName: Grafeno
 PackageUrl: https://github.com/grafenodb/grafeno
-License: Unspecified
+License: MIT OR Apache-2.0
+LicenseUrl: https://github.com/grafenodb/grafeno/blob/main/LICENSE-MIT
 ShortDescription: A graph engine for agent memory and knowledge, run as a Windows service.
 Description: |-
   Grafeno is a graph database engine for agent memory and knowledge: a property graph with

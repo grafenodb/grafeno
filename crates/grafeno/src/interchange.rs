@@ -1,6 +1,6 @@
 //! CSV and GraphML: a namespace's graph in the formats other tools read
-//! and write (spreadsheets, Neo4j's `neo4j-admin import` and APOC, Gephi,
-//! yEd, NetworkX, igraph).
+//! and write: spreadsheets, graph drawing and analysis programs, and other
+//! databases.
 //!
 //! Exports hold current knowledge: retracted facts are left out; a fact's
 //! valid dates are columns (`valid_from`, `valid_to`). Imports keep ids that
@@ -8,7 +8,7 @@
 //! source's, mapped to new nodes and remembered per namespace (state kind
 //! `import.id`), so the edges of a later file find them.
 //!
-//! CSV, two files in the header style of `neo4j-admin import`:
+//! CSV, two files whose headers carry each column's role and type:
 //!
 //! ```text
 //! id:ID,:LABEL,name:string,age:int,:TEXT
@@ -23,8 +23,7 @@
 //! `true`/`false` as such. Empty cells are absent properties.
 //!
 //! GraphML: `<key>`s for properties (with `attr.type` `string`, `long`,
-//! `double`, `boolean`), a node's labels in the `labels` key (`:A:B`, as
-//! APOC writes them), an edge's label in `label` (or its `label`
+//! `double`, `boolean`), a node's labels in the `labels` key (`:A:B`), an edge's label in `label` (or its `label`
 //! attribute), text in `text`.
 
 use std::collections::{BTreeMap, HashMap};
