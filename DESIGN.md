@@ -206,10 +206,8 @@ in each:
 - [Phase 13: Distributed operation](docs/phases/phase-13-distributed-operation.md)
 - [Phase 14: Users, roles and permissions (RBAC)](docs/phases/phase-14-users-roles-and-permissions.md)
 - [Phase 15: Engine and interface apart](docs/phases/phase-15-engine-and-interface-apart.md)
-- [Phase 16: Integrations](docs/phases/phase-16-integrations.md)
-
-The first client, Grafito, and how it uses Grafeno are described in
-[Phase 16: Integrations](docs/phases/phase-16-integrations.md).
+- [Phase 16: Data model, search, analysis and events](docs/phases/phase-16-model-search-and-events.md)
+- [Phase 17: Integrations](docs/phases/phase-17-integrations.md)
 
 ## Measurements and test environments
 
