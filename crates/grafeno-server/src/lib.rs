@@ -22,4 +22,5 @@ pub mod roles;
 pub mod service;
 pub mod shell;
 pub mod studio;
+pub mod transactions;
 pub mod users;

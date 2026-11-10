@@ -40,6 +40,30 @@ after(async () => {
   await once(server, "exit");
 });
 
+test("explicit transactions commit together or not at all", async () => {
+  const ns = new Grafeno({ url, token }).namespace("tx");
+  const count = async () => (await ns.query("MATCH (n:Note) RETURN count(n)")).rows[0][0];
+  await ns.transaction(async (tx) => {
+    await tx.query("CREATE (:Note {n: $n})", { n: 1 });
+    await tx.query("CREATE (:Note {n: 2})");
+    assert.equal(await count(), 0, "not visible before the commit");
+  });
+  assert.equal(await count(), 2);
+  await assert.rejects(
+    ns.transaction(async (tx) => {
+      await tx.query("CREATE (:Note {n: 3})");
+      throw new Error("changed my mind");
+    }),
+    /changed my mind/,
+  );
+  assert.equal(await count(), 2, "rolled back");
+  const reading = await ns.begin({ readOnly: true });
+  await ns.query("CREATE (:Note {n: 4})");
+  assert.equal((await reading.query("MATCH (n:Note) RETURN count(n)")).rows[0][0], 2);
+  assert.equal((await reading.status()).statements, 1);
+  await reading.commit();
+});
+
 test("health and auth", async () => {
   const grafeno = new Grafeno({ url, token });
   assert.equal((await grafeno.health()).status, "ok");

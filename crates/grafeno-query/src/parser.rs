@@ -147,6 +147,14 @@ impl Parser<'_> {
     // ------------------------------------------------------------ clauses
 
     fn statement(&mut self) -> Result<Statement, QueryError> {
+        if ["BEGIN", "COMMIT", "ROLLBACK"]
+            .iter()
+            .any(|word| self.at_keyword(word))
+        {
+            return Err(self.error(
+                "BEGIN, COMMIT and ROLLBACK run in a session: the shell, or POST /v1/{namespace}/transactions over HTTP",
+            ));
+        }
         let mode = if self.eat_keyword("EXPLAIN") {
             Mode::Explain
         } else if self.eat_keyword("PROFILE") {

@@ -47,6 +47,8 @@ pub const CAPABILITIES: &[&str] = &[
     // Queries (phases 7 and 12): GQ, EXPLAIN, batches.
     "query",
     "query.explain",
+    // BEGIN, COMMIT and ROLLBACK across requests (16.4).
+    "transactions",
     "batches",
     "traversal",
     "algorithms",

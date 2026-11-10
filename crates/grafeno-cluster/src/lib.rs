@@ -206,7 +206,10 @@ struct Inner {
     events: Mutex<Option<Sender<Event>>>,
     status: Mutex<Status>,
     changed: Condvar,
-    writes: Mutex<()>,
+    /// Writes run one at a time; an explicit transaction keeps the gate
+    /// from its `BEGIN` to its end (16.4).
+    gate: Mutex<bool>,
+    gate_freed: Condvar,
     options: NodeOptions,
     /// A snapshot after each of the last [`MAX_SNAPSHOTS`] applied entries,
     /// kept for [`SNAPSHOTS_KEPT`] at most, so a query split across members
@@ -236,7 +239,48 @@ pub const SNAPSHOTS_KEPT: Duration = Duration::from_secs(2);
 /// splits it.
 pub const MAX_SNAPSHOTS: usize = 64;
 
+/// The right to write, held by one write or one explicit transaction at a
+/// time; given back when dropped.
+pub struct WriteGate {
+    inner: Arc<Inner>,
+}
+
+impl Drop for WriteGate {
+    fn drop(&mut self) {
+        *lock(&self.inner.gate) = false;
+        self.inner.gate_freed.notify_one();
+    }
+}
+
 impl Inner {
+    /// Waits for the write gate (for `wait` at most; forever with `None`).
+    fn acquire(self: &Arc<Self>, wait: Option<Duration>) -> Option<WriteGate> {
+        let deadline = wait.map(|wait| Instant::now() + wait);
+        let mut held = lock(&self.gate);
+        while *held {
+            match deadline {
+                None => {
+                    held = self
+                        .gate_freed
+                        .wait(held)
+                        .unwrap_or_else(|e| e.into_inner());
+                }
+                Some(deadline) => {
+                    let left = deadline.checked_duration_since(Instant::now())?;
+                    held = self
+                        .gate_freed
+                        .wait_timeout(held, left)
+                        .unwrap_or_else(|e| e.into_inner())
+                        .0;
+                }
+            }
+        }
+        *held = true;
+        Some(WriteGate {
+            inner: self.clone(),
+        })
+    }
+
     /// Keeps `read`, a snapshot at `index`, and lets old ones go (the
     /// latest always stays).
     fn pin(&self, index: Index, read: ReadTx) {
@@ -251,6 +295,26 @@ impl Inner {
         while snapshots.len() > MAX_SNAPSHOTS {
             snapshots.pop_first();
         }
+    }
+}
+
+/// An explicit transaction on the leader (16.4): its statements run in
+/// [`Transaction::tx`], which captures what they do; it holds the write
+/// gate until it is committed ([`Node::commit_transaction`]) or dropped
+/// (rolled back).
+pub struct Transaction {
+    tx: WriteTx,
+    _gate: WriteGate,
+}
+
+impl Transaction {
+    pub fn tx(&mut self) -> &mut WriteTx {
+        &mut self.tx
+    }
+
+    /// Discards everything the transaction did.
+    pub fn rollback(self) -> Result<(), Error> {
+        self.tx.abort().map_err(Error::Engine)
     }
 }
 
@@ -324,7 +388,8 @@ impl Node {
             events: Mutex::new(Some(sender)),
             status: Mutex::new(Status::default()),
             changed: Condvar::new(),
-            writes: Mutex::new(()),
+            gate: Mutex::new(false),
+            gate_freed: Condvar::new(),
             options,
             snapshots: Mutex::new(BTreeMap::new()),
             members: Mutex::new(BTreeMap::new()),
@@ -398,23 +463,64 @@ impl Node {
     /// Runs a write on the cluster: on the leader only; returns once a
     /// majority has it and this member applied it.
     pub fn write<T>(&self, f: impl FnOnce(&mut WriteTx) -> grafeno::Result<T>) -> Result<T, Error> {
-        let _serial = lock(&self.inner.writes);
+        let _gate = self.inner.acquire(None).expect("waits without a limit");
+        self.ready_to_write()?;
+        let (value, entry) = self.inner.db.dry_run(f)?;
+        let Some(entry) = entry else {
+            return Ok(value);
+        };
+        self.propose_entry(entry)?;
+        Ok(value)
+    }
+
+    /// Checks this member leads, and waits until its database holds every
+    /// entry before (the new term's no-op too).
+    fn ready_to_write(&self) -> Result<(), Error> {
         let timeout = self.inner.options.write_timeout;
         let status = self.status();
         if status.role != "leader" {
             return Err(Error::NotLeader(status.leader));
         }
-        // The database holds everything before (the new term's no-op too).
         let ready = self
             .wait_for(timeout, |s| s.role != "leader" || s.applied >= s.last_index)
             .ok_or(Error::Timeout)?;
         if ready.role != "leader" {
             return Err(Error::NotLeader(ready.leader));
         }
-        let (value, entry) = self.inner.db.dry_run(f)?;
+        Ok(())
+    }
+
+    /// Opens an explicit transaction (16.4): takes the write gate (waiting
+    /// up to `wait` for the write or transaction that holds it), on the
+    /// leader only, and gives a transaction whose changes are captured. No
+    /// other write runs until [`Node::commit_transaction`] or a drop of the
+    /// returned [`Transaction`].
+    pub fn begin_transaction(&self, wait: Duration) -> Result<Transaction, Error> {
+        let gate = self.inner.acquire(Some(wait)).ok_or(Error::Timeout)?;
+        self.ready_to_write()?;
+        let tx = self.inner.db.begin_captured()?;
+        Ok(Transaction { tx, _gate: gate })
+    }
+
+    /// Replicates what `transaction` did as one entry, and returns once a
+    /// majority has it and this member applied it. If this member no longer
+    /// leads, nothing happened.
+    pub fn commit_transaction(&self, transaction: Transaction) -> Result<(), Error> {
+        let Transaction { tx, _gate } = transaction;
+        let entry = tx.into_entry()?;
         let Some(entry) = entry else {
-            return Ok(value);
+            return Ok(());
         };
+        let status = self.status();
+        if status.role != "leader" {
+            return Err(Error::NotLeader(status.leader));
+        }
+        self.propose_entry(entry)
+    }
+
+    /// Proposes an entry and waits for it to be applied here.
+    fn propose_entry(&self, entry: grafeno::Entry) -> Result<(), Error> {
+        let timeout = self.inner.options.write_timeout;
         let format = self.cluster_format();
         if entry.format > format {
             return Err(Error::Engine(grafeno::Error::Invalid(format!(
@@ -426,7 +532,7 @@ impl Node {
         let (reply, answer) = mpsc::sync_channel(1);
         self.send(Event::Propose(bytes, reply))?;
         match answer.recv_timeout(timeout) {
-            Ok(Ok(())) => Ok(value),
+            Ok(Ok(())) => Ok(()),
             Ok(Err(error)) => Err(error),
             Err(_) => Err(Error::Timeout),
         }

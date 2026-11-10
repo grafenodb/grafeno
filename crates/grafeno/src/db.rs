@@ -593,6 +593,16 @@ impl Grafeno {
         result
     }
 
+    /// A write transaction whose changes are captured as a replication
+    /// entry instead of being committed: an explicit transaction on a
+    /// cluster leader (16.4) runs its statements in it and, at `COMMIT`,
+    /// proposes [`WriteTx::into_entry`] to the cluster.
+    pub fn begin_captured(&self) -> Result<WriteTx> {
+        let mut tx = self.begin_write()?;
+        tx.capture = Some(crate::replication::Capture::default());
+        Ok(tx)
+    }
+
     /// Applies log entries of another database in order, each in its own
     /// transaction; returns how many were applied (those already applied
     /// are skipped).

@@ -281,6 +281,9 @@ presentan el proyecto y los primeros pasos.
   NAMESPACE` in GQ, checked on the namespace they name;
   `grafeno namespaces create | describe | drop`; `grafeno shell
   --stop-on-error`.
+- **Phase 16.4, explicit transactions:** `BEGIN`, `COMMIT` and `ROLLBACK`
+  in the shell and over HTTP, one writer at a time with idle and lifetime
+  limits; on a cluster, one replicated entry per transaction.
 
 Next, the rest of phase 16 (data model, search, analysis and events), then
 phase 17: integrations (client libraries for more languages). The plan is in

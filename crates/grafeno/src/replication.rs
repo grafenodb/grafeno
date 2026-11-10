@@ -573,6 +573,15 @@ impl WriteTx {
         Ok(())
     }
 
+    /// Ends a transaction begun with [`crate::Grafeno::begin_captured`]
+    /// without committing it, and returns what it did as a log entry
+    /// (`None`: nothing). The entry is what a cluster replicates.
+    pub fn into_entry(mut self) -> Result<Option<Entry>> {
+        let entry = self.build_entry();
+        self.abort()?;
+        entry
+    }
+
     /// What this transaction did, as a log entry (`None`: nothing).
     pub(crate) fn build_entry(&mut self) -> Result<Option<Entry>> {
         let Some(capture) = self.capture.take() else {

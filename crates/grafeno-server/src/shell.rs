@@ -418,11 +418,22 @@ enum Format {
     Json,
 }
 
+/// An explicit transaction the shell keeps open between statements (16.4).
+enum Open {
+    /// On a database file: the engine's own transaction, and why it
+    /// failed, if a statement in it did.
+    Write(Box<grafeno::WriteTx>, Option<String>),
+    Read(Box<grafeno::ReadTx>),
+    /// On a server: the transaction's id there.
+    Remote(String),
+}
+
 pub struct Shell {
     backend: Backend,
     namespace: String,
     format: Format,
     timing: bool,
+    transaction: Option<Open>,
     /// Whether anything failed (the exit code of scripts).
     pub failed: bool,
     /// Scripts stop at the first statement or meta-command that fails.
@@ -436,8 +447,140 @@ impl Shell {
             namespace,
             format: if json { Format::Json } else { Format::Table },
             timing: false,
+            transaction: None,
             failed: false,
             stop_on_error: false,
+        }
+    }
+
+    /// `BEGIN [READ ONLY]`, `COMMIT` and `ROLLBACK`, if `statement` is one.
+    fn transaction_control(&mut self, statement: &str) -> Option<Result<(), String>> {
+        let words: Vec<String> = statement
+            .split_whitespace()
+            .map(|w| w.trim_end_matches(';').to_ascii_uppercase())
+            .collect();
+        let words: Vec<&str> = words.iter().map(String::as_str).collect();
+        let read_only = match words.as_slice() {
+            ["BEGIN"] | ["BEGIN", "TRANSACTION"] => false,
+            ["BEGIN", "READ", "ONLY"] | ["BEGIN", "TRANSACTION", "READ", "ONLY"] => true,
+            ["COMMIT"] => return Some(self.end_transaction(true)),
+            ["ROLLBACK"] => return Some(self.end_transaction(false)),
+            _ => return None,
+        };
+        if self.transaction.is_some() {
+            return Some(Err(
+                "a transaction is open already: COMMIT or ROLLBACK it first".into(),
+            ));
+        }
+        let opened = match &self.backend {
+            Backend::Local(db) if read_only => db.begin_read().map(|read| Open::Read(Box::new(read))),
+            Backend::Local(db) => db.begin_write().map(|tx| Open::Write(Box::new(tx), None)),
+            Backend::Remote { .. } => {
+                let body = json!({ "read_only": read_only });
+                return Some(
+                    self.backend
+                        .call("POST", &path(&self.namespace, "transactions"), Some(body))
+                        .and_then(|begun| {
+                            let id = begun["id"].as_str().ok_or("no transaction id")?;
+                            self.transaction = Some(Open::Remote(id.to_owned()));
+                            println!("BEGIN");
+                            Ok(())
+                        }),
+                );
+            }
+        };
+        Some(opened.map_err(|e| e.to_string()).map(|open| {
+            self.transaction = Some(open);
+            println!("BEGIN");
+        }))
+    }
+
+    fn end_transaction(&mut self, commit: bool) -> Result<(), String> {
+        let open = self
+            .transaction
+            .take()
+            .ok_or("no transaction is open (BEGIN starts one)")?;
+        let word = if commit { "COMMIT" } else { "ROLLBACK" };
+        match open {
+            Open::Read(_) => {}
+            Open::Write(tx, failed) => {
+                if !commit {
+                    tx.abort().map_err(|e| e.to_string())?;
+                } else if let Some(reason) = failed {
+                    let _ = tx.abort();
+                    return Err(format!(
+                        "rolled back, as a statement in the transaction failed: {reason}"
+                    ));
+                } else {
+                    tx.commit().map_err(|e| e.to_string())?;
+                }
+            }
+            Open::Remote(id) => {
+                let rest = format!("transactions/{id}/{}", word.to_lowercase());
+                self.backend
+                    .call("POST", &path(&self.namespace, &rest), None)?;
+            }
+        }
+        println!("{word}");
+        Ok(())
+    }
+
+    /// Runs a statement in the open transaction.
+    fn query_in_transaction(&mut self, statement: &str) -> Result<Value, String> {
+        let ns = self.namespace.clone();
+        match self.transaction.as_mut().expect("a transaction is open") {
+            Open::Read(read) => grafeno_query::execute_read_with(
+                read,
+                &ns,
+                statement,
+                &Default::default(),
+                &crate::access_cli::local_limits(),
+            )
+            .map(|result| result.to_json())
+            .map_err(|error| error.to_string()),
+            Open::Write(tx, failed) => {
+                if let Some(reason) = failed {
+                    return Err(format!(
+                        "a statement in this transaction failed ({reason}): only ROLLBACK can end it"
+                    ));
+                }
+                let Backend::Local(db) = &self.backend else {
+                    unreachable!("local transactions are on local backends")
+                };
+                let read = db.begin_read().map_err(|e| e.to_string())?;
+                let result = grafeno_query::execute_in(
+                    tx,
+                    &read,
+                    &ns,
+                    statement,
+                    &Default::default(),
+                    &crate::access_cli::local_limits(),
+                )
+                .map(|result| result.to_json())
+                .map_err(|error| error.to_string());
+                if let Err(reason) = &result {
+                    *failed = Some(reason.clone());
+                }
+                result
+            }
+            Open::Remote(id) => {
+                let rest = format!("transactions/{id}/query");
+                self.backend.call(
+                    "POST",
+                    &path(&ns, &rest),
+                    Some(json!({ "query": statement })),
+                )
+            }
+        }
+    }
+
+    /// A script that ends inside a transaction rolls it back.
+    fn finish_script(&mut self) {
+        if self.transaction.is_some() {
+            let _ = self.end_transaction(false);
+            self.report(Err(
+                "the script ended inside a transaction: it was rolled back".into(),
+            ));
         }
     }
 
@@ -466,6 +609,7 @@ impl Shell {
         if !pending.trim().is_empty() {
             self.statement(&pending);
         }
+        self.finish_script();
     }
 
     /// The interactive loop, with line editing and history.
@@ -484,10 +628,12 @@ impl Shell {
         }
         let mut pending = String::new();
         loop {
+            // `*` while a transaction is open.
+            let open = if self.transaction.is_some() { "*" } else { "" };
             let prompt = if pending.is_empty() {
-                format!("{}=> ", self.namespace)
+                format!("{}{open}=> ", self.namespace)
             } else {
-                format!("{}-> ", self.namespace)
+                format!("{}{open}-> ", self.namespace)
             };
             match editor.readline(&prompt) {
                 Ok(line) => {
@@ -521,6 +667,10 @@ impl Shell {
         if let Some(history) = &history {
             let _ = editor.save_history(history);
         }
+        if self.transaction.is_some() {
+            let _ = self.end_transaction(false);
+            eprintln!("The open transaction was rolled back.");
+        }
         Ok(())
     }
 
@@ -536,8 +686,16 @@ impl Shell {
         if statement.is_empty() {
             return;
         }
+        if let Some(outcome) = self.transaction_control(statement) {
+            self.report(outcome);
+            return;
+        }
         let started = Instant::now();
-        let result = self.backend.query(&self.namespace, statement);
+        let result = if self.transaction.is_some() {
+            self.query_in_transaction(statement)
+        } else {
+            self.backend.query(&self.namespace, statement)
+        };
         let elapsed = started.elapsed();
         let result = result.map(|output| {
             match self.format {

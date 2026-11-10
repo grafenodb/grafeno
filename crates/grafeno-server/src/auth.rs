@@ -691,8 +691,12 @@ fn namespace_actions(method: &str, rest: &[&str]) -> &'static [Act] {
     }
     match (method, rest) {
         // A GQ statement: the handler checks what it does (a read, a write,
-        // the schema, or managing access, which needs no namespace).
+        // the schema, or managing access, which needs no namespace). So do
+        // the statements of an explicit transaction (16.4), and beginning
+        // or ending one needs only to read here.
         ("POST", ["query"]) => &[],
+        ("POST", ["transactions", _, "query"]) => &[],
+        ("POST", ["transactions"] | ["transactions", _, "commit" | "rollback"]) => READ,
         (_, ["import", ..]) => &[Act::Import],
         ("POST", ["algo", ..]) => &[Act::Algorithms],
         (

@@ -354,3 +354,70 @@ fn members_join_from_the_log_or_a_snapshot_and_leave() {
     cluster.assert_same(&rest);
     let _ = cluster.running().count();
 }
+
+/// Explicit transactions (16.4): statements across calls on the leader,
+/// replicated as one entry at commit; nothing from a rollback; plain writes
+/// wait for the transaction; a follower refuses to begin one.
+#[test]
+fn explicit_transactions_commit_as_one_entry() {
+    let cluster = Cluster::new(3, 3);
+    let all = [1, 2, 3];
+    cluster.write(&all, add_people);
+    cluster.assert_same(&all);
+    let leader = cluster.leader(&all);
+    let node = cluster.node(leader).clone();
+    let before = node.status().last_index;
+
+    let mut transaction = node.begin_transaction(Duration::from_secs(1)).unwrap();
+    add_people(transaction.tx()).unwrap();
+    add_people(transaction.tx()).unwrap();
+    // A plain write waits for the transaction to end.
+    let waiting = {
+        let node = node.clone();
+        std::thread::spawn(move || node.write(add_people))
+    };
+    std::thread::sleep(Duration::from_millis(200));
+    assert!(
+        !waiting.is_finished(),
+        "a plain write runs after the transaction"
+    );
+    // A second transaction cannot begin meanwhile.
+    assert!(matches!(
+        node.begin_transaction(Duration::from_millis(100)),
+        Err(Error::Timeout)
+    ));
+    node.commit_transaction(transaction).unwrap();
+    waiting.join().unwrap().unwrap();
+    cluster.assert_same(&all);
+    let nodes = |id: u64| {
+        cluster.dbs[(id - 1) as usize]
+            .begin_read()
+            .unwrap()
+            .stats(NS)
+            .unwrap()
+            .nodes
+    };
+    for id in all {
+        assert_eq!(nodes(id), 8, "member {id}");
+    }
+    // The transaction's two statements are one entry; the plain write another.
+    assert_eq!(node.status().last_index, before + 2);
+
+    // Rolled back: nothing anywhere.
+    let mut transaction = node.begin_transaction(Duration::from_secs(1)).unwrap();
+    add_people(transaction.tx()).unwrap();
+    transaction.rollback().unwrap();
+    cluster.write(&all, |_| Ok(()));
+    cluster.assert_same(&all);
+    for id in all {
+        assert_eq!(nodes(id), 8, "member {id}");
+    }
+
+    let follower = all.iter().copied().find(|id| *id != leader).unwrap();
+    assert!(matches!(
+        cluster
+            .node(follower)
+            .begin_transaction(Duration::from_millis(100)),
+        Err(Error::NotLeader(_))
+    ));
+}

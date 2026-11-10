@@ -17,6 +17,13 @@ version (now 17) is upgraded in place, with a copy kept first.
   Apache License 2.0, at the user's choice (`LICENSE-MIT`,
   `LICENSE-APACHE`). The packages, the Windows setup (a license page),
   the archives and the winget manifest carry it.
+- **Added**: explicit transactions. `BEGIN [READ ONLY]`, `COMMIT` and
+  `ROLLBACK` in the shell and scripts (on a file or a server), and
+  `POST /v1/{ns}/transactions` with `…/{id}/query`, `…/commit` and
+  `…/rollback` over HTTP (capability `transactions`), with idle and
+  lifetime limits (`[transactions]`); on a cluster a transaction commits
+  as one replicated entry. The TypeScript client has `begin()` and
+  `transaction(work)`.
 - **Added**: `CREATE NAMESPACE name [IF NOT EXISTS] [COMMENT '…']`,
   `ALTER NAMESPACE name SET COMMENT '…' | REMOVE COMMENT` and `DROP
   NAMESPACE name [IF EXISTS]` in GQ, checked on the namespace they name;

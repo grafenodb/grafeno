@@ -53,6 +53,12 @@
 //! communities = ["notes"]  # keep community summaries fresh (11.3)
 //! communities_every_secs = 300
 //! communities_min_changes = 50
+//!
+//! [transactions]         # explicit transactions (16.4)
+//! idle_timeout_secs = 30 # rolled back after this long without a request
+//! max_secs = 600         # rolled back at this age
+//! wait_secs = 5          # how long BEGIN waits for the writing one before
+//! max_open = 256
 //! ```
 
 use std::net::SocketAddr;
@@ -102,6 +108,9 @@ pub struct Config {
         skip_serializing_if = "crate::events::BackgroundConfig::is_empty"
     )]
     pub background: crate::events::BackgroundConfig,
+    /// Explicit transactions (16.4).
+    #[serde(default, skip_serializing_if = "TransactionsConfig::is_empty")]
+    pub transactions: TransactionsConfig,
     /// Membership of a cluster (phase 13.2); absent for a single server.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cluster: Option<crate::cluster::ClusterConfig>,
@@ -150,6 +159,42 @@ impl AuthSection {
                     .max(1),
                 window: self.lockout_minutes.map_or(default.lockout.window, minutes),
             },
+        }
+    }
+}
+
+/// How long explicit transactions may live and wait (16.4); missing values
+/// take [`crate::transactions::TransactionSettings`]'s defaults.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TransactionsConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idle_timeout_secs: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_secs: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wait_secs: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_open: Option<usize>,
+}
+
+impl TransactionsConfig {
+    fn is_empty(&self) -> bool {
+        *self == Self::default()
+    }
+
+    pub fn settings(&self) -> crate::transactions::TransactionSettings {
+        let base = crate::transactions::TransactionSettings::default();
+        let secs = |value: Option<f64>, default: std::time::Duration| {
+            value
+                .filter(|s| s.is_finite() && *s > 0.0)
+                .map_or(default, std::time::Duration::from_secs_f64)
+        };
+        crate::transactions::TransactionSettings {
+            idle: secs(self.idle_timeout_secs, base.idle),
+            lifetime: secs(self.max_secs, base.lifetime),
+            wait: secs(self.wait_secs, base.wait),
+            max_open: self.max_open.filter(|n| *n > 0).unwrap_or(base.max_open),
         }
     }
 }

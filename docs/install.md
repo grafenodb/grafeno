@@ -550,6 +550,12 @@ extract = ["notes"]         # link what new and changed texts mention
 communities = ["notes"]     # keep community summaries fresh
 communities_every_secs = 300
 communities_min_changes = 50
+
+[transactions]              # BEGIN … COMMIT across requests
+idle_timeout_secs = 30      # rolled back after this long without a request
+max_secs = 600              # rolled back at this age, busy or not
+wait_secs = 5               # how long BEGIN waits for the writing one before it
+max_open = 256
 ```
 
 Flags and environment variables (`GRAFENO_DB`, `GRAFENO_ADDR`,

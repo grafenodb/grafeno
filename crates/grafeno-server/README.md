@@ -96,6 +96,10 @@ that start with `\` are meta-commands (`\?` lists them): `\ns` (and
 `\ns create NAME`, `\ns drop NAME --yes`), `\use`,
 `\stats`, `\check`, `\rebuild`, `\search`, `\recall`, `\context`,
 `\export`, `\import`, `\format table|json`, `\timing`, `\i FILE`, `\q`.
+`BEGIN` (or `BEGIN READ ONLY`), `COMMIT` and `ROLLBACK` run the statements
+between them in one transaction, on a file or on a server; the prompt shows
+`*` while one is open, and a script or session that ends inside one rolls
+it back.
 History is kept in `~/.grafeno_history`.
 
 Without a terminal it runs scripts and exits, with an error code if a
@@ -392,6 +396,11 @@ requests accept either that or an ISO 8601 string (`2024-05-01`,
 | `POST`   | `/v1/{ns}/context`                    | recall query + `{budget, fact_share, max_facts, facts, communities}` | `{overview, items, facts, tokens, rendered}`; `communities` puts that many matching community summaries first |
 | `POST`   | `/v1/{ns}/batch`                      | `{ops}`                                                 | `{results, refs}`             |
 | `POST`   | `/v1/{ns}/query`                      | `{query, params?}` ([GQ](../../docs/query-language.md)) | `{columns, rows, stats}`      |
+| `POST`   | `/v1/{ns}/transactions`               | `{read_only?, timeout_secs?}`                           | 201 `{id, read_only, started_at, timeout_secs, statements, failed}`: an explicit transaction (16.4) |
+| `GET`    | `/v1/{ns}/transactions/{id}`          |                                                         | its state |
+| `POST`   | `/v1/{ns}/transactions/{id}/query`    | `{query, params?}`                                      | a statement in it: `{columns, rows, stats}` |
+| `POST`   | `/v1/{ns}/transactions/{id}/commit`   |                                                         | `{id, committed}`; 409 `rolled_back` if a statement in it failed or a cluster lost its leader |
+| `POST`   | `/v1/{ns}/transactions/{id}/rollback` |                                                         | `{id, rolled_back}` |
 | `POST`   | `/v1/{ns}/query/part`                 | a part of a split query (member to member, 13.4)        | the part's rows and statistics |
 | `GET`    | `/v1/whoami`                          |                                                         | the caller: `{name, owner, grants, own_only}` |
 | `GET`    | `/v1/metrics`                         |                                                         | counters and histograms in the Prometheus text format (any secret) |
@@ -489,6 +498,33 @@ Syncing a note and replacing its links in one request:
 ] }
 ```
 
+### Transactions
+
+`POST /v1/{ns}/transactions` begins an explicit transaction; its id takes
+statements at `/v1/{ns}/transactions/{id}/query` until `commit` or
+`rollback`. Only the caller that began it may use it.
+
+- **Reading** (`{"read_only": true}`): every statement sees the snapshot of
+  its start; writes are refused.
+- **Writing**: it holds the server's writer from its start to its end, so
+  writes stay one at a time (serializable isolation). Other writes wait
+  for it; a second writing transaction waits up to `wait_secs` and then
+  gets 409 `transaction_busy`. Nothing it does is visible to others until
+  it commits, and all of it is, at once.
+- A statement that fails may have done part of its work, which cannot be
+  undone alone: the transaction is then failed, its next statements are
+  refused, and `commit` rolls it back (409 `rolled_back`).
+- A transaction idle longer than its timeout (`timeout_secs`, at most
+  `idle_timeout_secs`), or older than `max_secs`, is rolled back; its id
+  then gives 404. A crash before `commit` leaves nothing of it.
+- On a cluster it runs on the leader (other members forward its requests)
+  in a transaction that captures what it does, and its `commit` replicates
+  everything as one entry; if the leader changes meanwhile, nothing of it
+  happened (409). With several groups, a transaction stays in the group of
+  the namespace it began in.
+- Users, roles and grants are managed outside transactions;
+  `grafeno_transactions_open{kind}` in `/v1/metrics` counts the open ones.
+
 ### The API as a contract
 
 The HTTP API is the only way into the engine: Grafeno Studio, the
@@ -520,6 +556,7 @@ engine lacks instead of failing. The capabilities:
 | `null_values` | a `null` property is stored as a value; `remove_props` removes keys (16.2) |
 | `search.text`, `search.vector` | full-text and vector search |
 | `recall`, `context`, `memory` | hybrid recall, context for a prompt, importance and accesses |
+| `transactions` | `BEGIN`, `COMMIT` and `ROLLBACK` across requests (16.4) |
 | `query`, `query.explain`, `batches`, `traversal`, `algorithms` | GQ, `EXPLAIN`, batches, k-hop, paths, subgraphs and neighborhoods, graph algorithms |
 | `resolution`, `match-rules`, `extraction`, `constraints`, `communities`, `summaries`, `indexes` | keeping knowledge in shape (phase 11) |
 | `changes`, `changes.stream`, `webhooks`, `ingest` | the change log, as pages and as a stream, webhooks, NDJSON ingestion |

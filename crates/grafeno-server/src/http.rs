@@ -63,6 +63,8 @@ pub struct AppState {
     /// The settings the server runs with, without secrets
     /// (`GET /v1/settings`).
     pub settings: Arc<Value>,
+    /// Explicit transactions open across requests (16.4).
+    pub transactions: Arc<crate::transactions::Transactions>,
 }
 
 /// Where writes go: the group-commit writer of a single server, or the
@@ -199,6 +201,7 @@ impl AppState {
             group: 0,
             groups: Arc::default(),
             settings: Arc::new(json!({})),
+            transactions: Arc::new(crate::transactions::Transactions::new(Default::default())),
         }
     }
 
@@ -253,6 +256,12 @@ impl AppState {
         self.writer
             .cluster()
             .is_none_or(|node| node.status().role == "leader")
+    }
+
+    /// How long explicit transactions may live and wait (16.4).
+    pub fn with_transactions(mut self, settings: crate::transactions::TransactionSettings) -> Self {
+        self.transactions = Arc::new(crate::transactions::Transactions::new(settings));
+        self
     }
 
     pub fn with_background(mut self, background: crate::events::BackgroundConfig) -> Self {
@@ -311,6 +320,18 @@ pub async fn serve_until(
     let local = listener.local_addr()?;
     eprintln!("grafeno listening on http://{local}");
     crate::events::start(&state);
+    // Explicit transactions past their time give the writer back.
+    {
+        let transactions = state.transactions.clone();
+        tokio::spawn(async move {
+            let mut every = tokio::time::interval(std::time::Duration::from_secs(1));
+            loop {
+                every.tick().await;
+                let transactions = transactions.clone();
+                let _ = tokio::task::spawn_blocking(move || transactions.reap()).await;
+            }
+        });
+    }
     axum::serve(
         listener,
         router_with(state, &options).into_make_service_with_connect_info::<SocketAddr>(),
@@ -472,6 +493,14 @@ pub fn router_with(state: AppState, options: &Options) -> Router {
         .route("/{ns}/import/graphml", post(import_graphml))
         .route("/{ns}/import/nodes.csv", post(import_nodes_csv))
         .route("/{ns}/import/edges.csv", post(import_edges_csv))
+        .route("/{ns}/transactions", post(begin_transaction))
+        .route("/{ns}/transactions/{id}", get(get_transaction))
+        .route("/{ns}/transactions/{id}/query", post(transaction_query))
+        .route("/{ns}/transactions/{id}/commit", post(commit_transaction))
+        .route(
+            "/{ns}/transactions/{id}/rollback",
+            post(rollback_transaction),
+        )
         .route("/{ns}/changes", get(changes))
         .route("/{ns}/ingest", post(ingest))
         .route("/{ns}/webhooks", get(list_webhooks).post(create_webhook))
@@ -1081,6 +1110,13 @@ async fn metrics(State(state): State<AppState>) -> Response {
         }
     }
     text.push_str(&crate::metrics::render_cluster(&statuses));
+    let (reading, writing) = state.transactions.open();
+    text.push_str(&format!(
+        "# HELP grafeno_transactions_open Explicit transactions open (16.4)\n\
+         # TYPE grafeno_transactions_open gauge\n\
+         grafeno_transactions_open{{kind=\"read\"}} {reading}\n\
+         grafeno_transactions_open{{kind=\"write\"}} {writing}\n"
+    ));
     (
         [(
             header::CONTENT_TYPE,
@@ -2295,24 +2331,77 @@ async fn run_query_keyed(
     outcome
 }
 
-/// Runs a GQ query: reads on a snapshot, writes in the next group commit.
-async fn run_query_counted(
+/// `POST /v1/{ns}/transactions`: begins an explicit transaction (16.4).
+async fn begin_transaction(
+    State(state): State<AppState>,
+    Path(_ns): Path<String>,
+    body: axum::body::Bytes,
+) -> ApiResult<(StatusCode, Json<Value>)> {
+    let input: crate::transactions::BeginInput = if body.iter().all(u8::is_ascii_whitespace) {
+        Default::default()
+    } else {
+        serde_json::from_slice(&body).map_err(|e| ApiError::bad_request(e.to_string()))?
+    };
+    let begun = crate::transactions::begin(&state, input).await?;
+    Ok((StatusCode::CREATED, Json(begun)))
+}
+
+async fn get_transaction(
+    State(state): State<AppState>,
+    Path((_ns, id)): Path<(String, String)>,
+) -> ApiResult<Json<Value>> {
+    Ok(Json(crate::transactions::describe(&state, &id)?))
+}
+
+/// Runs one GQ statement in the transaction.
+async fn transaction_query(
+    State(state): State<AppState>,
+    Path((ns, id)): Path<(String, String)>,
+    Body(input): Body<QueryInput>,
+) -> ApiResult<Json<Value>> {
+    let params = grafeno_query::params_from_json(&input.params);
+    let result = crate::transactions::query(&state, &id, ns, input.query, params).await?;
+    Ok(Json(result))
+}
+
+async fn commit_transaction(
+    State(state): State<AppState>,
+    Path((_ns, id)): Path<(String, String)>,
+) -> ApiResult<Json<Value>> {
+    Ok(Json(crate::transactions::commit(&state, &id).await?))
+}
+
+async fn rollback_transaction(
+    State(state): State<AppState>,
+    Path((_ns, id)): Path<(String, String)>,
+) -> ApiResult<Json<Value>> {
+    Ok(Json(
+        crate::transactions::rollback_route(&state, &id).await?,
+    ))
+}
+
+/// A statement checked against its caller: the limits it runs under, what
+/// an `EXPLAIN` of it would be denied, and its kind.
+pub(crate) struct Checked {
+    pub(crate) limits: grafeno_query::Limits,
+    pub(crate) denied: Option<String>,
+    pub(crate) kind: grafeno_query::StatementKind,
+}
+
+/// The rights a GQ statement needs in `ns`, checked for the current caller
+/// (refused with 403 unless it is an `EXPLAIN`), and the limits it runs
+/// under: for `/query` and for statements in a transaction (16.4).
+pub(crate) fn check_statement(
     state: &AppState,
-    ns: String,
-    query: String,
-    params: grafeno_query::Params,
-    key: Option<String>,
-    split: Option<crate::cluster::SplitRequest>,
-) -> ApiResult<Value> {
-    let db = state.db.clone();
-    // When the client goes away, this handler is dropped: the guard then
-    // tells the query to stop.
-    let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let _guard = CancelOnDrop(cancel.clone());
+    ns: &str,
+    query: &str,
+    cancel: Arc<std::sync::atomic::AtomicBool>,
+) -> ApiResult<Checked> {
+    let ns = ns.to_owned();
     let caller = auth::current();
     let view = caller.view();
     let context = auth::access_context(&caller);
-    let needs = grafeno_query::requirements(&query, Some(&context))?;
+    let needs = grafeno_query::requirements(query, Some(&context))?;
     // What the statement would lack if it ran: refused, or, under EXPLAIN,
     // said in the plan (14.3).
     let missing = match needs.kind {
@@ -2365,7 +2454,6 @@ async fn run_query_counted(
         }
     }
     let denied = missing.filter(|_| needs.explain);
-    let access = needs.kind == grafeno_query::StatementKind::Access;
     let limits = grafeno_query::Limits {
         cancel: Some(cancel),
         visible: (!caller.is_owner())
@@ -2374,6 +2462,33 @@ async fn run_query_counted(
         view: view.clone(),
         ..state.limits.clone()
     };
+    Ok(Checked {
+        limits,
+        denied,
+        kind: needs.kind,
+    })
+}
+
+/// Runs a GQ query: reads on a snapshot, writes in the next group commit.
+async fn run_query_counted(
+    state: &AppState,
+    ns: String,
+    query: String,
+    params: grafeno_query::Params,
+    key: Option<String>,
+    split: Option<crate::cluster::SplitRequest>,
+) -> ApiResult<Value> {
+    let db = state.db.clone();
+    // When the client goes away, this handler is dropped: the guard then
+    // tells the query to stop.
+    let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let _guard = CancelOnDrop(cancel.clone());
+    let Checked {
+        limits,
+        denied,
+        kind,
+    } = check_statement(state, &ns, &query, cancel)?;
+    let access = kind == grafeno_query::StatementKind::Access;
     if !grafeno_query::is_write(&query)? {
         let writer = state.writer.clone();
         return tokio::task::spawn_blocking(move || -> ApiResult<Value> {

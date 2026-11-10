@@ -1242,6 +1242,65 @@ function listQuery(options: ListOptions): string {
   return params.size ? `?${params}` : "";
 }
 
+/** An explicit transaction, as `begin` reports it. */
+export interface TransactionInfo {
+  id: string;
+  read_only: boolean;
+  started_at: string;
+  timeout_secs: number;
+  statements: number;
+  /** Why it failed, when a statement in it did: only `rollback` ends it. */
+  failed: string | null;
+}
+
+export interface BeginOptions {
+  /** One snapshot, no writes. */
+  readOnly?: boolean;
+  /** Seconds without a request before the server rolls it back (at most its own). */
+  timeoutSecs?: number;
+}
+
+/**
+ * An explicit transaction (engines with the `transactions` capability):
+ * statements across calls, then `commit` or `rollback`. A writing one holds
+ * the server's writer while it is open, so end it promptly.
+ */
+export class Transaction {
+  readonly #client: Grafeno;
+  readonly #base: string;
+  readonly info: TransactionInfo;
+
+  constructor(client: Grafeno, base: string, info: TransactionInfo) {
+    this.#client = client;
+    this.#base = `${base}/transactions/${encodeURIComponent(info.id)}`;
+    this.info = info;
+  }
+
+  get id(): string {
+    return this.info.id;
+  }
+
+  /** Runs one GQ statement in the transaction. */
+  query(query: string, params: Record<string, unknown> = {}): Promise<QueryResult> {
+    return this.#client.request("POST", `${this.#base}/query`, { query, params });
+  }
+
+  /** Its current state on the server. */
+  status(): Promise<TransactionInfo> {
+    return this.#client.request("GET", this.#base);
+  }
+
+  /** Makes everything it did durable and visible, at once. */
+  async commit(): Promise<void> {
+    await this.#client.request("POST", `${this.#base}/commit`);
+  }
+
+  /** Discards everything it did. */
+  async rollback(): Promise<void> {
+    await this.#client.request("POST", `${this.#base}/rollback`);
+  }
+}
+
 export class Namespace {
   readonly #client: Grafeno;
   readonly #base: string;
@@ -1435,6 +1494,32 @@ export class Namespace {
   /** Applies every operation in one transaction: all of them or none. */
   batch(ops: BatchOp[]): Promise<BatchResult> {
     return this.#call("POST", "/batch", { ops });
+  }
+
+  /** Begins an explicit transaction (16.4). */
+  async begin(options: BeginOptions = {}): Promise<Transaction> {
+    const info = await this.#call<TransactionInfo>("POST", "/transactions", {
+      read_only: options.readOnly ?? false,
+      ...(options.timeoutSecs === undefined ? {} : { timeout_secs: options.timeoutSecs }),
+    });
+    return new Transaction(this.#client, this.#base, info);
+  }
+
+  /**
+   * Runs `work` in an explicit transaction: committed when it resolves,
+   * rolled back when it throws (the error is thrown again).
+   */
+  async transaction<T>(work: (tx: Transaction) => Promise<T>, options: BeginOptions = {}): Promise<T> {
+    const tx = await this.begin(options);
+    let value: T;
+    try {
+      value = await work(tx);
+    } catch (error) {
+      await tx.rollback().catch(() => undefined);
+      throw error;
+    }
+    await tx.commit();
+    return value;
   }
 
   // Memory

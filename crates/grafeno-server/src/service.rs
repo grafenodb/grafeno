@@ -37,6 +37,8 @@ pub struct ServerSettings {
     pub import_chunk: usize,
     /// The change log's window.
     pub changes: grafeno::Retention,
+    /// Explicit transactions (16.4).
+    pub transactions: crate::transactions::TransactionSettings,
     /// How much of the audit log is kept (14.5).
     pub audit: grafeno::AuditRetention,
     /// Work that runs from the change log.
@@ -95,6 +97,7 @@ impl ServerSettings {
             writer: config.writer.options(),
             import_chunk: config.writer.import_chunk(),
             changes: config.changes.retention(),
+            transactions: config.transactions.settings(),
             audit: config.audit.retention(),
             background: config.background.clone(),
             cluster: config.cluster.clone(),
@@ -146,6 +149,12 @@ impl ServerSettings {
                 "flush_ms": self.writer.flush_every.as_millis() as u64,
                 "import_chunk": self.import_chunk,
             },
+            "transactions": {
+                "idle_timeout_secs": self.transactions.idle.as_secs_f64(),
+                "max_secs": self.transactions.lifetime.as_secs_f64(),
+                "wait_secs": self.transactions.wait.as_secs_f64(),
+                "max_open": self.transactions.max_open,
+            },
             "changes": {
                 "enabled": self.changes.enabled,
                 "max_entries": self.changes.max_entries,
@@ -187,6 +196,7 @@ pub fn run(
     db.set_audit_retention(settings.audit);
     let mut state = AppState::with_writer(db.clone(), settings.token.as_deref(), settings.writer)
         .with_background(settings.background.clone())
+        .with_transactions(settings.transactions)
         .with_import_chunk(settings.import_chunk)
         .with_limits(settings.limits.clone())
         .with_max_requests(settings.max_requests)

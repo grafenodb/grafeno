@@ -477,3 +477,84 @@ fn namespaces_from_scripts_and_the_command_line() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn transactions_on_a_file_and_on_a_server() {
+    let dir = std::env::temp_dir().join(format!("grafeno-shell-tx-{}", NodeId::new()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let db = dir.join("tx.redb");
+    let db = db.to_str().unwrap();
+    let script = "BEGIN; CREATE (:Note {n: 1}); ROLLBACK;\n\
+                  BEGIN; CREATE (:Note {n: 2}); COMMIT;\n\
+                  BEGIN; CREATE (:Note {n: 3}); RETURN 1 / 0; COMMIT;\n\
+                  MATCH (n:Note) RETURN n.n;";
+    let output = shell(&["--db", db, "-n", "k", "-c", script], None);
+    let stdout = text(&output.stdout);
+    assert!(
+        !output.status.success(),
+        "the failed transaction is an error"
+    );
+    assert!(
+        stdout.contains(" 2\n(1 row)"),
+        "{stdout}{}",
+        text(&output.stderr)
+    );
+
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    // Killed when the test ends, failing or not (a child left running
+    // would hold the test's output open).
+    struct Server(std::process::Child);
+    impl Drop for Server {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+    let _server = Server(
+        Command::new(env!("CARGO_BIN_EXE_grafeno"))
+            .args(["serve", "--db", db, "--addr", &format!("127.0.0.1:{port}")])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    let url = format!("http://127.0.0.1:{port}");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    while std::net::TcpStream::connect(("127.0.0.1", port)).is_err() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the server did not start"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    let output = shell(&["--url", &url, "-n", "remote", "-c", script], None);
+    let stdout = text(&output.stdout);
+    assert!(
+        stdout.contains(" 2\n(1 row)"),
+        "{stdout}{}",
+        text(&output.stderr)
+    );
+    // Read only: a snapshot, no writes.
+    let output = shell(
+        &[
+            "--url",
+            &url,
+            "-n",
+            "k",
+            "-c",
+            "BEGIN READ ONLY; MATCH (n) RETURN count(n); CREATE (:Note); COMMIT;",
+        ],
+        None,
+    );
+    assert!(
+        text(&output.stderr).contains("only reads"),
+        "{}",
+        text(&output.stderr)
+    );
+    drop(_server);
+    let _ = std::fs::remove_dir_all(&dir);
+}

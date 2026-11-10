@@ -729,6 +729,29 @@ deep. Past either, the query fails with an error instead of exhausting the
 stack. The library and the local shell run without the other limits
 (`grafeno_query::execute_with` takes them).
 
+## Transactions
+
+Every statement runs in one transaction: all of its changes or none,
+checked against constraints and indexes, invisible to others until it
+commits, and durable once it has. To make several statements one
+transaction, put them between `BEGIN` and `COMMIT` (or `ROLLBACK`) in the
+shell or a script, or use `POST /v1/{ns}/transactions` over HTTP:
+
+```text
+BEGIN;
+MATCH (a:Account {id: 'a'}) SET a.balance = a.balance - 100;
+MATCH (b:Account {id: 'b'}) SET b.balance = b.balance + 100;
+COMMIT;
+```
+
+`BEGIN READ ONLY` reads one snapshot throughout. A writing transaction
+holds the writer while it is open: writes are one at a time, so
+transactions are serializable, and other writes wait for it (a server
+rolls back one that stays idle too long). If a statement in it fails, the
+transaction can only be rolled back: the failed statement may have
+written part of its work. `BEGIN`, `COMMIT` and `ROLLBACK` sent to `/query`
+are refused, since that endpoint runs one statement as one transaction.
+
 ## Namespaces
 
 A namespace is created by its first write, or explicitly, with a comment

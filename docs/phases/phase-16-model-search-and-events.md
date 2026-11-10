@@ -2,7 +2,7 @@
 
 [All phases](README.md) · [← Phase 15: Engine and interface apart](phase-15-engine-and-interface-apart.md) · [Phase 17: Integrations →](phase-17-integrations.md)
 
-**Status:** in progress: 16.1 to 16.3 done.
+**Status:** in progress: 16.1 to 16.4 done.
 
 What the engine still lacks as a database people build on: a free
 license, null as a value, namespaces made from scripts, transactions that
@@ -19,7 +19,7 @@ Steps:
 - [16.1 A free license, and documentation about Grafeno only (done)](#161-a-free-license-and-documentation-about-grafeno-only-done)
 - [16.2 Null as a stored value (done)](#162-null-as-a-stored-value-done)
 - [16.3 Namespaces from scripts (done)](#163-namespaces-from-scripts-done)
-- [16.4 Explicit transactions (planned)](#164-explicit-transactions-planned)
+- [16.4 Explicit transactions (done)](#164-explicit-transactions-done)
 - [16.5 Advanced indexes and constraints (planned)](#165-advanced-indexes-and-constraints-planned)
 - [16.6 Full-text search (planned)](#166-full-text-search-planned)
 - [16.7 Better vector indexes (planned)](#167-better-vector-indexes-planned)
@@ -210,7 +210,7 @@ As built:
   script, `--stop-on-error`, the command line's create, describe and
   drop).
 
-## 16.4 Explicit transactions (planned)
+## 16.4 Explicit transactions (done)
 
 **Where it starts from.** Every statement, batch and request is one ACID
 transaction: atomic (redb commits all or nothing), consistent (constraints
@@ -238,6 +238,54 @@ transaction never spans more than one request.
 Done when: the shell, HTTP, the TypeScript client and MCP can run
 multi-statement transactions, and the tests above pass, alone and in the
 cluster tests.
+
+As built:
+
+- The engine already had what a transaction across statements needs: a
+  `WriteTx` lives until `commit` or `abort` and moves between threads, as
+  does a `ReadTx`. New: `Grafeno::begin_captured`, a write transaction
+  whose changes are captured as a replication entry, and
+  `WriteTx::into_entry`, which ends it uncommitted and gives the entry.
+- The cluster (`grafeno-cluster`): writes were serialized by a mutex held
+  for one call; it became a gate whose guard can outlive a call.
+  `Node::begin_transaction(wait)` takes it (on the leader, once its
+  database holds every entry before) and gives a captured transaction;
+  `commit_transaction` proposes its entry, so a transaction's statements
+  replicate as one entry and no other write runs between its first
+  statement and its commit; dropping or rolling it back gives the gate
+  back. Plain writes use the same gate.
+- The server (`transactions.rs`): sessions with an owner (the caller's
+  name), a group, a timeout and the work itself, read (a snapshot) or
+  write (a `WriteTx` and the single permit of writing transactions on a
+  single server; a cluster `Transaction` on a leader). Routes under
+  `/v1/{ns}/transactions`; beginning or ending one needs read rights
+  there, and each statement is checked as `/query` checks it
+  (`check_statement`, taken out of the query route), except that access
+  statements are refused inside transactions. A statement that fails in a
+  writing transaction marks it failed. Sessions past their idle time or
+  lifetime are rolled back by a task every second and when touched.
+  `[transactions]` in `grafeno.toml`, shown by `GET /v1/settings`;
+  `grafeno_transactions_open{kind}` in the metrics; capability
+  `transactions`.
+- On a single server a writing transaction holds redb's write lock, so
+  the group-commit writer waits for it; the idle timeout (30 s by
+  default) bounds how long.
+- The shell: `BEGIN [READ ONLY]`, `COMMIT`, `ROLLBACK` on a file (the
+  engine's transactions) or a server (the HTTP routes); `*` in the
+  prompt; a script or session ending inside one rolls it back. GQ refuses
+  the three words outside a session, with where to use them.
+- The TypeScript client: `Namespace.begin()`, a `Transaction` with
+  `query`, `status`, `commit`, `rollback`, and `transaction(work)`.
+- Not done: the MCP tools stay one call, one transaction (an agent's
+  session would hold the writer between its turns); and savepoints, as
+  redb has none once tables are open.
+- Tests: HTTP (`tests/transactions.rs`: isolation, commit, rollback, a
+  failed statement, a reading snapshot, the busy writer, idle timeout, a
+  plain write waiting, and a server killed with a transaction open), the
+  shell on a file and on a real server, the cluster
+  (`explicit_transactions_commit_as_one_entry`: one entry for two
+  statements, plain writes waiting, rollback, followers refusing), and the
+  TypeScript client against the real binary.
 
 ## 16.5 Advanced indexes and constraints (planned)
 
