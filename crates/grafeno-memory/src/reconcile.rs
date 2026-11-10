@@ -587,17 +587,21 @@ pub fn extract_batch(
         // Dates and amounts on the text's node, when they change.
         let node = tx.node(ns, source)?.ok_or(Error::NodeNotFound(source))?;
         let mut props = Props::new();
+        let mut gone: Vec<&str> = Vec::new();
         for (key, values) in [("mentioned_dates", &dates), ("mentioned_amounts", &amounts)] {
             let new = Value::from(values.iter().cloned().collect::<Vec<_>>());
             let old = node.props.get(key).cloned().unwrap_or(Value::Null);
-            if values.is_empty() && !old.is_null() {
-                props.insert(key.into(), Value::Null);
+            if values.is_empty() && node.props.contains_key(key) {
+                gone.push(key);
             } else if !values.is_empty() && old != new {
                 props.insert(key.into(), new);
             }
         }
         if !props.is_empty() {
             tx.set_node_props(ns, source, props)?;
+        }
+        if !gone.is_empty() {
+            tx.remove_node_props(ns, source, &gone)?;
         }
         tx.put_state(ns, HASHES, &source.to_string(), &text_hash(&text))?;
     }

@@ -274,6 +274,9 @@ presentan el proyecto y los primeros pasos.
   or Apache-2.0 everywhere a package carries metadata; the documentation
   and sources name no other product (a test checks it); GQ is named on its
   own; the compatibility aliases of the text functions are gone.
+- **Phase 16.2, null as a stored value:** setting a property to `null`
+  keeps the key; `REMOVE` and `remove_props` delete it; `hasKey`; indexes
+  hold no nulls, and unique indexes take several.
 
 Next, the rest of phase 16 (data model, search, analysis and events), then
 phase 17: integrations (client libraries for more languages). The plan is in

@@ -404,14 +404,14 @@ what changed.
 | ---------------------------------------- | --------------------------------------------------------- |
 | `CREATE (n:Note {title: 'x', @text: '…'})` | creates nodes (one label at least) and edges (one label, a direction) |
 | `CREATE (a)-[:knows {@valid_from: '2024-01-01'}]->(b)` | creates an edge between bound or new nodes |
-| `SET n.key = value`                      | sets a property (`null` removes it)                       |
-| `SET n += {a: 1, b: null}`               | merges properties                                         |
-| `SET n = {a: 1}`                         | replaces all properties                                   |
+| `SET n.key = value`                      | sets a property (`null` is stored: the key stays)         |
+| `SET n += {a: 1, b: null}`               | merges properties (`b` becomes `null`)                    |
+| `SET n = {a: 1}`                         | replaces all properties (keys the map lacks are removed)  |
 | `SET n:Label:Other`                      | adds labels                                               |
 | `SET n.@text = '…'`, `SET n.@embedding = […]` | indexes text or a vector (`null` removes it)         |
 | `SET n.@importance = 0.9`                | sets the importance, from 0 to 1                         |
 | `SET r.@valid_to = '2025-01-01'`         | the fact stopped being true then (history is kept)        |
-| `REMOVE n.key, n:Label, n.@text`         | removes properties, labels, the text or the embedding    |
+| `REMOVE n.key, n:Label, n.@text`         | removes properties (the key goes), labels, the text or the embedding |
 | `DELETE n` (`DETACH DELETE n`)           | deletes nodes with their edges, or edges                  |
 | `RETRACT r`                              | the fact was a mistake: hidden from current knowledge, visible to `KNOWN AT` earlier |
 | `MERGE (n:Tag {name: 'rust'})`           | matches the pattern, or creates it when nothing matches  |
@@ -420,6 +420,20 @@ what changed.
 `CREATE` accepts `@text`, `@embedding` and `@sources` (a list of ids) for
 nodes, and `@valid_from`, `@valid_to` and `@sources` for edges. After a
 write, `RETURN` sees the written values.
+
+### Null values
+
+A property can hold `null`, and that is not the same as not having the
+property: `CREATE (:P {a: null})` and `SET p.a = null` keep the key `a`,
+which `keys(p)`, `properties(p)` and exports show. `REMOVE p.a` (and
+`remove_props` over HTTP and MCP) deletes the key. Reading `p.a` gives
+`null` either way, comparisons with it are unknown, and `p.a IS NULL` is
+true for both; `hasKey(p, 'a')` tells them apart. Nulls are kept inside
+lists and maps too. Indexes hold no nulls: an index lookup for `= null`
+finds nothing (as the comparison does), and several nodes with `null`
+under a unique index are no conflict. CSV and GraphML have no way to write
+a null that differs from an empty value, so there a null property becomes
+an absent one; the JSON Lines export keeps it.
 
 ### `MERGE`
 
@@ -512,7 +526,8 @@ ones decide it.
 | `log` (natural), `log10`, `exp`, `sin`, `cos`, `tan`, `pi()`, `e()` | |
 | `datetime([x])` / `time([x])`, `date([t])` (`YYYY-MM-DD`), `now()`, `timestamp()` (milliseconds) | |
 | `duration(x)`, `duration.between`, `duration.inMonths` / `inDays` / `inSeconds`, `date.truncate(unit, t)` | see *Time and durations* |
-| `exists(pattern)`, `exists(n.key)` | pattern predicate; whether a property is set |
+| `exists(pattern)`, `exists(n.key)` | pattern predicate; whether a property is set and not null |
+| `hasKey(x, 'key')` | whether a node, an edge or a map has the key, even with a `null` value |
 | `nodes(p)`, `relationships(p)` / `rels(p)`, `length(p)` | the parts of a path |
 | `reverse(x)`, `tail(list)`, `isEmpty(x)`, `left(s, n)`, `right(s, n)`, `ltrim`, `rtrim`, `char_length` | |
 | `toBoolean`, `toIntegerOrNull`, `toFloatOrNull`, `toStringOrNull`, `toBooleanOrNull`, `toIntegerList`, `toFloatList`, `toStringList`, `toBooleanList`, `nullIf(a, b)` | conversions; `…OrNull` gives null instead of an error |

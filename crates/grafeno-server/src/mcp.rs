@@ -564,6 +564,8 @@ impl McpServer {
             #[serde(default)]
             remove_labels: Vec<String>,
             #[serde(default)]
+            remove_props: Vec<String>,
+            #[serde(default)]
             importance: Option<f32>,
             #[serde(default)]
             namespace: Option<String>,
@@ -579,6 +581,10 @@ impl McpServer {
             tx.node(ns, id)?.ok_or(Error::NodeNotFound(id))?;
             if !props.is_empty() {
                 tx.set_node_props(ns, id, props)?;
+            }
+            if !args.remove_props.is_empty() {
+                let keys: Vec<&str> = args.remove_props.iter().map(String::as_str).collect();
+                tx.remove_node_props(ns, id, &keys)?;
             }
             for label in &args.add_labels {
                 tx.add_label(ns, id, label)?;
@@ -1489,7 +1495,8 @@ fn tools() -> Value {
                     "id": id("Id of the node."),
                     "text": { "type": "string", "description": "New text; replaces the old one." },
                     "name": { "type": "string", "description": "New name." },
-                    "props": { "type": "object", "description": "Properties to merge; null removes a property." },
+                    "props": { "type": "object", "description": "Properties to merge; a null is stored as a value." },
+                    "remove_props": { "type": "array", "items": { "type": "string" }, "description": "Properties to remove." },
                     "add_labels": { "type": "array", "items": { "type": "string" } },
                     "remove_labels": { "type": "array", "items": { "type": "string" } },
                     "importance": importance,

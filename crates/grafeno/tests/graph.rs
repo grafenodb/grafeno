@@ -147,7 +147,8 @@ fn props_merge_and_labels() {
 
     let read = db.begin_read().unwrap();
     let node = read.node(NS, a).unwrap().unwrap();
-    assert_eq!(node.prop("title"), None);
+    // A null is a value: the key stays.
+    assert_eq!(node.prop("title"), Some(&Value::Null));
     assert_eq!(node.prop("score"), Some(&Value::from(3)));
     assert_eq!(node.labels, vec!["Archived"]);
     assert!(read.nodes_with_label(NS, "Note").unwrap().is_empty());

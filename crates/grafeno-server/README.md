@@ -444,9 +444,10 @@ requests accept either that or an ISO 8601 string (`2024-05-01`,
 - **node**: `{labels, props?, sources?, text?, embedding?}`. `PUT` and upserts
   replace the whole node; a missing `text` or `embedding` is removed, edges
   are kept.
-- **patch**: `{props?, add_labels?, remove_labels?, text?, embedding?,
-  importance?}`. `props` is merged (`null` removes a key); `text: null` or
-  `embedding: null` removes them.
+- **patch**: `{props?, remove_props?, add_labels?, remove_labels?, text?,
+  embedding?, importance?}`. `props` is merged, and a `null` in it is
+  stored as a value (the key stays); `remove_props` lists keys to remove;
+  `text: null` or `embedding: null` removes them.
 - **edge**: `{from, label, to, props?, sources?, valid_from?, valid_to?}`.
 - **filter**: `{labels?, valid_at?, known_at?}`. Without `known_at`, retracted
   edges are left out.
@@ -510,6 +511,7 @@ engine lacks instead of failing. The capabilities:
 | Capability | What it is |
 | ---------- | ---------- |
 | `namespaces`, `nodes`, `edges`, `facts` | the graph and its facts with valid and record time |
+| `null_values` | a `null` property is stored as a value; `remove_props` removes keys (16.2) |
 | `search.text`, `search.vector` | full-text and vector search |
 | `recall`, `context`, `memory` | hybrid recall, context for a prompt, importance and accesses |
 | `query`, `query.explain`, `batches`, `traversal`, `algorithms` | GQ, `EXPLAIN`, batches, k-hop, paths, subgraphs and neighborhoods, graph algorithms |
@@ -585,7 +587,7 @@ another group's file. See [docs/cluster-runbooks.md](../../docs/cluster-runbooks
 | `recall`   | Hybrid search; returns ids, names, snippets and why each result matched. Records accesses. |
 | `context`  | Relevant memories and facts as compact text within a token budget, after the community summaries that match. |
 | `relate`   | Records a fact (edge) between two nodes, with optional valid dates; says which facts it contradicted under a constraint (and ended). |
-| `update`   | Replaces a node's text, renames it, merges properties, changes labels or importance. |
+| `update`   | Replaces a node's text, renames it, merges properties (a `null` is stored), removes properties by name (`remove_props`), changes labels or importance. |
 | `forget`   | Invalidates (default), retracts or deletes a fact; deletes a node.            |
 | `get_node` | A node with its text, properties and connecting facts.                        |
 | `query`    | A read-only [GQ](../../docs/query-language.md) statement; at most 200 rows.   |

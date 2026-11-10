@@ -17,6 +17,15 @@ version (now 17) is upgraded in place, with a copy kept first.
   Apache License 2.0, at the user's choice (`LICENSE-MIT`,
   `LICENSE-APACHE`). The packages, the Windows setup (a license page),
   the archives and the winget manifest carry it.
+- **Changed**: a `null` property is a value. `SET n.x = null`, a `null` in
+  `SET n += {…}`, in a new node's properties (GQ `CREATE`, HTTP, MCP) and
+  in an HTTP `PATCH` or the MCP `update` tool store `null` and keep the
+  key, where before they removed it. To remove a property: `REMOVE n.x`
+  in GQ, `remove_props: ["x"]` in a `PATCH` or in `update`, or
+  `remove_node_props` / `remove_edge_props` in the library. `SET n = {…}`
+  still removes the keys the map lacks. New: `hasKey(x, 'key')`; the
+  capability `null_values` says an engine works this way. Indexes hold no
+  nulls, and nulls never clash under a unique index.
 - **Changed**: the text-similarity functions answer only to their `text.*`
   names; the five compatibility aliases outside that prefix are gone, and a
   query that uses one fails with "unknown function". Their replacements:

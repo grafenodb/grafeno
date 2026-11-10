@@ -104,6 +104,21 @@ pub(crate) fn function(name: &str, args: &[Value]) -> Option<Result<Value, Query
                     }
                 }
             }
+            "haskey" => {
+                arity(name, args, 2, 2)?;
+                let key = string(name, &args[1])?;
+                Value::Bool(match &args[0] {
+                    Value::Node(node) => node.props.contains_key(key),
+                    Value::Edge(edge) => edge.props.contains_key(key),
+                    Value::Map(map) => map.contains_key(key),
+                    other => {
+                        return Err(error(format!(
+                            "hasKey() needs a node, edge or map, not a {}",
+                            other.type_name()
+                        )));
+                    }
+                })
+            }
             "reverse" => {
                 arity(name, args, 1, 1)?;
                 match &args[0] {
@@ -247,6 +262,7 @@ pub(crate) const NAMES: &[&str] = &[
     "nodes",
     "relationships",
     "rels",
+    "haskey",
     "reverse",
     "tail",
     "isempty",

@@ -36,6 +36,8 @@ pub const CAPABILITIES: &[&str] = &[
     "nodes",
     "edges",
     "facts",
+    // Null stored as a value, and properties removed by name (16.2).
+    "null_values",
     "search.text",
     "search.vector",
     // Memory (phase 5) and recall.

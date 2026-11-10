@@ -1994,7 +1994,6 @@ impl Runner<'_> {
             for (key, expr) in &node.props {
                 let value = self.eval(row, expr)?;
                 match key {
-                    Key::Prop(_) if value.is_null() => {}
                     Key::Prop(name) => props.push((name.clone(), value)),
                     Key::Meta(name) => match name.as_str() {
                         "text" => match value {
@@ -2062,7 +2061,6 @@ impl Runner<'_> {
             for (key, expr) in &rel.props {
                 let value = self.eval(row, expr)?;
                 match key {
-                    Key::Prop(_) if value.is_null() => {}
                     Key::Prop(name) => props.push((name.clone(), value)),
                     Key::Meta(_) if value.is_null() => {}
                     Key::Meta(name) => match name.as_str() {
@@ -2117,6 +2115,15 @@ impl Runner<'_> {
         match target {
             Target::Node(id) => self.tx().set_node_props(ns, *id, props)?,
             Target::Edge(id) => self.tx().set_edge_props(ns, *id, props)?,
+        }
+        Ok(())
+    }
+
+    fn remove_props(&mut self, target: &Target, keys: &[&str]) -> Result<(), QueryError> {
+        let ns = self.ns;
+        match target {
+            Target::Node(id) => self.tx().remove_node_props(ns, *id, keys)?,
+            Target::Edge(id) => self.tx().remove_edge_props(ns, *id, keys)?,
         }
         Ok(())
     }
@@ -2188,19 +2195,25 @@ impl Runner<'_> {
                 let Value::Map(entries) = self.eval(row, map)? else {
                     return Err(QueryError::runtime("SET with `+=` or `=` needs a map"));
                 };
-                let mut props = Props::new();
                 if matches!(item, SetItem::Replace { .. }) {
+                    // `=` replaces: the keys the map does not have go.
                     let current = match &target {
                         Target::Node(id) => self.tx().node(ns, *id)?.map(|n| n.props),
                         Target::Edge(id) => self.tx().edge(ns, *id)?.map(|e| e.props),
                     };
-                    for key in current.unwrap_or_default().keys() {
-                        props.insert(key.clone(), serde_json::Value::Null);
+                    let gone: Vec<String> = current
+                        .unwrap_or_default()
+                        .keys()
+                        .filter(|key| !entries.contains_key(*key))
+                        .cloned()
+                        .collect();
+                    if !gone.is_empty() {
+                        let gone: Vec<&str> = gone.iter().map(String::as_str).collect();
+                        self.remove_props(&target, &gone)?;
                     }
                 }
                 self.stats.properties_set += entries.len() as u64;
-                props.extend(to_props(entries)?);
-                self.set_props(&target, props)?;
+                self.set_props(&target, to_props(entries)?)?;
             }
             SetItem::Labels { labels, .. } => {
                 let Target::Node(id) = target else {
@@ -2234,7 +2247,7 @@ impl Runner<'_> {
                 key: Key::Prop(name),
                 ..
             } => {
-                self.set_props(&target, to_props([(name.clone(), Value::Null)])?)?;
+                self.remove_props(&target, &[name.as_str()])?;
                 self.stats.properties_set += 1;
             }
             RemoveItem::Property {

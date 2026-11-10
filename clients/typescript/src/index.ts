@@ -282,8 +282,10 @@ export interface NodeInput {
 
 /** `text` or `embedding` set to `null` removes them. */
 export interface NodePatch {
-  /** Merged into the current properties; `null` values remove properties. */
+  /** Merged into the current properties; a `null` is stored as a value. */
   props?: Props;
+  /** Properties to remove (engines with the `null_values` capability). */
+  remove_props?: string[];
   add_labels?: string[];
   remove_labels?: string[];
   text?: string | null;

@@ -1299,9 +1299,12 @@ async fn get_node(
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PatchNode {
-    /// Merged into the current properties; `null` values remove properties.
+    /// Merged into the current properties; a `null` is stored as a value.
     #[serde(default)]
     props: Option<Props>,
+    /// Properties to remove (after `props` is merged).
+    #[serde(default)]
+    remove_props: Vec<String>,
     #[serde(default)]
     add_labels: Vec<String>,
     #[serde(default)]
@@ -1322,6 +1325,10 @@ fn apply_patch(tx: &mut WriteTx, ns: &str, id: NodeId, patch: PatchNode) -> graf
     }
     if let Some(props) = patch.props {
         tx.set_node_props(ns, id, props)?;
+    }
+    if !patch.remove_props.is_empty() {
+        let keys: Vec<&str> = patch.remove_props.iter().map(String::as_str).collect();
+        tx.remove_node_props(ns, id, &keys)?;
     }
     for label in &patch.add_labels {
         tx.add_label(ns, id, label)?;

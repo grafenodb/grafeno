@@ -1675,7 +1675,8 @@ impl WriteTx {
         Ok(())
     }
 
-    /// Merges `props` into the node; a `null` value removes the property.
+    /// Merges `props` into the node. A `null` value is stored as `null`
+    /// (the key stays); [`WriteTx::remove_node_props`] removes keys.
     pub fn set_node_props(&mut self, ns: &str, id: NodeId, props: Props) -> Result<()> {
         let mut node = self.node_to_change(ns, id)?;
         let previous = node.clone();
@@ -1684,6 +1685,21 @@ impl WriteTx {
         node.updated_at = Timestamp::now();
         let keys: Vec<&str> = keys.iter().map(String::as_str).collect();
         self.allow_node(crate::Act::Update, ns, &node, &keys)?;
+        self.put_node(ns, &node, Some(&previous))
+    }
+
+    /// Removes these properties from the node (absent ones are ignored).
+    pub fn remove_node_props(&mut self, ns: &str, id: NodeId, keys: &[&str]) -> Result<()> {
+        let mut node = self.node_to_change(ns, id)?;
+        if !keys.iter().any(|key| node.props.contains_key(*key)) {
+            return Ok(());
+        }
+        let previous = node.clone();
+        for key in keys {
+            node.props.remove(*key);
+        }
+        node.updated_at = Timestamp::now();
+        self.allow_node(crate::Act::Update, ns, &node, keys)?;
         self.put_node(ns, &node, Some(&previous))
     }
 
@@ -1902,13 +1918,27 @@ impl WriteTx {
         bump_edge_label(&self.tx, ns, &edge.label, 1)
     }
 
-    /// Merges `props` into the edge; a `null` value removes the property.
+    /// Merges `props` into the edge. A `null` value is stored as `null`
+    /// (the key stays); [`WriteTx::remove_edge_props`] removes keys.
     pub fn set_edge_props(&mut self, ns: &str, id: EdgeId, props: Props) -> Result<()> {
         let mut edge = self.edge_to_change(ns, id)?;
         let keys: Vec<String> = props.keys().cloned().collect();
         merge_props(&mut edge.props, props);
         let keys: Vec<&str> = keys.iter().map(String::as_str).collect();
         self.allow_edge(crate::Act::Update, ns, &edge, &keys)?;
+        self.put_edge(ns, &edge)
+    }
+
+    /// Removes these properties from the edge (absent ones are ignored).
+    pub fn remove_edge_props(&mut self, ns: &str, id: EdgeId, keys: &[&str]) -> Result<()> {
+        let mut edge = self.edge_to_change(ns, id)?;
+        if !keys.iter().any(|key| edge.props.contains_key(*key)) {
+            return Ok(());
+        }
+        for key in keys {
+            edge.props.remove(*key);
+        }
+        self.allow_edge(crate::Act::Update, ns, &edge, keys)?;
         self.put_edge(ns, &edge)
     }
 
@@ -2089,14 +2119,9 @@ fn normalize_labels(labels: Vec<String>) -> Result<Vec<String>> {
     Ok(labels)
 }
 
+/// Merges `changes` into `target`: nulls are values like any other.
 fn merge_props(target: &mut Props, changes: Props) {
-    for (key, value) in changes {
-        if value.is_null() {
-            target.remove(&key);
-        } else {
-            target.insert(key, value);
-        }
-    }
+    target.extend(changes);
 }
 
 pub(crate) fn check_interval(from: Option<Timestamp>, to: Option<Timestamp>) -> Result<()> {

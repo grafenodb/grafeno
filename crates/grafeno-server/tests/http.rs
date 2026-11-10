@@ -125,6 +125,15 @@ async fn node_and_edge_lifecycle() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
+    // A null is stored; `remove_props` removes.
+    assert_eq!(body["props"], json!({ "pinned": true, "title": null }));
+    let (_, body) = call(
+        &app,
+        "PATCH",
+        &format!("/v1/vault/nodes/{note}"),
+        Some(json!({ "remove_props": ["title"] })),
+    )
+    .await;
     assert_eq!(body["props"], json!({ "pinned": true }));
     assert_eq!(body["labels"], json!(["Note", "Pinned"]));
     assert!(body.get("text").is_none());
@@ -1685,4 +1694,40 @@ async fn neighborhoods_validate_root_limits_ids_and_options() {
         let (status, result) = call(&app, "POST", "/v1/lab/neighborhoods", Some(input)).await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{result}");
     }
+}
+
+#[tokio::test]
+async fn nulls_are_stored_and_removed_by_name() {
+    let app = app(None);
+    let (_, about) = call(&app, "GET", "/v1/about", None).await;
+    assert!(
+        about["capabilities"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("null_values"))
+    );
+    let (status, created) = call(
+        &app,
+        "POST",
+        "/v1/k/nodes",
+        Some(json!({ "labels": ["P"], "props": { "a": 1, "b": null } })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{created}");
+    let id = id(&created);
+    let (status, _) = call(
+        &app,
+        "PATCH",
+        &format!("/v1/k/nodes/{id}"),
+        Some(json!({ "props": { "a": null, "c": 3 }, "remove_props": ["b"] })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (_, node) = call(&app, "GET", &format!("/v1/k/nodes/{id}"), None).await;
+    let props = if node.get("props").is_some() {
+        &node["props"]
+    } else {
+        &node["node"]["props"]
+    };
+    assert_eq!(props, &json!({ "a": null, "c": 3 }), "{node}");
 }

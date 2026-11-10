@@ -2,7 +2,7 @@
 
 [All phases](README.md) · [← Phase 15: Engine and interface apart](phase-15-engine-and-interface-apart.md) · [Phase 17: Integrations →](phase-17-integrations.md)
 
-**Status:** in progress: 16.1 done.
+**Status:** in progress: 16.1 and 16.2 done.
 
 What the engine still lacks as a database people build on: a free
 license, null as a value, namespaces made from scripts, transactions that
@@ -17,7 +17,7 @@ listed in the change log of the release that brings it.
 Steps:
 
 - [16.1 A free license, and documentation about Grafeno only (done)](#161-a-free-license-and-documentation-about-grafeno-only-done)
-- [16.2 Null as a stored value (planned)](#162-null-as-a-stored-value-planned)
+- [16.2 Null as a stored value (done)](#162-null-as-a-stored-value-done)
 - [16.3 Namespaces from scripts (planned)](#163-namespaces-from-scripts-planned)
 - [16.4 Explicit transactions (planned)](#164-explicit-transactions-planned)
 - [16.5 Advanced indexes and constraints (planned)](#165-advanced-indexes-and-constraints-planned)
@@ -90,7 +90,7 @@ As built:
 - Not covered by the test: the separate documentation site, whose same
   pass is left uncommitted for its owner.
 
-## 16.2 Null as a stored value (planned)
+## 16.2 Null as a stored value (done)
 
 **Where it starts from.** `SET n.x = null`, a `null` in a merge
 (`SET n += {x: null}`, `PATCH` over HTTP) and `null` in a new node's
@@ -116,6 +116,42 @@ never set cannot be told apart.
 Done when: GQ, HTTP, MCP, the shell, CSV and GraphML keep and show nulls;
 indexes and constraints behave as above; the conformance scenarios cover
 it.
+
+As built:
+
+- The engine's `merge_props` stores every value it is given, nulls
+  included; `set_node_props` and `set_edge_props` say so, and the new
+  `remove_node_props` and `remove_edge_props` remove keys by name (under
+  the same rights checks, 14.4, as setting them; nothing is written when
+  none of the keys exists). A new node or edge already kept the nulls it
+  was created with in the library; GQ's `CREATE` (and `MERGE`) dropped
+  them and now keeps them.
+- GQ: `SET` stores nulls, `REMOVE n.key` removes, and `SET n = {…}`
+  removes the keys the map lacks before merging it (it used to set every
+  key to null first). `hasKey(x, 'key')` (in `morefns.rs`) answers for
+  nodes, edges and maps.
+- HTTP `PATCH /v1/{ns}/nodes/{id}` and batch updates take `remove_props`;
+  the MCP `update` tool too; the TypeScript client's `NodePatch` has the
+  field. `GET /v1/about` lists the capability `null_values`; the API
+  version stays 1, as reading a property gives `null` either way.
+- Extraction (11.1) cleared `mentioned_dates` and `mentioned_amounts` by
+  setting them to null; it now removes them.
+- Indexes: `encode_value` already had no encoding for null, so a null is
+  never indexed and an `= null` lookup finds nothing. The integrity check
+  compared every value under a unique index, so several nulls showed as a
+  clash; it now compares only values the index holds (a bug the new tests
+  found).
+- Exports: JSON Lines keeps nulls (the props are JSON). CSV and GraphML
+  cannot tell a null from an empty value, so a null property is exported
+  as an absent one, as the query language guide says.
+- No layout change, and replication carries nulls as it carries any
+  value (entries hold the records' after-images).
+- Tests: `grafeno/tests/nulls.rs` (kept and removed by name on nodes and
+  edges, indexes and unique indexes with nulls, the check, the export),
+  seven conformance scenarios (keys, `REMOVE`, nulls at creation, `+=`
+  and `=`, stored null against a missing key, `hasKey`, nulls in lists and
+  maps), and an HTTP test of `PATCH` with `remove_props` and the
+  capability.
 
 ## 16.3 Namespaces from scripts (planned)
 

@@ -113,6 +113,8 @@ impl ReadTx {
                 if def.unique
                     && node.has_label(&def.label)
                     && let Some(value) = node.props.get(&def.key)
+                    // Only values the index holds can clash: not a null.
+                    && crate::index::encode_value(value).is_some()
                     && let Some(other) = seen.insert(value.to_string(), id)
                 {
                     problems.push(format!(

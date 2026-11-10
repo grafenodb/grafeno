@@ -599,11 +599,43 @@ given: MATCH (a) SET a.m = 2
 when: MATCH (a) RETURN a.n, a.m
 then: [[1, 2]]
 
-=== SET to null removes
+=== SET to null keeps the key with a null
 given: CREATE (:N {n: 1, m: 2})
 given: MATCH (a) SET a.m = null
-when: MATCH (a) RETURN keys(a)
-then: [[["n"]]]
+when: MATCH (a) RETURN keys(a), a.m, a.m IS NULL, hasKey(a, 'm'), hasKey(a, 'z')
+then: [[["m", "n"], null, true, true, false]]
+
+=== REMOVE deletes the key
+given: CREATE (:N {n: 1, m: null})
+given: MATCH (a) REMOVE a.m
+when: MATCH (a) RETURN keys(a), hasKey(a, 'm')
+then: [[["n"], false]]
+
+=== a null created with the node is kept
+given: CREATE (:N {n: 1, m: null})
+when: MATCH (a) RETURN keys(a), properties(a)
+then: [[["m", "n"], {"m": null, "n": 1}]]
+
+=== SET += keeps nulls, SET = drops what the map lacks
+given: CREATE (:A {n: 1, m: 2}), (:B {n: 1, m: 2})
+given: MATCH (a:A) SET a += {m: null, k: 3}
+given: MATCH (b:B) SET b = {k: null}
+when: MATCH (x) RETURN labels(x), properties(x) ORDER BY labels(x)
+then: [[["A"], {"k": 3, "m": null, "n": 1}], [["B"], {"k": null}]]
+
+=== a stored null and a missing key compare the same
+given: CREATE (:N {i: 1, m: null}), (:N {i: 2})
+when: MATCH (a) RETURN a.i, a.m IS NULL, a.m = null, coalesce(a.m, 'none'), hasKey(a, 'm') ORDER BY a.i
+then: [[1, true, null, "none", true], [2, true, null, "none", false]]
+
+=== hasKey on maps and null
+when: RETURN hasKey({a: null}, 'a'), hasKey({a: 1}, 'b'), hasKey(null, 'a')
+then: [[true, false, null]]
+
+=== nulls stay inside lists and maps
+given: CREATE (:N {l: [1, null, 2], m: {a: null, b: 1}})
+when: MATCH (a) RETURN a.l, a.m
+then: [[[1, null, 2], {"a": null, "b": 1}]]
 
 === SET += merges, = replaces
 given: CREATE (:A {n: 1, m: 2}), (:B {n: 1, m: 2})
