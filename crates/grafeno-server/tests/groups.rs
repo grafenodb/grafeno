@@ -293,14 +293,46 @@ fn namespaces_live_on_groups_and_move_under_load() {
             if unique == expected && found.len() == unique.len() {
                 break;
             }
-            assert!(
-                Instant::now() < deadline,
-                "member {api}: {} rows, {} distinct, {} acknowledged, missing {:?}",
-                found.len(),
-                unique.len(),
-                expected.len(),
-                expected.difference(&unique).take(5).collect::<Vec<_>>()
-            );
+            if Instant::now() >= deadline {
+                // What every member sees, routes to and has applied.
+                let mut seen = Vec::new();
+                for other in &apis {
+                    let (_, placement) = call(*other, "GET", "/v1/cluster/placement", None, None);
+                    let (_, groups) = call(*other, "GET", "/v1/cluster/groups", None, None);
+                    let applied: Vec<String> = groups
+                        .as_array()
+                        .map(|groups| {
+                            groups
+                                .iter()
+                                .map(|g| format!("g{}={}", g["id"], g["status"]["applied"]))
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    seen.push(format!(
+                        "{other}: {} items, placement {}, applied {}",
+                        count(*other, "moving"),
+                        placement,
+                        applied.join(" ")
+                    ));
+                }
+                for id in 1..=3 {
+                    let log = std::fs::read_to_string(dir.join(format!("member-{id}.log")))
+                        .unwrap_or_default();
+                    let tail: Vec<&str> = log.lines().rev().take(15).collect();
+                    seen.push(format!("member {id} log (last lines first): {tail:?}"));
+                }
+                panic!(
+                    "member {api}: {} rows, {} distinct, {} acknowledged, missing {:?}, last acknowledged {:?}
+{}",
+                    found.len(),
+                    unique.len(),
+                    expected.len(),
+                    expected.difference(&unique).take(5).collect::<Vec<_>>(),
+                    acknowledged.iter().rev().take(6).collect::<Vec<_>>(),
+                    seen.join("
+")
+                );
+            }
             std::thread::sleep(Duration::from_millis(100));
         }
     }
