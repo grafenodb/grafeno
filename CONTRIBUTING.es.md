@@ -2,7 +2,7 @@
 
 [English](CONTRIBUTING.md) | **Español**
 
-Esta guía prepara el motor y su cliente TypeScript para desarrollar y
+Esta guía prepara el motor para desarrollar y
 verificar cambios. Ejecuta los comandos desde la raíz del repositorio salvo
 que se indique otro directorio. La interfaz gráfica, Grafeno Studio, vive en
 su propio repositorio ([Grafeno Studio](https://github.com/grafenodb/grafeno-studio)) desde Grafeno 15.
@@ -13,8 +13,8 @@ su propio repositorio ([Grafeno Studio](https://github.com/grafenodb/grafeno-stu
   CI usa Rust estable y todavía no verifica la versión mínima.
 - En Windows: Visual Studio Build Tools con las herramientas de C++ y la
   cadena MSVC de Rust.
-- Node.js 24 y npm solo para compilar y probar el cliente TypeScript; el
-  motor compila sin ellos.
+- Node.js 24 y npm solo para ejecutar las pruebas del SDK de TypeScript
+  contra el motor; el motor compila sin ellos.
 - Para construir los instaladores: Docker (el `.tar.gz`, el `.deb` y el
   `.rpm` de Linux) e Inno Setup 6 en Windows (el instalador `.exe`).
 
@@ -44,19 +44,25 @@ Desactiva la información de depuración y la compilación incremental, pero
 conserva las pruebas y las aserciones de depuración. No requiere cambiar
 `Cargo.toml`.
 
-## Comprobar el cliente
+## Comprobar los SDK contra tu motor
+
+Los SDK viven en su propio repositorio, [grafeno-sdk](https://github.com/grafenodb/grafeno-sdk). Un cambio en
+la API HTTP debería mantenerlos funcionando: clona ese repositorio junto a
+este, y sus pruebas usan el motor compilado aquí:
 
 ```bash
-npm ci --prefix clients/typescript
-npm run build --prefix clients/typescript
-npm test --prefix clients/typescript
+git clone https://github.com/grafenodb/grafeno-sdk.git ../grafeno-sdk
 ```
 
-Las pruebas del cliente inician el servidor real desde
-`target/debug/grafeno` (`grafeno.exe` en Windows), así que requieren la
-compilación del servidor anterior. Define `GRAFENO_BIN` para usar otro
-binario. Conserva el lockfile; usa `npm ci` y los comandos de Cargo con
-`--locked` para detectar cambios inesperados de dependencias.
+```bash
+npm ci --prefix ../grafeno-sdk/typescript
+npm test --prefix ../grafeno-sdk/typescript
+```
+
+Las pruebas inician el servidor real desde `target/debug/grafeno`
+(`grafeno.exe` en Windows), así que requieren la compilación del servidor
+anterior (o `GRAFENO_BIN`). Usa los comandos de Cargo con `--locked` para
+detectar cambios inesperados de dependencias.
 
 ## Construir los instaladores
 
@@ -71,8 +77,9 @@ ejecuta en los pull requests, en los pushes a `main` y manualmente. Así los
 pushes a una rama con un PR abierto no duplican las ejecuciones. Comprueba por
 separado:
 
-- Tipos y compilación del cliente TypeScript.
-- Pruebas Rust del motor y del servidor, más el cliente contra el servidor real.
+- Pruebas Rust del motor y del servidor.
+- El SDK de TypeScript (de grafeno-sdk) compilado y probado contra el servidor
+  recién compilado, y su contrato con el último release del motor.
 
 Estas comprobaciones no sustituyen las pruebas de los instaladores en máquinas
 limpias. Trabaja en una rama y abre un PR acotado. Describe el problema, el

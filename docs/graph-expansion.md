@@ -58,7 +58,7 @@ rotating order. Equal results are checked outside the timed interval.
 
 ```bash
 cargo build --locked -p grafeno-server
-node clients/typescript/bench/read-many.mjs
+node ../grafeno-sdk/typescript/bench/read-many.mjs   # the SDK checked out next to the engine
 ```
 
 The `neighborhoods` JSON section holds this comparison. `GRAFENO_BIN` selects
@@ -87,7 +87,7 @@ attributed to the canvas. These numbers are not guarantees.
 npm test --prefix studio   # in the Grafeno Studio repository
 cargo test --locked -p grafeno-server --test http neighborhoods
 cargo test --locked -p grafeno-server --test access
-npm test --prefix clients/typescript
+npm test --prefix ../grafeno-sdk/typescript
 ```
 
 Studio tests cover grouping, order, per-root limits, deduplication, compatibility,

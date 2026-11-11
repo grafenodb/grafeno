@@ -61,7 +61,7 @@ fuera del intervalo medido.
 
 ```bash
 cargo build --locked -p grafeno-server
-node clients/typescript/bench/read-many.mjs
+node ../grafeno-sdk/typescript/bench/read-many.mjs   # el SDK clonado junto al motor
 ```
 
 La sección `neighborhoods` del JSON corresponde a esta comparación. `GRAFENO_BIN`
@@ -90,7 +90,7 @@ no deben atribuirse al lienzo. Estos números no son garantías.
 npm test --prefix studio   # en el repositorio de Grafeno Studio
 cargo test --locked -p grafeno-server --test http neighborhoods
 cargo test --locked -p grafeno-server --test access
-npm test --prefix clients/typescript
+npm test --prefix ../grafeno-sdk/typescript
 ```
 
 Las pruebas de Studio cubren agrupación, orden, límite por raíz, deduplicación,

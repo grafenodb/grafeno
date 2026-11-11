@@ -93,7 +93,7 @@ comunidades y similitud. Consulta la [referencia de GQ](docs/query-language.md).
 | --- | --- |
 | Servicio HTTP, servidor MCP y consola | [Servidor Grafeno](crates/grafeno-server/README.md) |
 | Una interfaz gráfica | Grafeno Studio, instalado aparte, mediante la API HTTP |
-| Aplicaciones JavaScript y TypeScript | [Cliente TypeScript](clients/typescript/README.md) |
+| Aplicaciones JavaScript y TypeScript | [`@grafenodb/client`](https://github.com/grafenodb/grafeno-sdk/tree/main/typescript), el SDK de TypeScript (`npm install @grafenodb/client`) |
 | Biblioteca Rust embebida | [`grafeno`](crates/grafeno/src/lib.rs) y [`grafeno-memory`](crates/grafeno-memory/src/lib.rs) |
 
 Para iniciar MCP con una base propia, después de instalar el binario:
@@ -121,7 +121,6 @@ persistente y autenticada, sigue la [guía del servidor](docs/install.md#setting
 | `crates/grafeno-query` | Parser, planificación y ejecución de GQ. |
 | `crates/grafeno-server` | API HTTP, MCP, consola y administración: el binario `grafeno`. |
 | `crates/grafeno-raft`, `crates/grafeno-cluster` | Raft y el clúster. |
-| `clients/typescript` | Cliente HTTP para aplicaciones. |
 | `packaging` | Instalador de Windows, paquetes de Linux, la preparación del instalador de una línea y una compose de clúster. |
 
 ## Desarrollo y pruebas
@@ -135,8 +134,9 @@ cargo test --workspace --locked
 ```
 
 El [workflow de contribuciones](.github/workflows/ci.yml) verifica el motor y
-el servidor, y el cliente TypeScript contra el binario real. Compilar no
-requiere Node: solo lo usan las pruebas del cliente.
+el servidor, y ejecuta las pruebas del SDK de TypeScript (de
+[grafeno-sdk](https://github.com/grafenodb/grafeno-sdk)) contra el binario que compila. Compilar no requiere
+Node: solo lo usan esas pruebas.
 
 ## Diseño, rendimiento y alcance
 

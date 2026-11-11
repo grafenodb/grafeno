@@ -92,7 +92,7 @@ communities and similarity. See the [GQ reference](docs/query-language.md).
 | --- | --- |
 | HTTP service, MCP server and shell | [Grafeno server](crates/grafeno-server/README.md) |
 | A graphical interface | Grafeno Studio, installed apart, through the HTTP API |
-| JavaScript and TypeScript applications | [TypeScript client](clients/typescript/README.md) |
+| JavaScript and TypeScript applications | [`@grafenodb/client`](https://github.com/grafenodb/grafeno-sdk/tree/main/typescript), the TypeScript SDK (`npm install @grafenodb/client`) |
 | Embedded Rust library | [`grafeno`](crates/grafeno/src/lib.rs) and [`grafeno-memory`](crates/grafeno-memory/src/lib.rs) |
 
 To start MCP with its own database after installing the binary:
@@ -121,7 +121,6 @@ configuration, follow the [server guide](docs/install.md#settings).
 | `crates/grafeno-query` | GQ parser, planning and execution. |
 | `crates/grafeno-server` | HTTP API, MCP, shell and administration: the `grafeno` binary. |
 | `crates/grafeno-raft`, `crates/grafeno-cluster` | Raft and the cluster. |
-| `clients/typescript` | HTTP client for applications. |
 | `packaging` | Windows setup, Linux packages, the one-liner's setup, a cluster compose. |
 
 ## Development and tests
@@ -135,8 +134,9 @@ cargo test --workspace --locked
 ```
 
 The [contribution workflow](.github/workflows/ci.yml) checks the engine and
-the server, and the TypeScript client against the real binary. Building needs
-no Node: only the client's tests use it.
+the server, and runs the TypeScript SDK's tests (from
+[grafeno-sdk](https://github.com/grafenodb/grafeno-sdk)) against the binary it builds. Building needs no
+Node: only those tests use it.
 
 ## Design, performance and scope
 

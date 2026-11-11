@@ -11,6 +11,13 @@ API version (`GET /v1/about`, now 1) changes only when a change would
 break a client of the previous one, and the database files' layout
 version (now 18) is upgraded in place, with a copy kept first.
 
+## Unreleased
+
+- **Changed**: the TypeScript client left this repository. It is now the
+  TypeScript SDK in [grafenodb/grafeno-sdk](https://github.com/grafenodb/grafeno-sdk),
+  published to npm as `@grafenodb/client`, with its own versions; the
+  engine's CI still runs its tests against every engine change.
+
 ## 0.2.0 (2026-11-11)
 
 Phase 16: the data model, search, analysis and events (the story, step

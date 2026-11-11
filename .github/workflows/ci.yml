@@ -21,39 +21,36 @@ env:
   CARGO_BUILD_JOBS: "2"
 
 jobs:
-  frontend:
-    name: TypeScript client
-    runs-on: ubuntu-22.04
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-          cache: npm
-          cache-dependency-path: clients/typescript/package-lock.json
-      - name: Install the client's dependencies
-        run: npm ci --prefix clients/typescript --no-audit --no-fund
-      - name: Type-check and build the client
-        run: npm run build --prefix clients/typescript
-
   engine:
-    name: Rust engine and client integration
+    name: Rust engine and the TypeScript SDK against it
     runs-on: ubuntu-22.04
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - name: Test the engine and the server
+        run: cargo test --workspace --locked
+      - name: Build the server for the SDK's tests
+        run: cargo build --locked -p grafeno-server
+      # The SDKs live in grafenodb/grafeno-sdk: a change to the HTTP API
+      # must keep them working before it lands here.
+      - name: Check out the SDKs
+        uses: actions/checkout@v4
+        with:
+          repository: grafenodb/grafeno-sdk
+          path: sdk
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-      - name: Test the engine and the server
-        run: cargo test --workspace --locked
-      - name: Build the server for the client tests
-        run: cargo build --locked -p grafeno-server
-      - name: Test the client against the real server
-        run: npm test --prefix clients/typescript
-      - name: The client's contract with this engine and the previous release
+          cache: npm
+          cache-dependency-path: sdk/typescript/package-lock.json
+      - name: Install and build the TypeScript SDK
+        run: |
+          npm ci --prefix sdk/typescript --no-audit --no-fund
+          npm run build --prefix sdk/typescript
+      - name: Test the TypeScript SDK against this engine
+        run: GRAFENO_BIN="$PWD/target/debug/grafeno" npm test --prefix sdk/typescript
+      - name: The SDK's contract with this engine and the previous release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -69,6 +66,6 @@ jobs:
           else
             echo "::notice::No release published yet: the contract runs against this engine only."
           fi
-          GRAFENO_CONTRACT_BINS="$bins" node --test clients/typescript/test/contract.test.ts
+          GRAFENO_CONTRACT_BINS="$bins" node --test sdk/typescript/test/contract.test.ts
       - name: Run the benchmark script once, without performance thresholds
-        run: GRAFENO_BENCH_ROUNDS=1 node clients/typescript/bench/read-many.mjs
+        run: GRAFENO_BIN="$PWD/target/debug/grafeno" GRAFENO_BENCH_ROUNDS=1 node sdk/typescript/bench/read-many.mjs
