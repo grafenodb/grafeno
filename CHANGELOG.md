@@ -13,6 +13,13 @@ version (now 18) is upgraded in place, with a copy kept first.
 
 ## Unreleased
 
+- **Fixed**: an algorithm's `write: '@embedding'` in GQ stored a property
+  named `@embedding` instead of each node's vector; it now sets the vector,
+  as `SET node.@embedding` does (another `@` name is refused). HITS gave
+  `-0.0` for a node no hub reaches. The shell's `TRACE` table cut the
+  index an anchor came from and the condition that dropped a row to their
+  last eight characters, as it does ids. A type constraint's error says
+  "not of type INTEGER" (it said "not a INTEGER").
 - **Added**: change events with values, off by default. With
   `[events] enabled = true` in `grafeno.toml`, `CREATE EVENT SUBSCRIPTION
   name ON NODES | EDGES | PROPERTIES | TEXT | VECTORS [FOR :Label] [KEYS

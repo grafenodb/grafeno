@@ -219,7 +219,7 @@ impl Constraint {
             },
             Constraint::Typed { key, of, .. } => match props.get(key) {
                 Some(value) if !of.admits(value) => {
-                    Some(format!("has {key} = {value}, not a {}", of.keyword()))
+                    Some(format!("has {key} = {value}, not of type {}", of.keyword()))
                 }
                 _ => None,
             },

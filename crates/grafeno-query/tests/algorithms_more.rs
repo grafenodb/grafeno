@@ -303,6 +303,33 @@ fn modes_and_errors() {
         "CALL algo.hits({write: {hub: 'hub', authority: 'auth'}}) YIELD property, nodes RETURN property, nodes ORDER BY property",
     );
     assert_eq!(both.to_json()["rows"], json!([["auth", 9], ["hub", 9]]));
+    // A node no hub reaches has authority 0, not -0 (an empty sum).
+    let scores = run(
+        &db,
+        "CALL algo.hits() YIELD hub, authority RETURN hub, authority",
+    );
+    for row in scores.to_json()["rows"].as_array().unwrap() {
+        for value in row.as_array().unwrap() {
+            assert!(!value.as_f64().unwrap().is_sign_negative(), "{row}");
+        }
+    }
+    // `write: '@embedding'` stores each node's vector, as SET does.
+    run(&db, "CALL algo.fastRP({dimension: 8, write: '@embedding'})");
+    assert_eq!(
+        rows(
+            &db,
+            "CALL db.stats() YIELD vectors, dimension RETURN vectors, dimension"
+        ),
+        json!([[9, 8]])
+    );
+    assert_eq!(
+        rows(
+            &db,
+            "MATCH (n:P) WHERE hasKey(n, '@embedding') RETURN count(n)"
+        ),
+        json!([[0]]),
+        "no property named @embedding"
+    );
     assert!(
         grafeno_query::execute_read(
             &db.begin_read().unwrap(),
@@ -333,6 +360,10 @@ fn modes_and_errors() {
         (
             "CALL algo.kCore({frobnicate: 1})",
             "has no setting frobnicate",
+        ),
+        (
+            "CALL algo.kCore({write: '@text'})",
+            "a property or @embedding",
         ),
     ] {
         let error = fail(&db, query);

@@ -85,6 +85,8 @@ pub fn hits(
         if norm > 0.0 {
             values.iter_mut().for_each(|v| *v /= norm);
         }
+        // An empty sum is -0.0 in Rust: a node nothing reaches scores 0.
+        values.iter_mut().for_each(|v| *v += 0.0);
     };
     let mut rounds = 0;
     for round in 0..iterations {

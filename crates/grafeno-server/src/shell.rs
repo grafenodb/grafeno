@@ -1078,22 +1078,24 @@ fn print_result(output: &Value) {
                 None => value.to_string(),
             }
         };
+        // Words, not ids: shown whole.
+        let text = |value: &Value| -> String { value.as_str().unwrap_or_default().to_owned() };
         let rows: Vec<Vec<Value>> = events
             .iter()
             .take(SHOWN)
             .map(|event| {
                 let what = match event["kind"].as_str().unwrap_or("") {
-                    "anchor" => format!("{} via {}", short(&event["node"]), short(&event["via"])),
+                    "anchor" => format!("{} via {}", short(&event["node"]), text(&event["via"])),
                     "expand" => format!("{} -> {}", short(&event["from"]), short(&event["to"])),
                     "keep" => short(&event["node"]),
                     "drop" if event["reason"] == "condition" => {
-                        format!("row: {}", short(&event["condition"]))
+                        format!("row: {}", text(&event["condition"]))
                     }
                     "drop" => format!(
                         "{}{} ({})",
                         short(&event["node"]),
                         short(&event["edge"]),
-                        short(&event["reason"])
+                        text(&event["reason"])
                     ),
                     "row" => format!("row {}", event["index"]),
                     _ => String::new(),

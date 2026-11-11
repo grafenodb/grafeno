@@ -89,6 +89,25 @@ fn runs_statements_and_meta_commands_on_a_file() {
 }
 
 #[test]
+fn traces_show_conditions_and_anchors_whole() {
+    let output = shell(
+        &[
+            "--memory",
+            "-c",
+            "CREATE INDEX FOR (p:Person) ON (p.name);
+             CREATE (a:Person {name: 'Ana'})-[:knows]->(:Person {name: 'Bo', age: 20});
+             TRACE MATCH (a:Person {name: 'Ana'})-[:knows]->(f) WHERE f.age > 30 RETURN f.name;",
+        ],
+        None,
+    );
+    assert!(output.status.success(), "{}", text(&output.stderr));
+    let stdout = text(&output.stdout);
+    // Ids are cut to their last eight characters; words are not.
+    assert!(stdout.contains(" via index Person_name"), "{stdout}");
+    assert!(stdout.contains("row: f.age > 30"), "{stdout}");
+}
+
+#[test]
 fn failures_set_the_exit_code() {
     let output = shell(
         &["--memory", "-c", "RETURN 1;\nMATCH (n RETURN n;\nRETURN 2;"],

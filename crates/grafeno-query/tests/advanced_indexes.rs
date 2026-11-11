@@ -258,7 +258,7 @@ fn not_null_and_type_constraints() {
         "CREATE (:User {email: 'h@x', seen: 'yesterday'})",
     ] {
         let error = fail(&db, broken);
-        assert!(error.contains("not a"), "{broken}: {error}");
+        assert!(error.contains("not of type"), "{broken}: {error}");
     }
     // Existing values of the wrong type refuse a new rule.
     run(&db, "CREATE (:Item {price: '12'})");

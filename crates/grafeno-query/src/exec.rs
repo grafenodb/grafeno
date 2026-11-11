@@ -1609,6 +1609,18 @@ impl<'a> Runner<'a> {
                         return Err(QueryError::runtime("write: needs a writable database"));
                     };
                     for (node, property, value) in writes {
+                        // `write: '@embedding'` stores the node's vector, as
+                        // `SET node.@embedding = …` does.
+                        if property == "@embedding" {
+                            tx.set_embedding(ns, node, &embedding_from(&value)?)?;
+                            self.stats.properties_set += 1;
+                            continue;
+                        }
+                        if property.starts_with('@') {
+                            return Err(QueryError::runtime(format!(
+                                "write: stores a property or @embedding, not {property}"
+                            )));
+                        }
                         let value = value.to_property().map_err(QueryError::runtime)?;
                         let mut props = grafeno::Props::new();
                         props.insert(property, value);
