@@ -304,7 +304,20 @@ fn namespaces_live_on_groups_and_move_under_load() {
                         .map(|groups| {
                             groups
                                 .iter()
-                                .map(|g| format!("g{}={}", g["id"], g["status"]["applied"]))
+                                .map(|g| {
+                                    let s = &g["status"];
+                                    format!(
+                                        "g{}: {} term {} leader {} commit {} last {} applied {} peers {}",
+                                        g["id"],
+                                        s["role"],
+                                        s["term"],
+                                        s["leader"],
+                                        s["commit"],
+                                        s["last_index"],
+                                        s["applied"],
+                                        s["peers"]
+                                    )
+                                })
                                 .collect()
                         })
                         .unwrap_or_default();
