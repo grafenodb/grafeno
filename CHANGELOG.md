@@ -11,7 +11,11 @@ API version (`GET /v1/about`, now 1) changes only when a change would
 break a client of the previous one, and the database files' layout
 version (now 18) is upgraded in place, with a copy kept first.
 
-## Unreleased
+## 0.2.1 (2026-11-11)
+
+The engine is the same as 0.2.0's: the same database layout (18), HTTP API
+(version 1) and log entry format, so 0.2.0 and 0.2.1 members can share a
+cluster. What changed is the repository: the TypeScript client left it.
 
 - **Changed**: the TypeScript client left this repository. It is now the
   TypeScript SDK in [grafenodb/grafeno-sdk](https://github.com/grafenodb/grafeno-sdk),

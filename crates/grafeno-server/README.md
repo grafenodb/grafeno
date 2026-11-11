@@ -540,7 +540,7 @@ exactly these). `GET /v1/about` (public) says what the engine is:
 ```json
 {
   "product": "grafeno",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "api": { "version": 1, "supported": [1] },
   "layout": 18,
   "capabilities": ["namespaces", "nodes", "…", "cluster.groups", "query.split"],

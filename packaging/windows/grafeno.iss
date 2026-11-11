@@ -1,6 +1,6 @@
 ; Grafeno for Windows: the installer of the engine (Inno Setup 6).
 ;
-;   iscc /DAppVersion=0.2.0 packaging\windows\grafeno.iss
+;   iscc /DAppVersion=0.2.1 packaging\windows\grafeno.iss
 ;
 ; It needs target\release\grafeno.exe (cargo build --release -p
 ; grafeno-server). The engine alone: Grafeno Studio is installed apart.
@@ -27,7 +27,7 @@
 ; and its uninstaller.
 
 #ifndef AppVersion
-  #define AppVersion "0.2.0"
+  #define AppVersion "0.2.1"
 #endif
 #define SettingsDir "{commonappdata}\Grafeno"
 #define ConfigFile "{commonappdata}\Grafeno\grafeno.toml"
