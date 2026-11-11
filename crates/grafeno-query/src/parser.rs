@@ -159,6 +159,8 @@ impl Parser<'_> {
             Mode::Explain
         } else if self.eat_keyword("PROFILE") {
             Mode::Profile
+        } else if self.eat_keyword("TRACE") {
+            Mode::Trace
         } else {
             Mode::Run
         };

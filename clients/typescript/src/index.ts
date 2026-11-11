@@ -618,6 +618,8 @@ export interface QueryResult {
   stats: WriteStats;
   /** What each step did, for statements that start with PROFILE. */
   profile?: PlanStep[];
+  /** How the statement walked the graph, with TRACE or `trace: true`. */
+  trace?: Trace;
   /**
    * On a cluster, a read split across the members: how many parts, and
    * how many ran on the member asked (its own, and those of members that
@@ -830,6 +832,35 @@ export interface GrafenoOptions {
 }
 
 /** Options of one GQ statement. */
+/**
+ * One event of a trace (format 1), in the order the walk did it. Ids are
+ * node or edge ids.
+ */
+export type TraceEvent = { seq: number; step: number } & (
+  | { kind: "anchor"; node: Id; via: string }
+  | { kind: "expand"; from: Id; to: Id; edge?: Id; edges?: Id[] }
+  | { kind: "keep"; node: Id; edge?: Id }
+  | {
+      kind: "drop";
+      node?: Id;
+      edge?: Id;
+      nodes?: Id[];
+      reason: "pattern" | "edge pattern" | "edge used" | "condition";
+      condition?: string;
+    }
+  | { kind: "row"; index: number; nodes: Id[]; edges: Id[] }
+);
+
+/** How a statement walked the graph (engines with `query.trace`). */
+export interface Trace {
+  format: number;
+  /** The clause each step is. */
+  steps: { step: number; clause: string }[];
+  events: TraceEvent[];
+  /** The trace reached its limit and stopped recording (the statement did not). */
+  cut: boolean;
+}
+
 export interface QueryOptions {
   /**
    * A write sent again with the same key (a retry after a lost answer)
@@ -843,6 +874,8 @@ export interface QueryOptions {
    * allows, `off` never; `auto` (default) when it is costly enough.
    */
   split?: "auto" | "on" | "off";
+  /** Record how the statement walks the graph: `trace` in the result. */
+  trace?: boolean;
 }
 
 /** An error returned by the server (or a network failure, with status 0). */
@@ -1590,7 +1623,9 @@ export class Namespace {
     if (options.idempotencyKey !== undefined) extra["idempotency-key"] = options.idempotencyKey;
     if (options.consistency !== undefined) extra["x-grafeno-consistency"] = options.consistency;
     if (options.split !== undefined) extra["x-grafeno-split"] = options.split;
-    return this.#client.request("POST", this.#base + "/query", { query, params }, extra);
+    const body: Record<string, unknown> = { query, params };
+    if (options.trace) body.trace = true;
+    return this.#client.request("POST", this.#base + "/query", body, extra);
   }
 
   /**

@@ -17,6 +17,12 @@ version (now 18) is upgraded in place, with a copy kept first.
   Apache License 2.0, at the user's choice (`LICENSE-MIT`,
   `LICENSE-APACHE`). The packages, the Windows setup (a license page),
   the archives and the winget manifest carry it.
+- **Added**: `TRACE <statement>` (and `trace: true` on
+  `POST /v1/{ns}/query`, `\trace` in the shell, `trace` in the
+  TypeScript client's `query()`): the walk of a statement as events
+  (anchors, edges followed, what patterns and conditions kept and
+  dropped, rows), bounded to 10 000 events and 4 MiB (capability
+  `query.trace`).
 - **Added**: graph algorithms for analysis (`algo.kCore`, `leiden`,
   `hits`, `eigenvector`, `harmonic`, `articulationPoints`, `bridges`,
   `spanningTree`, `maxFlow`, `bipartiteMatching`, `topologicalOrder`,

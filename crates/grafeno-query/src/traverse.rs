@@ -308,7 +308,11 @@ impl<'q> Start<'_, 'q> {
         if states.len() <= FRONTIER || level == ops.len() {
             return self.grow(ctx, ops, states, level, out, cap, caches);
         }
-        if ctx.write.is_none() && cap.is_none() && crate::parallel::available() {
+        if ctx.write.is_none()
+            && ctx.trace.is_none()
+            && cap.is_none()
+            && crate::parallel::available()
+        {
             crate::parallel::map_chunks(
                 ctx,
                 &states,
@@ -352,6 +356,9 @@ impl<'q> Start<'_, 'q> {
             if let Some(filter) = self.filter
                 && truth(&eval(ctx, filter, Scope::Row(&state.row))?)? != Some(true)
             {
+                if let Some(trace) = ctx.trace {
+                    trace.drop_row(&crate::exec::row_values(&state.row), filter);
+                }
                 continue;
             }
             out.push(state.row);
@@ -499,20 +506,29 @@ fn expand(
             None => ctx.neighbor_ids(from, op.direction, &op.filter)?.into(),
         };
         for &(edge_id, other) in edges.iter() {
+            if let Some(trace) = ctx.trace {
+                trace.expand(from, other, edge_id);
+            }
             if state.used.contains(&edge_id) {
+                if let Some(trace) = ctx.trace {
+                    trace.drop_edge(edge_id, "edge used");
+                }
                 continue;
             }
             let edge = if rel.var.is_some() || !rel.props.is_empty() {
                 let Some(edge) = caches.edge(ctx, edge_id)? else {
                     continue;
                 };
-                if !props_fit(ctx, &Value::Edge(edge.clone()), &rel.props, &state.row)? {
-                    continue;
-                }
-                if let Some(var) = &rel.var
-                    && let Some(bound) = state.row.get(var)
-                    && !matches!(bound, Value::Edge(existing) if existing.id == edge_id)
-                {
+                let fits = props_fit(ctx, &Value::Edge(edge.clone()), &rel.props, &state.row)?
+                    && !rel.var.as_ref().is_some_and(|var| {
+                        state.row.get(var).is_some_and(|bound| {
+                            !matches!(bound, Value::Edge(existing) if existing.id == edge_id)
+                        })
+                    });
+                if !fits {
+                    if let Some(trace) = ctx.trace {
+                        trace.drop_edge(edge_id, "edge pattern");
+                    }
                     continue;
                 }
                 Some(edge)
@@ -520,8 +536,14 @@ fn expand(
                 None
             };
             let Some(node) = target_node(ctx, caches, other, target, &state.row)? else {
+                if let Some(trace) = ctx.trace {
+                    trace.drop_node(other, "pattern");
+                }
                 continue;
             };
+            if let Some(trace) = ctx.trace {
+                trace.keep(other, Some(edge_id));
+            }
             let mut next = state.clone();
             next.used.push(edge_id);
             next.steps[op.step] = vec![edge_id];
@@ -549,9 +571,18 @@ fn expand(
         },
     };
     for (end, ids) in reach.iter() {
+        if let Some(trace) = ctx.trace {
+            trace.expand_path(from, *end, ids);
+        }
         let Some(node) = target_node(ctx, caches, *end, target, &state.row)? else {
+            if let Some(trace) = ctx.trace {
+                trace.drop_node(*end, "pattern");
+            }
             continue;
         };
+        if let Some(trace) = ctx.trace {
+            trace.keep(*end, None);
+        }
         let mut next = state.clone();
         next.nodes[op.target_index] = Some(*end);
         if let Some(var) = &rel.var {

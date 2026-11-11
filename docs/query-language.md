@@ -371,6 +371,51 @@ EXPLAIN MATCH (a:Person {name: 'Ana'})-[:knows]->(f) RETURN f.name;
 PROFILE MATCH (p:Person) WHERE p.age > 30 RETURN count(p);
 ```
 
+### `TRACE`: how a statement walks the graph
+
+`TRACE` before a statement runs it and records its walk, event by event
+(`trace` in the JSON result; `trace: true` beside the query over HTTP;
+`\trace on` in the shell, which prints a table of the first 200 events):
+
+```text
+TRACE MATCH (p:Person {name: 'Ana'})-[:knows]->(f:Person) WHERE f.age > 30 RETURN f.name;
+```
+
+```json
+{"format": 1,
+ "steps": [{"step": 1, "clause": "MATCH"}, {"step": 2, "clause": "RETURN"}],
+ "events": [
+   {"seq": 0, "step": 1, "kind": "anchor", "node": "…ana", "via": "index Person_name"},
+   {"seq": 1, "step": 1, "kind": "expand", "from": "…ana", "to": "…bo", "edge": "…"},
+   {"seq": 2, "step": 1, "kind": "keep", "node": "…bo", "edge": "…"},
+   {"seq": 3, "step": 1, "kind": "expand", "from": "…ana", "to": "…cy", "edge": "…"},
+   {"seq": 4, "step": 1, "kind": "keep", "node": "…cy", "edge": "…"},
+   {"seq": 5, "step": 1, "kind": "drop", "nodes": ["…ana", "…bo"], "reason": "condition", "condition": "f.age > 30"},
+   {"seq": 6, "step": 2, "kind": "row", "index": 0, "nodes": [], "edges": []}],
+ "cut": false}
+```
+
+Every event has `seq` (its order, from 0), `step` (the clause it belongs
+to, from 1, named in `steps`) and `kind`:
+
+| `kind` | Fields | What happened |
+| --- | --- | --- |
+| `anchor` | `node`, `via` | a pattern starts at the node, found by `bound`, `id`, `index <name>`, `edge index <name>`, `label <label>` or `scan` |
+| `expand` | `from`, `to`, `edge` (or `edges`, a variable-length step's, in order) | an edge followed |
+| `keep` | `node`, `edge` | the node at the end of the edge fits the pattern |
+| `drop` | `node` or `edge`, `reason`; or `nodes` (the row's), `reason: 'condition'`, `condition` | dropped by the `pattern` (labels, properties, a bound variable), the `edge pattern`, an `edge used` twice in one match, or a `condition` (as written, roughly) |
+| `row` | `index`, `nodes`, `edges` | a result row, with the node and edge ids it holds |
+
+The events come in the order the walk makes them: a pattern grows from up
+to 64 anchors at a time, one step at a time, so the events of one step for
+many anchors come together. A traced statement runs on one thread. The
+record keeps at most 10 000 events and 4 MiB; past either it stops
+recording and says `cut: true`, and the statement runs to its end as
+usual. Writes are traced and still happen. Statements that are not traced
+record nothing and pay nothing measurable (see the phase's
+measurements). The format is part of the API (`format` 1): a client can
+replay it step by step over a drawing of the graph.
+
 ### Statistics
 
 Besides `count`, `sum`, `avg`, `min`, `max` and `collect`:

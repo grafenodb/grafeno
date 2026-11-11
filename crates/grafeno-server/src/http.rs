@@ -2388,6 +2388,10 @@ struct QueryInput {
     /// header).
     #[serde(default)]
     idempotency_key: Option<String>,
+    /// Records how the statement walks the graph (16.9): `trace` in the
+    /// result, as with `TRACE` before the statement.
+    #[serde(default)]
+    trace: bool,
 }
 
 impl From<grafeno_query::QueryError> for ApiError {
@@ -2446,8 +2450,13 @@ async fn query(
             .map(str::to_owned),
         mode: crate::cluster::SplitMode::from_headers(&headers),
     };
+    let query = if input.trace && !input.query.trim_start().to_uppercase().starts_with("TRACE") {
+        format!("TRACE {}", input.query)
+    } else {
+        input.query
+    };
     let started = std::time::Instant::now();
-    let outcome = run_query_counted(&state, ns, input.query, params, key, Some(split)).await;
+    let outcome = run_query_counted(&state, ns, query, params, key, Some(split)).await;
     let limit = match &outcome {
         Err(error) if error.code == "query_limit" => Some(error.message.as_str()),
         _ => None,

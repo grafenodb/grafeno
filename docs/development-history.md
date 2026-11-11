@@ -281,6 +281,8 @@ presentan el proyecto y los primeros pasos.
   NAMESPACE` in GQ, checked on the namespace they name;
   `grafeno namespaces create | describe | drop`; `grafeno shell
   --stop-on-error`.
+- **Phase 16.9, TRACE:** a statement's walk recorded event by event,
+  bounded, in a documented format, at no cost when not asked for.
 - **Phase 16.8, more graph algorithms:** analysis (k-core, Leiden,
   HITS, eigenvector, cut points, spanning trees, flows, matching, order,
   walks, conductance) and simulation (distance fields, influence, flood

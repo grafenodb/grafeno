@@ -85,6 +85,8 @@ pub struct QueryResult {
     pub stats: WriteStats,
     /// The steps and what each did, under `PROFILE`.
     pub profile: Option<Vec<PlanStep>>,
+    /// The walk, under `TRACE` (16.9): `{format, steps, events, cut}`.
+    pub trace: Option<serde_json::Value>,
 }
 
 impl QueryResult {
@@ -100,6 +102,9 @@ impl QueryResult {
                 .collect::<Vec<_>>(),
             "stats": self.stats,
         });
+        if let Some(trace) = &self.trace {
+            json["trace"] = trace.clone();
+        }
         if let Some(profile) = &self.profile {
             json["profile"] = serde_json::to_value(profile).unwrap_or_default();
         }
@@ -371,6 +376,7 @@ fn constraint_table(rows: Vec<Vec<Value>>) -> QueryResult {
         rows,
         stats: WriteStats::default(),
         profile: None,
+        trace: None,
     }
 }
 
@@ -388,6 +394,7 @@ fn run_schema(
         rows,
         stats: WriteStats::default(),
         profile: None,
+        trace: None,
     };
     match schema {
         Schema::Access(access) => {
@@ -463,6 +470,7 @@ fn run_schema(
                 rows,
                 stats,
                 profile: None,
+                trace: None,
             })
         }
         Schema::ShowNamespaces => Ok(QueryResult {
@@ -504,6 +512,7 @@ fn run_schema(
                 .collect(),
             stats: WriteStats::default(),
             profile: None,
+            trace: None,
         }),
         Schema::Show { constraints: true } => {
             let mut rows: Vec<Vec<Value>> = read
@@ -520,6 +529,7 @@ fn run_schema(
                 rows,
                 stats: WriteStats::default(),
                 profile: None,
+                trace: None,
             })
         }
         Schema::Show { constraints: false } => Ok(table(
@@ -548,6 +558,7 @@ fn run_schema(
                     rows: vec![constraint_row(&existing)],
                     stats: WriteStats::default(),
                     profile: None,
+                    trace: None,
                 });
             }
             let flagged = tx.create_constraint(ns, constraint.clone())?;
@@ -560,6 +571,7 @@ fn run_schema(
                 rows: vec![row],
                 stats: WriteStats::default(),
                 profile: None,
+                trace: None,
             })
         }
         Schema::Create { def, if_not_exists } => {
@@ -606,6 +618,7 @@ fn run_schema(
                     rows: vec![constraint_row(&found)],
                     stats: WriteStats::default(),
                     profile: None,
+                    trace: None,
                 });
             }
             let existing = tx.index_defs(ns)?.into_iter().find(|def| def.name == *name);
@@ -713,9 +726,9 @@ pub fn requirements(
 
 fn validate(statement: &Statement) -> Result<(), QueryError> {
     if statement.schema.is_some() {
-        if statement.mode == Mode::Profile {
+        if matches!(statement.mode, Mode::Profile | Mode::Trace) {
             return Err(QueryError::runtime(
-                "PROFILE runs queries, not index commands",
+                "PROFILE and TRACE run queries, not index commands",
             ));
         }
         return Ok(());
@@ -806,6 +819,10 @@ struct Runner<'a> {
     deleted_nodes: HashSet<NodeId>,
     deleted_edges: HashSet<EdgeId>,
     profile: Option<Vec<PlanStep>>,
+    /// The walk being recorded, under `TRACE`.
+    trace: Option<crate::trace::Trace>,
+    /// Clauses entered so far (the trace's step numbers).
+    steps_entered: usize,
     info: PlanInfo,
     budget: Budget,
     /// Groups a MATCH folded for the RETURN or WITH right after it.
@@ -856,6 +873,10 @@ impl<'a> Runner<'a> {
             deleted_nodes: HashSet::new(),
             deleted_edges: HashSet::new(),
             profile: (mode == Mode::Profile).then(Vec::new),
+            trace: (mode == Mode::Trace).then(|| {
+                crate::trace::Trace::new(crate::trace::TRACE_EVENTS, crate::trace::TRACE_BYTES)
+            }),
+            steps_entered: 0,
             info,
             budget: Budget::new(limits),
             folded: None,
@@ -887,6 +908,8 @@ impl<'a> Runner<'a> {
             deleted_nodes: HashSet::new(),
             deleted_edges: HashSet::new(),
             profile: None,
+            trace: None,
+            steps_entered: 0,
             info,
             budget: Budget::new(limits),
             folded: None,
@@ -911,6 +934,7 @@ impl<'a> Runner<'a> {
             budget: &self.budget,
             view: self.view.as_ref(),
             may_audit: self.may_audit,
+            trace: self.trace.as_ref(),
         }
     }
 
@@ -958,11 +982,17 @@ impl<'a> Runner<'a> {
         if let Some(tx) = self.tx.as_deref_mut() {
             tx.check_deferred()?;
         }
+        if let Some(trace) = &self.trace {
+            for (index, row) in rows.iter().enumerate() {
+                trace.row(index, &row.iter().collect::<Vec<_>>());
+            }
+        }
         Ok(QueryResult {
             columns: columns.unwrap_or_default(),
             rows,
             stats: self.stats,
             profile: self.profile,
+            trace: self.trace.map(crate::trace::Trace::finish),
         })
     }
 
@@ -995,6 +1025,10 @@ impl<'a> Runner<'a> {
         let mut bound: HashSet<String> = HashSet::new();
         for (index, clause) in query.clauses.iter().enumerate() {
             let started = Instant::now();
+            if let Some(trace) = &self.trace {
+                self.steps_entered += 1;
+                trace.enter(self.steps_entered, clause.name());
+            }
             let details = self.profile.is_some().then(|| {
                 let params = self.params;
                 describe(clause, &bound, &self.info, &|expr: &Expr| {
@@ -1616,9 +1650,18 @@ fn keep(ctx: &Context, rows: Vec<Row>, filter: &Expr) -> Result<Vec<Row>, QueryE
     for row in rows {
         if truth(&eval(ctx, filter, Scope::Row(&row))?)? == Some(true) {
             kept.push(row);
+        } else if let Some(trace) = ctx.trace {
+            trace.drop_row(&row_values(&row), filter);
         }
     }
     Ok(kept)
+}
+
+/// A row's values in the order of its variables' names.
+pub(crate) fn row_values(row: &Row) -> Vec<&Value> {
+    let mut names: Vec<&String> = row.keys().collect();
+    names.sort();
+    names.into_iter().map(|name| &row[name]).collect()
 }
 
 /// The `(column, alias)` pairs a CALL binds.
@@ -1867,6 +1910,7 @@ fn match_pattern_into<T: Send>(
                 };
             if matcher.cap.is_none()
                 && ctx.write.is_none()
+                && ctx.trace.is_none()
                 && ids.len() >= crate::parallel::MIN_CANDIDATES
                 && crate::parallel::available()
             {
@@ -1977,7 +2021,9 @@ fn parallel_candidates(
     row: &Row,
     matcher: &Matcher,
 ) -> Result<Option<Vec<NodeId>>, QueryError> {
+    // A traced walk keeps one order: no threads.
     if ctx.write.is_some()
+        || ctx.trace.is_some()
         || matcher.cap.is_some()
         || source.rows() < crate::parallel::MIN_CANDIDATES as f64
         || !crate::parallel::available()
@@ -2076,6 +2122,9 @@ fn all_candidates(
 pub(crate) fn all_true(ctx: &Context, conditions: &[&Expr], row: &Row) -> Result<bool, QueryError> {
     for condition in conditions {
         if truth(&eval(ctx, condition, Scope::Row(row))?)? != Some(true) {
+            if let Some(trace) = ctx.trace {
+                trace.drop_row(&row_values(row), condition);
+            }
             return Ok(false);
         }
     }
@@ -2110,11 +2159,29 @@ fn candidates(
     row: &Row,
     cursor: Option<Cursor>,
 ) -> Result<(Vec<Arc<Node>>, Option<Cursor>), QueryError> {
+    let via = ctx.trace.map(|_| match source {
+        Source::Bound => "bound".to_owned(),
+        Source::Id(_) => "id".to_owned(),
+        Source::Index { name, edges, .. } => match edges {
+            Some(_) => format!("edge index {name}"),
+            None => format!("index {name}"),
+        },
+        Source::Label { label, .. } => format!("label {label}"),
+        Source::Scan { .. } => "scan".to_owned(),
+    });
     let fitting = |found: Vec<Node>| -> Result<Vec<Arc<Node>>, QueryError> {
         let mut out = Vec::new();
         for node in found {
             let node = Arc::new(node);
-            if node_fits(ctx, &node, pattern, row)? {
+            let fits = node_fits(ctx, &node, pattern, row)?;
+            if let (Some(trace), Some(via)) = (ctx.trace, &via) {
+                if fits {
+                    trace.anchor(node.id, via);
+                } else {
+                    trace.drop_node(node.id, "pattern");
+                }
+            }
+            if fits {
                 out.push(node);
             }
         }
@@ -2944,6 +3011,7 @@ fn explain(
             ]],
             stats: WriteStats::default(),
             profile: None,
+            trace: None,
         });
     }
     let (estimates, _) = crate::cost::estimate(statement, info, &value_of);
@@ -3002,6 +3070,7 @@ fn explain(
             .collect(),
         stats: WriteStats::default(),
         profile: None,
+        trace: None,
     })
 }
 

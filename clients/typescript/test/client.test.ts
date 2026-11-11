@@ -91,6 +91,18 @@ test("analysis and simulation algorithms, with their modes", async () => {
   await assert.rejects(ns.algorithm("kCore", { settings: { mode: "stats" } }), /stats/);
 });
 
+test("a traced query gives its walk", async () => {
+  const ns = new Grafeno({ url, token }).namespace("traced");
+  await ns.query("CREATE (:P {name: 'a'})-[:K]->(:P {name: 'b'}), (:P {name: 'c'})");
+  const result = await ns.query("MATCH (a:P {name: 'a'})-[:K]->(b) RETURN b.name", {}, { trace: true });
+  assert.deepEqual(result.rows, [["b"]]);
+  const kinds = result.trace!.events.map((event) => event.kind);
+  assert.deepEqual(kinds.slice(0, 1), ["anchor"]);
+  assert.ok(kinds.includes("expand") && kinds.includes("row"));
+  assert.equal(result.trace!.cut, false);
+  assert.equal((await ns.query("RETURN 1")).trace, undefined);
+});
+
 test("explicit transactions commit together or not at all", async () => {
   const ns = new Grafeno({ url, token }).namespace("tx");
   const count = async () => (await ns.query("MATCH (n:Note) RETURN count(n)")).rows[0][0];

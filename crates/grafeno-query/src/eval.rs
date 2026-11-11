@@ -56,6 +56,8 @@ pub(crate) struct Context<'a> {
     pub(crate) view: Option<&'a std::sync::Arc<grafeno::View>>,
     /// Whether the caller may read the audit log (14.5).
     pub(crate) may_audit: bool,
+    /// The walk being recorded, under `TRACE` (16.9).
+    pub(crate) trace: Option<&'a crate::trace::Trace>,
 }
 
 /// Part `part` of `parts` of the candidates of a query's first match (a

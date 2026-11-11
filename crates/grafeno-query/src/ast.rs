@@ -94,6 +94,9 @@ pub(crate) enum Mode {
     Explain,
     /// Run, and report rows and time per step.
     Profile,
+    /// Run, and record the walk: anchors, edges followed, what each
+    /// pattern and condition kept and dropped, rows (16.9).
+    Trace,
 }
 
 impl Statement {

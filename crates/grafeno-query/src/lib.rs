@@ -55,6 +55,7 @@ mod plan;
 mod procedures;
 mod temporal;
 mod textfns;
+mod trace;
 mod traverse;
 mod value;
 
@@ -74,6 +75,7 @@ pub use exec::{
 pub use limits::{Limits, NamespaceFilter};
 pub use parallel::{MIN_CANDIDATES, parallelism, set_parallelism};
 pub use temporal::Duration;
+pub use trace::{TRACE_BYTES, TRACE_EVENTS, TRACE_FORMAT};
 pub use value::Value;
 
 /// A query that could not be parsed or run. Syntax errors carry the line

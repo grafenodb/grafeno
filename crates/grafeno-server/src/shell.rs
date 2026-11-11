@@ -28,6 +28,7 @@ Statements end with `;` and may span lines. Meta-commands start with `\\`:
   \\import FILE       import an export
   \\format table|json how results are shown
   \\timing on|off     show how long each statement takes
+  \\trace on|off      record how each statement walks the graph (TRACE)
   \\i FILE            run the statements in a file
 
 Example: MATCH (p:Person)-[:works_at]->(c) RETURN p.name, c.name LIMIT 10;";
@@ -440,6 +441,8 @@ pub struct Shell {
     namespace: String,
     format: Format,
     timing: bool,
+    /// Every statement runs as `TRACE` (16.9).
+    trace: bool,
     transaction: Option<Open>,
     /// Whether anything failed (the exit code of scripts).
     pub failed: bool,
@@ -454,6 +457,7 @@ impl Shell {
             namespace,
             format: if json { Format::Json } else { Format::Table },
             timing: false,
+            trace: false,
             transaction: None,
             failed: false,
             stop_on_error: false,
@@ -699,6 +703,13 @@ impl Shell {
             self.report(outcome);
             return;
         }
+        let traced;
+        let statement = if self.trace && !statement.to_uppercase().starts_with("TRACE") {
+            traced = format!("TRACE {statement}");
+            traced.as_str()
+        } else {
+            statement
+        };
         let started = Instant::now();
         let result = if self.transaction.is_some() {
             self.query_in_transaction(statement)
@@ -882,6 +893,15 @@ impl Shell {
                 }
                 _ => Err("use \\format table or \\format json".into()),
             },
+            "\\trace" => {
+                self.trace = match argument {
+                    "on" => true,
+                    "off" => false,
+                    _ => !self.trace,
+                };
+                println!("Tracing is {}.", if self.trace { "on" } else { "off" });
+                Ok(())
+            }
             "\\timing" => {
                 self.timing = match argument {
                     "on" => true,
@@ -1045,6 +1065,57 @@ fn print_result(output: &Value) {
             &["step", "operation", "rows", "reads", "ms", "details"],
             &rows,
         );
+    }
+    // TRACE: the walk, event by event (the first ones).
+    if let Some(events) = output["trace"]["events"].as_array() {
+        const SHOWN: usize = 200;
+        println!();
+        let short = |value: &Value| -> String {
+            match value.as_str() {
+                Some(id) if id.len() > 8 => id[id.len() - 8..].to_owned(),
+                Some(text) => text.to_owned(),
+                None if value.is_null() => String::new(),
+                None => value.to_string(),
+            }
+        };
+        let rows: Vec<Vec<Value>> = events
+            .iter()
+            .take(SHOWN)
+            .map(|event| {
+                let what = match event["kind"].as_str().unwrap_or("") {
+                    "anchor" => format!("{} via {}", short(&event["node"]), short(&event["via"])),
+                    "expand" => format!("{} -> {}", short(&event["from"]), short(&event["to"])),
+                    "keep" => short(&event["node"]),
+                    "drop" if event["reason"] == "condition" => {
+                        format!("row: {}", short(&event["condition"]))
+                    }
+                    "drop" => format!(
+                        "{}{} ({})",
+                        short(&event["node"]),
+                        short(&event["edge"]),
+                        short(&event["reason"])
+                    ),
+                    "row" => format!("row {}", event["index"]),
+                    _ => String::new(),
+                };
+                vec![
+                    event["seq"].clone(),
+                    event["step"].clone(),
+                    event["kind"].clone(),
+                    Value::String(what),
+                ]
+            })
+            .collect();
+        print_table(&["seq", "step", "event", "what"], &rows);
+        if events.len() > SHOWN {
+            println!(
+                "… {} more events (\\format json shows them all)",
+                events.len() - SHOWN
+            );
+        }
+        if output["trace"]["cut"] == true {
+            println!("The trace was cut at its limit; the statement ran to its end.");
+        }
     }
 }
 

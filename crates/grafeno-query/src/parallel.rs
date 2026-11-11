@@ -212,6 +212,8 @@ where
                     budget,
                     view,
                     may_audit,
+                    // Traced statements run on one thread.
+                    trace: None,
                 };
                 run(&ctx);
             });

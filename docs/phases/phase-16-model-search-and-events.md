@@ -2,7 +2,7 @@
 
 [All phases](README.md) · [← Phase 15: Engine and interface apart](phase-15-engine-and-interface-apart.md) · [Phase 17: Integrations →](phase-17-integrations.md)
 
-**Status:** in progress: 16.1 to 16.8 done.
+**Status:** in progress: 16.1 to 16.9 done.
 
 What the engine still lacks as a database people build on: a free
 license, null as a value, namespaces made from scripts, transactions that
@@ -24,7 +24,7 @@ Steps:
 - [16.6 Full-text search (done)](#166-full-text-search-done)
 - [16.7 Better vector indexes (done)](#167-better-vector-indexes-done)
 - [16.8 More graph algorithms, for analysis and simulation (done)](#168-more-graph-algorithms-for-analysis-and-simulation-done)
-- [16.9 Recording how a query walks the graph (planned)](#169-recording-how-a-query-walks-the-graph-planned)
+- [16.9 Recording how a query walks the graph (done)](#169-recording-how-a-query-walks-the-graph-done)
 - [16.10 Change events with values, off by default (planned)](#1610-change-events-with-values-off-by-default-planned)
 
 The owner's decisions (2026-11-10): the license is MIT or Apache-2.0, at
@@ -580,7 +580,7 @@ As built:
 - Not done: Leiden's refinement phase itself, rules with more than two
   states, and diffusion with losses.
 
-## 16.9 Recording how a query walks the graph (planned)
+## 16.9 Recording how a query walks the graph (done)
 
 **Where it starts from.** `PROFILE` reports rows, reads and time per step
 of a plan, but not which nodes and edges were visited, nor in what order.
@@ -596,6 +596,42 @@ of a plan, but not which nodes and edges were visited, nor in what order.
   step by step on a drawing of the graph; the documented event format is
   part of the API.
 - Off unless asked: no cost for queries that are not traced (measured).
+
+As built:
+
+- `TRACE` is a mode of a statement, as `PROFILE` is (`Mode::Trace`). The
+  runner then holds a `Trace` (`grafeno-query/src/trace.rs`), and the
+  evaluation context an `Option<&Trace>`: every event site is one check of
+  that option when nothing is traced.
+- Events: `anchor` where a pattern's candidates are checked (with how
+  they were found), `expand`, `keep` and `drop` where the traversal
+  follows an edge and checks its target (`traverse.rs`), `drop` with the
+  condition's text where a match's conditions, its row filter or a
+  `WHERE` drop a row, and `row` for the result rows; each with its step
+  (the clause, numbered across `UNION` parts) and a sequence number. A
+  traced statement runs on one thread, so the order is the walk's.
+- Bounded at 10 000 events or 4 MiB (`TRACE_EVENTS`, `TRACE_BYTES`):
+  then `cut: true`, and the statement runs on. Index commands refuse
+  `TRACE`, as they refuse `PROFILE`.
+- HTTP: `trace: true` on `/query` (the server adds `TRACE`); capability
+  `query.trace`. The shell's `\trace on|off` and its table of events; the
+  TypeScript client's `query(…, …, {trace: true})` and the `Trace` and
+  `TraceEvent` types. The event format (version 1) is documented in the
+  query language.
+- Measured (`grafeno-query/examples/traversal_bench.rs`, 50 000 people,
+  release build, the previous build and this one run alternately, twice):
+  the untraced queries took 308 to 752 ms in this build and 317 to 841 ms
+  in the previous one, each query within the laptop's variation of the
+  other (the largest difference, −10%, favours the new build), so
+  tracing costs nothing measurable when it is off.
+- Tests: `grafeno-query/tests/trace.rs` (the events of a walk in order:
+  the index anchor, the edges followed, the condition that dropped a
+  row, the row; drops by pattern at the anchor and at a target;
+  variable-length steps; the limit; untraced results; traced writes),
+  HTTP and the TypeScript client against the real server.
+- Not done: the rows' event holds only the ids the row returns (a row
+  of property values names none); the bindings that made it are in the
+  events before it.
 
 ## 16.10 Change events with values, off by default (planned)
 

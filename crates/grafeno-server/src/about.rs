@@ -54,6 +54,8 @@ pub const CAPABILITIES: &[&str] = &[
     // Queries (phases 7 and 12): GQ, EXPLAIN, batches.
     "query",
     "query.explain",
+    // TRACE and `trace: true`: the walk of a statement, event by event (16.9).
+    "query.trace",
     // BEGIN, COMMIT and ROLLBACK across requests (16.4).
     "transactions",
     "batches",

@@ -311,3 +311,25 @@ async fn algorithm_statistics_over_http() {
         assert_eq!(status, StatusCode::BAD_REQUEST, "{body}: {error}");
     }
 }
+
+#[tokio::test]
+async fn traced_queries_over_http() {
+    let app = router(AppState::new(Arc::new(Grafeno::in_memory().unwrap()), None));
+    call(
+        &app,
+        "/v1/s/query",
+        json!({"query": "CREATE (:P {n: 1})-[:K]->(:P {n: 2})"}),
+    )
+    .await;
+    let (status, traced) = call(
+        &app,
+        "/v1/s/query",
+        json!({"query": "MATCH (a:P {n: 1})-->(b) RETURN b.n", "trace": true}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{traced}");
+    assert_eq!(traced["trace"]["format"], 1);
+    assert_eq!(traced["trace"]["events"][0]["kind"], "anchor");
+    let (_, plain) = call(&app, "/v1/s/query", json!({"query": "RETURN 1"})).await;
+    assert!(plain.get("trace").is_none());
+}

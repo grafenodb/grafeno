@@ -95,7 +95,8 @@ Statements are [GQ](../../docs/query-language.md) and end with `;`; lines
 that start with `\` are meta-commands (`\?` lists them): `\ns` (and
 `\ns create NAME`, `\ns drop NAME --yes`), `\use`,
 `\stats`, `\check`, `\rebuild`, `\search`, `\recall`, `\context`,
-`\export`, `\import`, `\format table|json`, `\timing`, `\i FILE`, `\q`.
+`\export`, `\import`, `\format table|json`, `\timing`, `\trace` (each
+statement as `TRACE`, its events in a table), `\i FILE`, `\q`.
 `BEGIN` (or `BEGIN READ ONLY`), `COMMIT` and `ROLLBACK` run the statements
 between them in one transaction, on a file or on a server; the prompt shows
 `*` while one is open, and a script or session that ends inside one rolls
@@ -397,7 +398,7 @@ requests accept either that or an ISO 8601 string (`2024-05-01`,
 | `POST`   | `/v1/{ns}/recall`                     | recall query                                            | `[{node, score, signals}]`    |
 | `POST`   | `/v1/{ns}/context`                    | recall query + `{budget, fact_share, max_facts, facts, communities}` | `{overview, items, facts, tokens, rendered}`; `communities` puts that many matching community summaries first |
 | `POST`   | `/v1/{ns}/batch`                      | `{ops}`                                                 | `{results, refs}`             |
-| `POST`   | `/v1/{ns}/query`                      | `{query, params?}` ([GQ](../../docs/query-language.md)) | `{columns, rows, stats}`      |
+| `POST`   | `/v1/{ns}/query`                      | `{query, params?, trace?}` ([GQ](../../docs/query-language.md)) | `{columns, rows, stats}`, and `trace` with `trace: true` (16.9) |
 | `POST`   | `/v1/{ns}/transactions`               | `{read_only?, timeout_secs?}`                           | 201 `{id, read_only, started_at, timeout_secs, statements, failed}`: an explicit transaction (16.4) |
 | `GET`    | `/v1/{ns}/transactions/{id}`          |                                                         | its state |
 | `POST`   | `/v1/{ns}/transactions/{id}/query`    | `{query, params?}`                                      | a statement in it: `{columns, rows, stats}` |
@@ -564,6 +565,7 @@ engine lacks instead of failing. The capabilities:
 | `transactions` | `BEGIN`, `COMMIT` and `ROLLBACK` across requests (16.4) |
 | `indexes.advanced` | indexes on several properties, on edges and over several labels; `NOT NULL`, type and key constraints (16.5) |
 | `query`, `query.explain`, `batches`, `traversal`, `algorithms` | GQ, `EXPLAIN`, batches, k-hop, paths, subgraphs and neighborhoods, graph algorithms |
+| `query.trace` | `TRACE` and `trace: true` on `/query`: the walk of a statement, event by event (16.9) |
 | `resolution`, `match-rules`, `extraction`, `constraints`, `communities`, `summaries`, `indexes` | keeping knowledge in shape (phase 11) |
 | `changes`, `changes.stream`, `webhooks`, `ingest` | the change log, as pages and as a stream, webhooks, NDJSON ingestion |
 | `export`, `import`, `import.csv`, `import.graphml`, `backup` | moving data in and out |

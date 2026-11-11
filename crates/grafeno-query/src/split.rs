@@ -398,6 +398,7 @@ pub fn merge_parts(
         rows,
         stats: WriteStats::default(),
         profile: None,
+        trace: None,
     })
 }
 

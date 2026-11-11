@@ -332,6 +332,7 @@ fn table(columns: &[&str], rows: Vec<Vec<Value>>) -> QueryResult {
         rows,
         stats: WriteStats::default(),
         profile: None,
+        trace: None,
     }
 }
 
