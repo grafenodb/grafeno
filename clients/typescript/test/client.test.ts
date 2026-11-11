@@ -69,6 +69,28 @@ test("vector indexes, filters and similar nodes", async () => {
   assert.ok(near.every((hit) => hit.node !== both[0][0].node));
 });
 
+test("analysis and simulation algorithms, with their modes", async () => {
+  const ns = new Grafeno({ url, token }).namespace("algos");
+  await ns.query(
+    "CREATE (a:Room {name: 'a', heat: 10.0})-[:Door]->(b:Room {name: 'b', heat: 0.0})-[:Door]->(c:Room {name: 'c', heat: 0.0})",
+  );
+  const points = await ns.algorithm("articulationPoints");
+  assert.deepEqual(points.rows.map((row) => (row[0] as { name: string }).name), ["b"]);
+  const ids = (await ns.query("MATCH (r:Room) RETURN r.@id ORDER BY r.name")).rows.map((row) => row[0]);
+  const field = await ns.algorithm("distanceField", { args: [[ids[0]]] });
+  assert.equal(field.rows.length, 3);
+  const stats = await ns.algorithm("diffusion", {
+    settings: { amount: "heat", steps: 5 },
+    stats: true,
+  });
+  assert.deepEqual(stats.columns, ["column", "count", "min", "max", "mean", "sum"]);
+  const amount = stats.rows.find((row) => row[0] === "amount")!;
+  assert.ok(Math.abs((amount[5] as number) - 10) < 1e-9, "the total stays");
+  const written = await ns.algorithm("kCore", { write: "core" });
+  assert.equal(written.rows[0][0], 3);
+  await assert.rejects(ns.algorithm("kCore", { settings: { mode: "stats" } }), /stats/);
+});
+
 test("explicit transactions commit together or not at all", async () => {
   const ns = new Grafeno({ url, token }).namespace("tx");
   const count = async () => (await ns.query("MATCH (n:Note) RETURN count(n)")).rows[0][0];

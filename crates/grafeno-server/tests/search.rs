@@ -278,3 +278,36 @@ async fn new_algorithms_over_http() {
     assert_eq!(bridges["rows"].as_array().unwrap().len(), 2);
     assert!(bridges["rows"][0][0].is_string(), "{bridges}");
 }
+
+#[tokio::test]
+async fn algorithm_statistics_over_http() {
+    let app = router(AppState::new(Arc::new(Grafeno::in_memory().unwrap()), None));
+    call(
+        &app,
+        "/v1/s/query",
+        json!({"query": "CREATE (a:R {name: 'a'})-[:D {w: 2}]->(b:R {name: 'b'})-[:D {w: 4}]->(c:R {name: 'c'}), (x:Q)"}),
+    )
+    .await;
+    let (status, stats) = call(
+        &app,
+        "/v1/s/algo/kCore",
+        json!({"settings": {"labels": "R"}, "stats": true}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{stats}");
+    assert_eq!(
+        stats["columns"],
+        json!(["column", "count", "min", "max", "mean", "sum"])
+    );
+    assert_eq!(stats["rows"][0][1], 3, "three nodes with the label");
+    assert_eq!(stats["rows"][1][0], "core");
+    for body in [
+        json!({"settings": {"mode": "stats"}}),
+        json!({"settings": {"write": "x"}}),
+        json!({"stats": true, "write": "x"}),
+        json!({"stats": true, "settings": {"bad key": 1}}),
+    ] {
+        let (status, error) = call(&app, "/v1/s/algo/kCore", body.clone()).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}: {error}");
+    }
+}

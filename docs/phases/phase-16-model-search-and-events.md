@@ -555,10 +555,16 @@ As built:
   column) and `write` (a property, or a map of columns to properties),
   carried out where the rows go (`exec.rs`); they must be in a literal
   settings map, so that a writing call makes the statement a write
-  before it runs (rights, write transaction). Over HTTP,
-  `/v1/{ns}/algo/{name}` serves every algorithm, nodes and edges in
-  their compact form. Capabilities `algorithms.analysis` and
-  `algorithms.simulation`.
+  before it runs (rights, write transaction). Other settings in that map
+  may still be parameters (`{mode: 'stats', labels: $labels}`); `mode` or
+  `write` in a parameter is refused with an error (at first it was
+  silently ignored, which the HTTP route's `$settings` hit). Over HTTP,
+  `/v1/{ns}/algo/{name}` serves every algorithm, nodes and edges in their
+  compact form, with `stats: true` (the server writes the settings map
+  into the query, each value a parameter, keys checked as names) or
+  `write`. Capabilities `algorithms.analysis` and `algorithms.simulation`.
+  The TypeScript client's `algorithm()` takes `stats`, tested against the
+  real server with an analysis and a simulation algorithm and both modes.
 - Measured (`grafeno/examples/algo_bench.rs`, the 10.6 graph of 100 000
   nodes and 500 000 edges in communities, release build, laptop; memory
   is what each step allocated beyond what was held, counted by the

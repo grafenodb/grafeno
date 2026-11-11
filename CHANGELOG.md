@@ -23,8 +23,11 @@ version (now 18) is upgraded in place, with a copy kept first.
   `cycle`, `randomWalks`, `clustering`, `conductance`) and for simulation
   (`algo.distanceField`, `influence`, `floodFill`, `diffusion`,
   `automaton`, `assignment`, `minCostFlow`); every algorithm takes
-  `mode: 'stats'` and `write: 'property'` (capabilities
-  `algorithms.analysis`, `algorithms.simulation`).
+  `mode: 'stats'` and `write: 'property'` in its settings map, and over
+  HTTP `stats: true` beside the settings; a mode passed in a parameter is
+  refused, not ignored (capabilities `algorithms.analysis`,
+  `algorithms.simulation`). The TypeScript client's `algorithm()` takes
+  `stats`.
 - **Added**: named vector indexes, several per namespace, on a property
   of one or more labels: `CREATE VECTOR INDEX … ON (d.embedding) OPTIONS
   {dimension, similarity: 'cosine' | 'dot' | 'euclidean', m,

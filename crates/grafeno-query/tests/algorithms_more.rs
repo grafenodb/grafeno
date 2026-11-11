@@ -339,3 +339,46 @@ fn modes_and_errors() {
         assert!(error.contains(expected), "{query}: {error}");
     }
 }
+
+#[test]
+fn modes_in_parameters_are_refused() {
+    let db = shapes();
+    let mut params = Params::new();
+    params.insert(
+        "s".into(),
+        grafeno_query::Value::from_json(&json!({"write": "core"})),
+    );
+    let error = execute(&db, NS, "CALL algo.kCore($s)", &params)
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("not in a parameter"), "{error}");
+    params.insert(
+        "s".into(),
+        grafeno_query::Value::from_json(&json!({"mode": "stats"})),
+    );
+    let error = execute(&db, NS, "CALL algo.kCore($s)", &params)
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("not in a parameter"), "{error}");
+    // Nothing was written.
+    assert_eq!(
+        rows(&db, "MATCH (n:P) WHERE n.core IS NOT NULL RETURN count(n)"),
+        json!([[0]])
+    );
+    // Written in the query, with the other settings in parameters, it runs.
+    params.insert(
+        "labels".into(),
+        grafeno_query::Value::from_json(&json!(["P"])),
+    );
+    let stats = execute(
+        &db,
+        NS,
+        "CALL algo.kCore({mode: 'stats', labels: $labels}) YIELD column, max RETURN column, max",
+        &params,
+    )
+    .unwrap();
+    assert_eq!(
+        stats.to_json()["rows"],
+        json!([["rows", null], ["core", 2.0]])
+    );
+}

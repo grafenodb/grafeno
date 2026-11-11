@@ -564,16 +564,28 @@ export interface AlgorithmInfo {
   description: string;
 }
 
-/** How to run a graph algorithm over HTTP. */
+/**
+ * How to run a graph algorithm over HTTP: any of `GET /v1/algorithms`, such as
+ * `pageRank`, `louvain`, `kCore`, `maxFlow` (args: source and sink ids),
+ * `distanceField` (args: the sources), `diffusion` or `assignment`.
+ */
 export interface AlgorithmOptions {
-  /** Arguments before the settings: node ids, `k`. */
+  /** Arguments before the settings: node ids (or lists of them), `k`. */
   args?: unknown[];
-  /** Projection and algorithm settings: `labels`, `edgeLabels`, `weight`, `direction`, … */
+  /**
+   * Projection and algorithm settings: `labels`, `edgeLabels`, `weight`, `direction`, …
+   * Not `mode` or `write`: those are `stats` and `write` here.
+   */
   settings?: Record<string, unknown>;
   /** Store the result in this node property (or `@embedding`) instead of returning rows. */
   write?: string;
   /** With `write`, the column to store (the one after `node` by default). */
   column?: string;
+  /**
+   * Statistics instead of the rows (engines with `algorithms.analysis`): rows
+   * `[column, count, min, max, mean, sum]`, the first one `rows` with how many there were.
+   */
+  stats?: boolean;
 }
 
 /** What a writing query changed. */
@@ -1582,8 +1594,10 @@ export class Namespace {
   }
 
   /**
-   * Runs a graph algorithm (`pageRank`, `louvain`, `shortestPath`, …). Rows hold
-   * nodes as `{id, labels, name}`; with `write`, one row with the nodes written.
+   * Runs a graph algorithm (`pageRank`, `louvain`, `shortestPath`, `kCore`,
+   * `maxFlow`, `distanceField`, `diffusion`, …). Rows hold nodes as
+   * `{id, labels, name}` and edges as ids; with `write`, one row with the nodes
+   * written; with `stats`, one row per numeric column.
    */
   algorithm(name: string, options: AlgorithmOptions = {}): Promise<QueryResult> {
     return this.#call("POST", `/algo/${encodeURIComponent(name)}`, options);

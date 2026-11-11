@@ -1310,6 +1310,24 @@ impl<'a> Runner<'a> {
                             .iter()
                             .map(|arg| eval(&ctx, arg, Scope::Row(&row)))
                             .collect::<Result<Vec<_>, _>>()?;
+                        // A mode passed in a parameter would be ignored:
+                        // whether the call writes is decided before it runs.
+                        if call.name.starts_with("algo.")
+                            && let Some(Value::Map(settings)) = args.last()
+                        {
+                            let stats = settings
+                                .get("mode")
+                                .is_some_and(|mode| *mode == Value::Str("stats".into()));
+                            let write = settings.get("write").is_some_and(|w| !w.is_null());
+                            if (write && !matches!(mode, crate::ast::CallMode::Write(_)))
+                                || (stats && mode == crate::ast::CallMode::Stream)
+                            {
+                                return Err(QueryError::runtime(format!(
+                                    "{}(): write and mode: 'stats' go in the settings map written in the query ({}({{write: 'rank'}}), {}({{mode: 'stats', weight: $w}})), not in a parameter: whether a query writes is known before it runs",
+                                    procedure.name, procedure.name, procedure.name
+                                )));
+                            }
+                        }
                         let results = procedures::call(&ctx, &call.name, &args)?;
                         let results = match &mode {
                             crate::ast::CallMode::Stream => results,

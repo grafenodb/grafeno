@@ -2773,6 +2773,10 @@ struct AlgorithmInput {
     write: Option<String>,
     /// With `write`, the column to store; the one after `node` by default.
     column: Option<String>,
+    /// Statistics of the rows instead of the rows (16.8): per numeric
+    /// column, how many, the least, the most, the mean and the sum.
+    #[serde(default)]
+    stats: bool,
 }
 
 /// `CALL algo.<name>` over HTTP: the rows it yields (with nodes as
@@ -2799,13 +2803,47 @@ async fn algorithm(
         params.insert(format!("arg{at}"), grafeno_query::Value::from_json(arg));
         call.push(format!("$arg{at}"));
     }
-    params.insert(
-        "settings".into(),
-        grafeno_query::Value::from_json(&Value::Object(input.settings)),
-    );
-    call.push("$settings".into());
+    if input.stats && input.write.is_some() {
+        return Err(ApiError::bad_request(
+            "an algorithm writes or gives statistics, not both",
+        ));
+    }
+    if input.settings.contains_key("mode") || input.settings.contains_key("write") {
+        return Err(ApiError::bad_request(
+            "the mode goes in `stats` and the property in `write`, beside `settings`",
+        ));
+    }
+    if input.stats {
+        // The settings as a map written in the query (each value still a
+        // parameter), so that GQ sees the mode before it runs.
+        let mut entries = vec!["mode: 'stats'".to_owned()];
+        for (at, (key, value)) in input.settings.iter().enumerate() {
+            let plain = key.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_')
+                && key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
+            if !plain {
+                return Err(ApiError::bad_request(format!(
+                    "no setting {key:?}: settings are names of letters, digits and _"
+                )));
+            }
+            params.insert(
+                format!("setting{at}"),
+                grafeno_query::Value::from_json(value),
+            );
+            entries.push(format!("{key}: $setting{at}"));
+        }
+        call.push(format!("{{{}}}", entries.join(", ")));
+    } else {
+        params.insert(
+            "settings".into(),
+            grafeno_query::Value::from_json(&Value::Object(input.settings)),
+        );
+        call.push("$settings".into());
+    }
     let call = format!("CALL {}({})", algorithm.name, call.join(", "));
     let query = match input.write {
+        None if input.stats => format!(
+            "{call} YIELD column, count, min, max, mean, sum RETURN column, count, min, max, mean, sum"
+        ),
         None => {
             let columns: Vec<String> = algorithm
                 .columns

@@ -335,7 +335,14 @@ map, so that whether it writes is known before it runs):
 ```text
 CALL algo.kCore({mode: 'stats'}) YIELD column, max;
 CALL algo.kCore({write: 'core'}) YIELD nodes;
+CALL algo.pageRank({mode: 'stats', labels: $labels});   // other settings may be parameters
 ```
+
+`mode` and `write` themselves must be in the map written in the query: in
+a parameter (`CALL algo.kCore($settings)` with `$settings = {write:
+'core'}`), they are refused with an error rather than ignored. Over HTTP,
+`POST /v1/{ns}/algo/{name}` takes them beside the settings: `stats:
+true`, or `write` (and `column`).
 
 Algorithms run on what the caller may see (14.4), within the query's
 limits, and stop at its time limit or when it is cancelled. `EXPLAIN`

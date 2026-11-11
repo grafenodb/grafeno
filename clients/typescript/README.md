@@ -22,6 +22,8 @@ prompt += context.rendered;
 const people = await vault.query("MATCH (p:Person) WHERE p.age > $age RETURN p.name", { age: 30 });
 const ranked = await vault.algorithm("pageRank", { settings: { labels: "Person" } });
 await vault.algorithm("louvain", { write: "community" });
+const cores = await vault.algorithm("kCore", { stats: true }); // [column, count, min, max, mean, sum]
+const field = await vault.algorithm("distanceField", { args: [[exitId]] }); // nearest exit per node
 ```
 
 Users sign in with a password; the client renews the session by itself
