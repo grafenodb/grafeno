@@ -72,6 +72,9 @@ pub struct RecallQuery {
     /// A full-text index for the text, with its query language (16.6);
     /// without one, the node text, word by word.
     pub index: Option<String>,
+    /// A vector index for the embedding (16.7); without one, the node
+    /// embeddings.
+    pub vector_index: Option<String>,
     /// Which of the text and the embedding to use: both when `None`, as
     /// given.
     pub mode: Option<SearchMode>,
@@ -92,6 +95,7 @@ impl Default for RecallQuery {
             ranking: Some(Ranking::default()),
             include_archived: false,
             index: None,
+            vector_index: None,
             mode: None,
             fusion: Fusion::default(),
         }
@@ -183,11 +187,19 @@ pub fn recall(read: &ReadTx, ns: &str, query: &RecallQuery) -> Result<Vec<Recall
     }
     let mut vector_hits: Vec<(NodeId, f32)> = Vec::new();
     if let Some(embedding) = query.embedding.as_ref().filter(|_| use_vector) {
-        vector_hits = read
-            .search_vector(ns, embedding, query.candidates)?
-            .into_iter()
-            .map(|hit| (hit.node, hit.score))
-            .collect();
+        let found = match &query.vector_index {
+            Some(index) => read.vector_search(
+                ns,
+                embedding,
+                &grafeno::VectorSearch {
+                    index: Some(index.clone()),
+                    limit: query.candidates,
+                    ..grafeno::VectorSearch::default()
+                },
+            )?,
+            None => read.search_vector(ns, embedding, query.candidates)?,
+        };
+        vector_hits = found.into_iter().map(|hit| (hit.node, hit.score)).collect();
     }
     for (index, (node, score)) in text_hits.iter().enumerate() {
         scores.entry(*node).or_default().1.push(Signal::Text {

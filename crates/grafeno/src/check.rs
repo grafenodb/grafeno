@@ -427,6 +427,54 @@ impl ReadTx {
             &ids,
             &mut problems,
         )?;
+        // Each vector index: its graph, and one vector per node that has a
+        // vector of its dimension in the property (all of them, once built).
+        for def in &defs {
+            let Some(spec) = &def.vector else {
+                continue;
+            };
+            let space = crate::vindex::space_of(ns, &def.name);
+            let mut found = Vec::new();
+            let (count, _, _) = vector::check(
+                &self.vectors,
+                &self.hnsw_links,
+                &self.vector_meta,
+                &space,
+                &ids,
+                &mut found,
+            )?;
+            problems.extend(
+                found
+                    .into_iter()
+                    .map(|problem| format!("vector index {:?}: {problem}", def.name)),
+            );
+            if spec.building.is_none() {
+                let mut expected = 0u64;
+                let labels = def.labels();
+                for item in self.nodes.range((ns, 0u128)..).map_err(storage)? {
+                    let (key, value) = item.map_err(storage)?;
+                    if key.value().0 != ns {
+                        break;
+                    }
+                    let node: Node = decode(value.value())?;
+                    if labels.iter().any(|label| node.has_label(label))
+                        && node
+                            .props
+                            .get(&def.key)
+                            .and_then(crate::vindex::vector_of)
+                            .is_some_and(|vector| vector.len() == spec.dimension)
+                    {
+                        expected += 1;
+                    }
+                }
+                if expected != count {
+                    problems.push(format!(
+                        "vector index {:?} holds {count} vectors, the nodes have {expected}",
+                        def.name
+                    ));
+                }
+            }
+        }
 
         if problems.len() > MAX_PROBLEMS {
             let rest = problems.len() - MAX_PROBLEMS;
@@ -625,6 +673,14 @@ impl WriteTx {
 
         // The tables were changed underneath the vector cache.
         self.vectors.forget(ns);
+        // Vector indexes start over, with their parameters, and are filled
+        // again as the nodes are written back.
+        for def in self.index_defs(ns)? {
+            if def.vector.is_some() {
+                crate::vindex::reset_space(&self.tx, ns, &def)?;
+                self.vectors.forget(&crate::vindex::space_of(ns, &def.name));
+            }
+        }
 
         let mut report = RebuildReport {
             namespace: ns.to_owned(),

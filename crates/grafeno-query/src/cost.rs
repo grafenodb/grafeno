@@ -303,7 +303,8 @@ impl<'i> Model<'i> {
                 (graph * 4.0, nodes.sqrt().max(1.0))
             }
             name if name.starts_with("algo.") => (graph * 20.0, nodes),
-            "db.search" | "db.searchvector" | "db.searchindex" => (100.0, 10.0),
+            "db.search" | "db.searchvector" | "db.searchindex" | "db.similar" => (100.0, 10.0),
+            "db.searchvectors" => (1_000.0, 100.0),
             _ => (10.0, 10.0),
         };
         self.add(self.rows * work);

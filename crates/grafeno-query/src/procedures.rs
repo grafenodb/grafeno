@@ -99,9 +99,21 @@ pub(crate) const PROCEDURES: &[Procedure] = &[
     },
     Procedure {
         name: "db.searchVector",
-        args: "embedding, limit = 10",
+        args: "embedding, limit = 10 | {limit, index, ef, labels, where}",
         columns: &["node", "score"],
-        description: "Nearest nodes by embedding (cosine similarity), best first.",
+        description: "Nearest nodes by embedding, best first: the node embeddings, or a vector index (`index`); `labels` and `where` (a map of property values) are kept during the walk, so a selective filter still finds `limit` nodes.",
+    },
+    Procedure {
+        name: "db.searchVectors",
+        args: "embeddings, limit = 10 | {limit, index, ef, labels, where}",
+        columns: &["query", "node", "score"],
+        description: "db.searchVector for several embeddings at once: `query` is the position of the embedding in the list (from 0).",
+    },
+    Procedure {
+        name: "db.similar",
+        args: "node, limit = 10 | {limit, index, ef, labels, where}",
+        columns: &["node", "score"],
+        description: "The nodes nearest to a node's own vector (its embedding, or its property in a vector index), itself left out.",
     },
     Procedure {
         name: "temporal.series",
@@ -149,6 +161,99 @@ fn limit_arg(args: &[Value], at: usize) -> Result<usize, QueryError> {
     }
 }
 
+/// An embedding argument: a list of numbers.
+fn embedding_arg(value: Option<&Value>) -> Result<Vec<f32>, QueryError> {
+    let Some(Value::List(items)) = value else {
+        return Err(QueryError::runtime("an embedding is a list of numbers"));
+    };
+    items
+        .iter()
+        .map(|item| match item {
+            Value::Int(i) => Ok(*i as f32),
+            Value::Float(f) => Ok(*f as f32),
+            other => Err(QueryError::runtime(format!(
+                "an embedding holds numbers, not a {}",
+                other.type_name()
+            ))),
+        })
+        .collect()
+}
+
+/// A vector search's options: a limit, or `{limit, index, ef, labels, where}`.
+fn vector_search_arg(value: Option<&Value>) -> Result<grafeno::VectorSearch, QueryError> {
+    let mut search = grafeno::VectorSearch {
+        limit: 10,
+        ..grafeno::VectorSearch::default()
+    };
+    let Some(Value::Map(options)) = value else {
+        search.limit = limit_arg(value.map(std::slice::from_ref).unwrap_or(&[]), 0)?;
+        return Ok(search);
+    };
+    let mut filter = grafeno::VectorFilter::default();
+    for (key, value) in options {
+        if value.is_null() {
+            continue;
+        }
+        match key.as_str() {
+            "limit" => search.limit = limit_arg(std::slice::from_ref(value), 0)?,
+            "ef" => search.ef = Some(limit_arg(std::slice::from_ref(value), 0)?),
+            "index" => {
+                let Value::Str(name) = value else {
+                    return Err(QueryError::runtime("index is the name of a vector index"));
+                };
+                search.index = Some(name.clone());
+            }
+            "labels" => {
+                let Value::List(labels) = value else {
+                    return Err(QueryError::runtime("labels is a list of labels"));
+                };
+                for label in labels {
+                    let Value::Str(label) = label else {
+                        return Err(QueryError::runtime("labels is a list of labels"));
+                    };
+                    filter.labels.push(label.clone());
+                }
+            }
+            "where" => {
+                let Value::Map(props) = value else {
+                    return Err(QueryError::runtime(
+                        "where is a map of property values: {status: 'active'}",
+                    ));
+                };
+                for (key, value) in props {
+                    filter.props.insert(
+                        key.clone(),
+                        value.to_property().map_err(QueryError::runtime)?,
+                    );
+                }
+            }
+            other => {
+                return Err(QueryError::runtime(format!(
+                    "unknown option {other} of a vector search: limit, index, ef, labels, where"
+                )));
+            }
+        }
+    }
+    if !filter.is_empty() {
+        search.filter = Some(filter);
+    }
+    Ok(search)
+}
+
+/// Hits as `node, score` rows, without the nodes the caller may not see.
+fn vector_rows(ctx: &Context, hits: Vec<grafeno::Hit>) -> Result<Vec<Vec<Value>>, QueryError> {
+    let mut rows = Vec::new();
+    for hit in hits {
+        if let Some(node) = ctx.node(hit.node)? {
+            rows.push(vec![
+                Value::Node(Arc::new(node)),
+                Value::Float(f64::from(hit.score)),
+            ]);
+        }
+    }
+    Ok(rows)
+}
+
 /// The search `db.search(text, {…})` asks for.
 fn search_request(
     text: &str,
@@ -190,6 +295,14 @@ fn search_request(
                 };
                 request.index = Some(name.clone());
             }
+            "vector_index" => {
+                let Value::Str(name) = value else {
+                    return Err(QueryError::runtime(
+                        "vector_index is the name of a vector index",
+                    ));
+                };
+                request.vector_index = Some(name.clone());
+            }
             "embedding" => {
                 let Value::List(items) = value else {
                     return Err(QueryError::runtime("embedding is a list of numbers"));
@@ -211,7 +324,7 @@ fn search_request(
             "text_weight" => text_weight = Some(number(value, "text_weight")? as f32),
             other => {
                 return Err(QueryError::runtime(format!(
-                    "unknown option {other} of db.search: limit, mode, embedding, index, fusion, k, text_weight, candidates"
+                    "unknown option {other} of db.search: limit, mode, embedding, index, vector_index, fusion, k, text_weight, candidates"
                 )));
             }
         }
@@ -379,6 +492,38 @@ pub(crate) fn call(
             }
             rows
         }
+        "db.searchVectors" => {
+            let Some(Value::List(embeddings)) = args.first() else {
+                return Err(QueryError::runtime(
+                    "db.searchVectors() needs a list of embeddings",
+                ));
+            };
+            let search = vector_search_arg(args.get(1))?;
+            let mut rows = Vec::new();
+            for (at, embedding) in embeddings.iter().enumerate() {
+                let embedding = embedding_arg(Some(embedding))?;
+                for row in vector_rows(ctx, read.vector_search(ns, &embedding, &search)?)? {
+                    let mut row = row;
+                    row.insert(0, Value::Int(at as i64));
+                    rows.push(row);
+                }
+            }
+            rows
+        }
+        "db.similar" => {
+            let node = match args.first() {
+                Some(Value::Node(node)) => node.id,
+                Some(Value::Str(text)) => crate::exec::uuid_from_text(text)
+                    .ok_or_else(|| QueryError::runtime("db.similar() needs a node or a node id"))?,
+                _ => {
+                    return Err(QueryError::runtime(
+                        "db.similar() needs a node or a node id",
+                    ));
+                }
+            };
+            let search = vector_search_arg(args.get(1))?;
+            vector_rows(ctx, read.similar(ns, node, &search)?)?
+        }
         "db.searchIndex" => {
             let (Some(Value::Str(index)), Some(Value::Str(query))) = (args.first(), args.get(1))
             else {
@@ -470,6 +615,11 @@ pub(crate) fn call(
                 .collect()
         }
         "db.search" | "db.searchVector" => {
+            if procedure.name == "db.searchVector" && matches!(args.get(1), Some(Value::Map(_))) {
+                let embedding = embedding_arg(args.first())?;
+                let search = vector_search_arg(args.get(1))?;
+                return vector_rows(ctx, read.vector_search(ns, &embedding, &search)?);
+            }
             let limit = limit_arg(args, 1)?;
             let found = if procedure.name == "db.search" {
                 let Some(Value::Str(text)) = args.first() else {

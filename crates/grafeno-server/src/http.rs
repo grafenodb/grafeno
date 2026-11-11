@@ -332,12 +332,47 @@ pub async fn serve_until(
             }
         });
     }
+    // Vector indexes created to be built in the background (16.7): a chunk
+    // at a time, on the leader of a cluster (each chunk replicates).
+    {
+        let state = state.clone();
+        tokio::spawn(async move {
+            let mut every = tokio::time::interval(std::time::Duration::from_millis(500));
+            loop {
+                every.tick().await;
+                if !state.leading() {
+                    continue;
+                }
+                let state = state.clone();
+                let _ = tokio::task::spawn_blocking(move || build_indexes(&state)).await;
+            }
+        });
+    }
     axum::serve(
         listener,
         router_with(state, &options).into_make_service_with_connect_info::<SocketAddr>(),
     )
     .with_graceful_shutdown(shutdown)
     .await
+}
+
+/// One round of background index builds: a chunk of each index pending,
+/// each in a write of its own, so other writes go between them.
+fn build_indexes(state: &AppState) -> grafeno::Result<()> {
+    let read = state.db.begin_read()?;
+    let mut pending = Vec::new();
+    for ns in read.namespaces()? {
+        for name in read.pending_indexes(&ns.name)? {
+            pending.push((ns.name.clone(), name));
+        }
+    }
+    drop(read);
+    for (ns, name) in pending {
+        state
+            .writer
+            .write(move |tx| tx.build_index_step(&ns, &name, 2_000))?;
+    }
+    Ok(())
 }
 
 /// Ctrl+C, or SIGTERM on Unix (what systemd sends to stop a service).
@@ -399,6 +434,7 @@ pub fn router_with(state: AppState, options: &Options) -> Router {
         .route("/{ns}/neighborhoods", post(neighborhoods))
         .route("/{ns}/search", post(search_handler))
         .route("/{ns}/search/text", post(search_text))
+        .route("/{ns}/similar", post(similar_handler))
         .route("/{ns}/search/vector", post(search_vector))
         .route("/{ns}/recall", post(recall_handler))
         .route("/{ns}/context", post(context_handler))
@@ -1706,6 +1742,8 @@ struct SearchInput {
     #[serde(default)]
     embedding: Option<Vec<f32>>,
     #[serde(default)]
+    vector_index: Option<String>,
+    #[serde(default)]
     mode: grafeno::SearchMode,
     #[serde(default)]
     fusion: Option<String>,
@@ -1736,6 +1774,7 @@ async fn search_handler(
         text: input.text,
         index: input.index,
         embedding: input.embedding,
+        vector_index: input.vector_index,
         mode: input.mode,
         limit: input.limit,
         candidates: input.candidates,
@@ -1748,24 +1787,99 @@ async fn search_handler(
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct VectorSearchInput {
-    embedding: Vec<f32>,
+    #[serde(default)]
+    embedding: Option<Vec<f32>>,
+    /// Several at once (16.7): the answer is a list per embedding.
+    #[serde(default)]
+    embeddings: Option<Vec<Vec<f32>>>,
     #[serde(default = "ten")]
     limit: usize,
     #[serde(default)]
     ef: Option<usize>,
+    /// A vector index (16.7); without one, the node embeddings.
+    #[serde(default)]
+    index: Option<String>,
+    /// Kept during the walk: `{labels, props}`.
+    #[serde(default)]
+    filter: Option<grafeno::VectorFilter>,
 }
 
 async fn search_vector(
     State(state): State<AppState>,
     Path(ns): Path<String>,
     Body(input): Body<VectorSearchInput>,
+) -> ApiResult<Json<Value>> {
+    let found = blocking(&state, move |db| {
+        let read = db.begin_read()?;
+        let search = grafeno::VectorSearch {
+            index: input.index.clone(),
+            limit: input.limit,
+            ef: input.ef,
+            filter: input.filter.clone(),
+            exclude: None,
+        };
+        let plain = input.index.is_none() && input.filter.is_none();
+        let one = |embedding: &[f32]| {
+            if plain {
+                // As before 16.7: hits a view hides are replaced.
+                match input.ef {
+                    Some(ef) => read.search_vector_with(&ns, embedding, input.limit, ef),
+                    None => read.search_vector(&ns, embedding, input.limit),
+                }
+            } else {
+                read.vector_search(&ns, embedding, &search)
+            }
+        };
+        match (&input.embedding, &input.embeddings) {
+            (Some(embedding), None) => Ok(json!(one(embedding)?)),
+            (None, Some(embeddings)) => {
+                let mut lists = Vec::new();
+                for embedding in embeddings {
+                    lists.push(one(embedding)?);
+                }
+                Ok(json!(lists))
+            }
+            _ => Err(grafeno::Error::Invalid(
+                "a vector search takes `embedding` or `embeddings`".into(),
+            )),
+        }
+    })
+    .await?;
+    Ok(Json(found))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SimilarInput {
+    node: NodeId,
+    #[serde(default = "ten")]
+    limit: usize,
+    #[serde(default)]
+    ef: Option<usize>,
+    #[serde(default)]
+    index: Option<String>,
+    #[serde(default)]
+    filter: Option<grafeno::VectorFilter>,
+}
+
+/// The nodes nearest to a node's own vector (16.7).
+async fn similar_handler(
+    State(state): State<AppState>,
+    Path(ns): Path<String>,
+    Body(input): Body<SimilarInput>,
 ) -> ApiResult<Json<Vec<grafeno::Hit>>> {
     let hits = blocking(&state, move |db| {
-        let read = db.begin_read()?;
-        match input.ef {
-            Some(ef) => read.search_vector_with(&ns, &input.embedding, input.limit, ef),
-            None => read.search_vector(&ns, &input.embedding, input.limit),
-        }
+        db.begin_read()?.similar(
+            &ns,
+            input.node,
+            &grafeno::VectorSearch {
+                index: input.index.clone(),
+                limit: input.limit,
+                ef: input.ef,
+                filter: input.filter.clone(),
+                exclude: None,
+            },
+        )
     })
     .await?;
     Ok(Json(hits))

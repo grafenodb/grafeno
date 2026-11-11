@@ -1312,6 +1312,7 @@ impl QueryArgs {
             ranking: Some(Ranking::default()),
             include_archived: self.include_archived,
             index: self.index.clone(),
+            vector_index: None,
             mode: self.mode,
             fusion: grafeno::Fusion::default(),
         })

@@ -44,6 +44,9 @@ pub const CAPABILITIES: &[&str] = &[
     // or hybrid search as the caller says (16.6).
     "search.fulltext",
     "search.hybrid",
+    // Named vector indexes, filtered and several-vector searches, similar
+    // nodes, background builds (16.7).
+    "search.vector.indexes",
     // Memory (phase 5) and recall.
     "recall",
     "context",

@@ -321,10 +321,11 @@ fn constraint_cells(constraint: &grafeno::Constraint) -> Vec<Value> {
 }
 
 /// The first six as before 16.5 (several labels joined by `|`, several
-/// properties by `, `), then what an index is on, whether it is a key, and
-/// its kind (`value`, `fuzzy` or `fulltext`).
-const INDEX_COLUMNS: [&str; 9] = [
-    "name", "label", "property", "unique", "entries", "fuzzy", "on", "key", "kind",
+/// properties by `, `), then what an index is on, whether it is a key, its
+/// kind (`value`, `fuzzy`, `fulltext` or `vector`) and its state
+/// (`online`, or `building` in the background).
+const INDEX_COLUMNS: [&str; 10] = [
+    "name", "label", "property", "unique", "entries", "fuzzy", "on", "key", "kind", "state",
 ];
 
 fn index_row(def: &IndexDef, entries: u64) -> Vec<Value> {
@@ -342,8 +343,22 @@ fn index_row(def: &IndexDef, entries: u64) -> Vec<Value> {
                 "fuzzy"
             } else if def.fulltext.is_some() {
                 "fulltext"
+            } else if def.vector.is_some() {
+                "vector"
             } else {
                 "value"
+            }
+            .into(),
+        ),
+        Value::Str(
+            if def
+                .vector
+                .as_ref()
+                .is_some_and(|spec| spec.building.is_some())
+            {
+                "building"
+            } else {
+                "online"
             }
             .into(),
         ),
@@ -2739,6 +2754,8 @@ fn explain(
                     "fuzzy index"
                 } else if def.fulltext.is_some() {
                     "full-text index"
+                } else if def.vector.is_some() {
+                    "vector index"
                 } else {
                     "index"
                 },

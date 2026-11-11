@@ -54,6 +54,21 @@ test("full-text indexes and hybrid search", async () => {
   assert.equal(found[0].text_rank, 1);
 });
 
+test("vector indexes, filters and similar nodes", async () => {
+  const ns = new Grafeno({ url, token }).namespace("vec");
+  await ns.query(
+    "UNWIND range(0, 39) AS i CREATE (:Item {i: i, tier: i % 2, v: [cos(radians(i * 9)), sin(radians(i * 9))]})",
+  );
+  await ns.query("CREATE VECTOR INDEX angle FOR (n:Item) ON (n.v) OPTIONS {dimension: 2}");
+  const odd = await ns.searchVector([1, 0], { index: "angle", limit: 3, filter: { props: { tier: 1 } } });
+  assert.equal(odd.length, 3);
+  const both = await ns.searchVectors([[1, 0], [0, 1]], { index: "angle", limit: 1 });
+  assert.equal(both.length, 2);
+  const near = await ns.similar(both[0][0].node, { index: "angle", limit: 2 });
+  assert.equal(near.length, 2);
+  assert.ok(near.every((hit) => hit.node !== both[0][0].node));
+});
+
 test("explicit transactions commit together or not at all", async () => {
   const ns = new Grafeno({ url, token }).namespace("tx");
   const count = async () => (await ns.query("MATCH (n:Note) RETURN count(n)")).rows[0][0];

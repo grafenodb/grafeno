@@ -237,15 +237,22 @@ impl Backend {
 
     fn query(&self, ns: &str, query: &str) -> Result<Value, String> {
         match self {
-            Backend::Local(db) => grafeno_query::execute_with(
-                db,
-                ns,
-                query,
-                &Default::default(),
-                &crate::access_cli::local_limits(),
-            )
-            .map(|result| result.to_json())
-            .map_err(|error| error.to_string()),
+            Backend::Local(db) => {
+                let result = grafeno_query::execute_with(
+                    db,
+                    ns,
+                    query,
+                    &Default::default(),
+                    &crate::access_cli::local_limits(),
+                )
+                .map(|result| result.to_json())
+                .map_err(|error| error.to_string())?;
+                // No server builds vector indexes in the background here:
+                // the shell finishes them before going on.
+                db.build_pending_indexes(ns, 5_000)
+                    .map_err(|error| error.to_string())?;
+                Ok(result)
+            }
             Backend::Remote { .. } => {
                 self.call("POST", &path(ns, "query"), Some(json!({ "query": query })))
             }

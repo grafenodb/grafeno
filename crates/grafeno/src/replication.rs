@@ -45,10 +45,12 @@ pub const FENCE: (&str, &str) = ("cluster", "moved");
 /// 1: records and bulk work (13.1). 2: also change log entries copied as
 /// they are ([`Op::Change`], 13.5). 3: accounts, API keys and sessions
 /// instead of principals (14.1). 4: roles (14.2). 5: record policies and
-/// account attributes (14.4). 6: audit events (14.5). An entry carries the oldest format that
-/// can hold it, so a member of the version before reads every entry that
-/// does not need the new one.
-pub const ENTRY_FORMAT: u32 = 6;
+/// account attributes (14.4). 6: audit events (14.5). 7: indexes on
+/// several properties, edges or labels, keys, property rules (16.5),
+/// full-text (16.6) and vector indexes and their background builds (16.7).
+/// An entry carries the oldest format that can hold it, so a member of the
+/// version before reads every entry that does not need the new one.
+pub const ENTRY_FORMAT: u32 = 7;
 
 pub(crate) const ENABLED: &str = "replication_enabled";
 const FIRST: &str = "replication_first";
@@ -85,9 +87,21 @@ pub(crate) enum Touch {
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Bulk {
-    DropNamespace { ns: String },
-    RebuildIndexes { ns: String },
-    CompactVectors { ns: String },
+    DropNamespace {
+        ns: String,
+    },
+    RebuildIndexes {
+        ns: String,
+    },
+    CompactVectors {
+        ns: String,
+    },
+    /// A chunk of a vector index built in the background (16.7).
+    BuildIndex {
+        ns: String,
+        name: String,
+        chunk: usize,
+    },
 }
 
 /// What a write transaction touched, in the order it first touched it.
@@ -214,7 +228,8 @@ impl Op {
             | Op::Change { ns, .. } => Some(ns),
             Op::Bulk(Bulk::DropNamespace { ns })
             | Op::Bulk(Bulk::RebuildIndexes { ns })
-            | Op::Bulk(Bulk::CompactVectors { ns }) => Some(ns),
+            | Op::Bulk(Bulk::CompactVectors { ns })
+            | Op::Bulk(Bulk::BuildIndex { ns, .. }) => Some(ns),
             Op::Principal { .. }
             | Op::Account { .. }
             | Op::ApiKey { .. }
@@ -624,7 +639,32 @@ impl WriteTx {
                     || v.as_object().is_some_and(|o| !o.is_empty())
             })
         };
-        let format = if ops.iter().any(|op| matches!(op, Op::Audit { .. })) {
+        // An index or constraint of 16.5 to 16.7 would be misread by a
+        // member that does not know it.
+        let newer_schema = |op: &Op| match op {
+            Op::Index { def: Some(def), .. } => [
+                "more_keys",
+                "more_labels",
+                "edges",
+                "required",
+                "fulltext",
+                "vector",
+            ]
+            .iter()
+            .any(|field| def.get(*field).is_some()),
+            Op::Constraint {
+                constraint: Some(constraint),
+                ..
+            } => matches!(
+                constraint.get("kind").and_then(Json::as_str),
+                Some("exists" | "typed")
+            ),
+            Op::Bulk(Bulk::BuildIndex { .. }) => true,
+            _ => false,
+        };
+        let format = if ops.iter().any(newer_schema) {
+            7
+        } else if ops.iter().any(|op| matches!(op, Op::Audit { .. })) {
             6
         } else if ops.iter().any(|op| match op {
             Op::Role { role, .. } => nonempty(role, "policies"),
@@ -1004,6 +1044,9 @@ impl WriteTx {
             }
             Op::Bulk(Bulk::CompactVectors { ns }) => {
                 self.compact_vectors(ns)?;
+            }
+            Op::Bulk(Bulk::BuildIndex { ns, name, chunk }) => {
+                self.build_index_step(ns, name, *chunk)?;
             }
         }
         Ok(())

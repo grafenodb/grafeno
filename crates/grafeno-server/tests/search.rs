@@ -122,3 +122,126 @@ async fn fulltext_and_hybrid_search() {
     assert_eq!(status, StatusCode::OK, "{recalled}");
     assert_eq!(recalled[0]["node"]["props"]["title"], "Vector search");
 }
+
+#[tokio::test]
+async fn vector_indexes_over_http() {
+    let app = router(AppState::new(Arc::new(Grafeno::in_memory().unwrap()), None));
+    let mut ids = Vec::new();
+    for i in 0..60 {
+        let angle = (i as f32).to_radians() * 6.0;
+        let (status, made) = call(
+            &app,
+            "/v1/s/nodes",
+            json!({"labels": ["Item"], "props": {"i": i, "tier": i % 3, "v": [angle.cos(), angle.sin()]}}),
+        )
+        .await;
+        assert!(status.is_success(), "{made}");
+        ids.push(made["id"].clone());
+    }
+    let (status, made) = call(
+        &app,
+        "/v1/s/query",
+        json!({"query": "CREATE VECTOR INDEX angle FOR (n:Item) ON (n.v) OPTIONS {dimension: 2}"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{made}");
+    let (status, found) = call(
+        &app,
+        "/v1/s/search/vector",
+        json!({"embedding": [1.0, 0.0], "index": "angle", "limit": 4, "filter": {"props": {"tier": 1}}}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{found}");
+    assert_eq!(found.as_array().unwrap().len(), 4);
+    let (status, many) = call(
+        &app,
+        "/v1/s/search/vector",
+        json!({"embeddings": [[1.0, 0.0], [0.0, 1.0]], "index": "angle", "limit": 1}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{many}");
+    assert_eq!(many.as_array().unwrap().len(), 2);
+    assert_eq!(many[0][0]["node"], ids[0]);
+    let (status, similar) = call(
+        &app,
+        "/v1/s/similar",
+        json!({"node": ids[10], "index": "angle", "limit": 2}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{similar}");
+    let near: Vec<&Value> = similar
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|hit| &hit["node"])
+        .collect();
+    assert!(
+        near.contains(&&ids[9]) && near.contains(&&ids[11]),
+        "{similar}"
+    );
+    let (status, error) = call(&app, "/v1/s/search/vector", json!({"limit": 1})).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{error}");
+}
+
+/// A server builds a background index on its own.
+#[test]
+fn a_server_builds_background_indexes() {
+    use std::process::{Command, Stdio};
+    use std::time::{Duration, Instant};
+    let dir = std::env::temp_dir().join(format!("grafeno-vbuild-{}", grafeno::NodeId::new()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    struct Server(std::process::Child);
+    impl Drop for Server {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+    let _server = Server(
+        Command::new(env!("CARGO_BIN_EXE_grafeno"))
+            .args([
+                "serve",
+                "--db",
+                dir.join("v.redb").to_str().unwrap(),
+                "--addr",
+                &format!("127.0.0.1:{port}"),
+            ])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    let url = format!("http://127.0.0.1:{port}");
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while std::net::TcpStream::connect(("127.0.0.1", port)).is_err() {
+        assert!(Instant::now() < deadline, "the server did not start");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let query = |text: &str| -> Value {
+        let mut response = ureq::post(&format!("{url}/v1/b/query"))
+            .send_json(json!({ "query": text }))
+            .unwrap();
+        response.body_mut().read_json().unwrap()
+    };
+    query("UNWIND range(1, 5000) AS i CREATE (:Item {v: [toFloat(i), 1.0]})");
+    let made = query(
+        "CREATE VECTOR INDEX later FOR (n:Item) ON (n.v) OPTIONS {dimension: 2, background: true}",
+    );
+    assert_eq!(made["rows"][0][9], "building");
+    loop {
+        let shown = query("SHOW INDEXES");
+        if shown["rows"][0][9] == "online" {
+            assert_eq!(shown["rows"][0][4], 5000);
+            break;
+        }
+        assert!(Instant::now() < deadline, "not built: {shown}");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    drop(_server);
+    let _ = std::fs::remove_dir_all(&dir);
+}

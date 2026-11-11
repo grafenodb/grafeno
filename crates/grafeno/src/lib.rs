@@ -41,6 +41,7 @@ mod replication;
 mod resolve;
 mod rights;
 mod view;
+mod vindex;
 pub use audit::{AuditEvent, AuditPage, AuditRetention, NewAuditEvent, Outcome};
 pub use db::Origin;
 pub use view::View;
@@ -89,6 +90,8 @@ pub use rights::{
 pub use stats::{NamespaceInfo, NamespaceStats};
 pub use text::tokenize;
 pub use traverse::{Direction, EdgeFilter, Neighbor, Path, Subgraph};
+pub use vector::Similarity;
+pub use vindex::{BuildProgress, Building, VectorFilter, VectorSearch, VectorSpec};
 pub use writer::{Histogram, HistogramSnapshot, Lane, Writer, WriterOptions, WriterSnapshot};
 
 /// A search result: a node and its score (BM25 for text, cosine similarity

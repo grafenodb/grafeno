@@ -281,6 +281,10 @@ presentan el proyecto y los primeros pasos.
   NAMESPACE` in GQ, checked on the namespace they name;
   `grafeno namespaces create | describe | drop`; `grafeno shell
   --stop-on-error`.
+- **Phase 16.7, vector indexes:** named vector indexes with cosine, dot
+  or Euclidean similarity and their own HNSW parameters, filters applied
+  during the walk, several vectors at once, similar nodes, and background
+  builds.
 - **Phase 16.6, full-text search:** full-text indexes over weighted
   properties with analyzers, a query language and fragments; text, vector
   or hybrid search with rank or weighted fusion (layout 18).

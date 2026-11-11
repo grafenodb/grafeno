@@ -1229,11 +1229,19 @@ impl ReadTx {
         }
         let mut vector_hits: Vec<(NodeId, f32)> = Vec::new();
         if let Some(embedding) = embedding {
-            for (rank, hit) in self
-                .search_vector(ns, embedding, pool)?
-                .into_iter()
-                .enumerate()
-            {
+            let found = match &request.vector_index {
+                Some(index) => self.vector_search(
+                    ns,
+                    embedding,
+                    &crate::VectorSearch {
+                        index: Some(index.clone()),
+                        limit: pool,
+                        ..crate::VectorSearch::default()
+                    },
+                )?,
+                None => self.search_vector(ns, embedding, pool)?,
+            };
+            for (rank, hit) in found.into_iter().enumerate() {
                 vector_hits.push((hit.node, hit.score));
                 let entry = hits
                     .entry(hit.node)
@@ -1313,6 +1321,8 @@ pub struct SearchRequest {
     /// the node text, word by word.
     pub index: Option<String>,
     pub embedding: Option<Vec<f32>>,
+    /// A vector index for the embedding; without one, the node embeddings.
+    pub vector_index: Option<String>,
     pub mode: SearchMode,
     pub fusion: Fusion,
     pub limit: usize,
@@ -1328,6 +1338,7 @@ impl Default for SearchRequest {
             text: None,
             index: None,
             embedding: None,
+            vector_index: None,
             mode: SearchMode::Text,
             fusion: Fusion::default(),
             limit: 10,

@@ -623,7 +623,10 @@ impl Parser<'_> {
         let fulltext = self.at_keyword("CREATE")
             && self.keyword_at(1, "FULLTEXT")
             && self.keyword_at(2, "INDEX");
-        let constraint = if fuzzy || fulltext {
+        let vector = self.at_keyword("CREATE")
+            && self.keyword_at(1, "VECTOR")
+            && self.keyword_at(2, "INDEX");
+        let constraint = if fuzzy || fulltext || vector {
             self.position += 3;
             false
         } else {
@@ -745,6 +748,68 @@ impl Parser<'_> {
             parser.expect(Token::RParen, "`)`")?;
             Ok(keys)
         };
+        if vector {
+            self.expect_keyword("ON")?;
+            let keys = properties(self, true)?;
+            if edges || keys.len() != 1 {
+                return Err(self.error("a vector index is on one node property"));
+            }
+            let mut def = index(labels, keys, false);
+            let start = self.start();
+            if !self.eat_keyword("OPTIONS") {
+                return Err(self.error(
+                    "a vector index needs OPTIONS {dimension: …} (and similarity, m, ef_construction, ef_search, background)",
+                ));
+            }
+            let expr = self.expr()?;
+            let Some(Value::Map(map)) = crate::plan::constant(&expr, None) else {
+                return Err(QueryError::at(
+                    self.source,
+                    start,
+                    "OPTIONS is a map of literals: {dimension: 768, similarity: 'cosine'}",
+                ));
+            };
+            let at = |message: String| QueryError::at(self.source, start, message);
+            let count = |value: &Value, what: &str| match value {
+                Value::Int(n) if *n > 0 => Ok(*n as usize),
+                _ => Err(at(format!("{what} is a positive integer"))),
+            };
+            let mut spec = grafeno::VectorSpec::new(0);
+            for (key, value) in map {
+                match key.as_str() {
+                    "dimension" => spec.dimension = count(&value, "dimension")?,
+                    "m" => spec.m = count(&value, "m")?,
+                    "ef_construction" => spec.ef_construction = count(&value, "ef_construction")?,
+                    "ef_search" => spec.ef_search = count(&value, "ef_search")?,
+                    "similarity" => {
+                        let Value::Str(name) = &value else {
+                            return Err(at("similarity is cosine, dot or euclidean".into()));
+                        };
+                        spec.similarity =
+                            grafeno::Similarity::from_name(name).ok_or_else(|| {
+                                at(format!(
+                                    "unknown similarity {name:?}: cosine, dot or euclidean"
+                                ))
+                            })?;
+                    }
+                    "background" => match value {
+                        Value::Bool(true) => spec.building = Some(Default::default()),
+                        Value::Bool(false) => spec.building = None,
+                        _ => return Err(at("background is true or false".into())),
+                    },
+                    other => {
+                        return Err(at(format!(
+                            "unknown option {other}: a vector index takes dimension, similarity, m, ef_construction, ef_search and background"
+                        )));
+                    }
+                }
+            }
+            if spec.dimension == 0 {
+                return Err(at("a vector index needs its dimension in OPTIONS".into()));
+            }
+            def.vector = Some(spec);
+            return Ok(Some(Schema::Create { def, if_not_exists }));
+        }
         if fulltext {
             self.expect_keyword("ON")?;
             self.eat_keyword("EACH");

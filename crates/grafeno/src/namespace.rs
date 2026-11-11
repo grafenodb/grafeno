@@ -269,6 +269,16 @@ impl WriteTx {
         clear!(LABEL_COUNTS, (ns, ""), (end.as_str(), ""));
         clear!(EDGE_LABEL_COUNTS, (ns, ""), (end.as_str(), ""));
         clear!(INDEXES, (ns, ""), (end.as_str(), ""));
+        // The spaces of its vector indexes (`ns\0index`).
+        let (low, high) = (format!("{ns}\0"), format!("{ns}\u{1}"));
+        clear!(VECTORS, (low.as_str(), 0u128), (high.as_str(), 0u128));
+        clear!(VECTORS_Q8, (low.as_str(), 0u128), (high.as_str(), 0u128));
+        clear!(
+            HNSW_LINKS,
+            (low.as_str(), 0u128, 0u8),
+            (high.as_str(), 0u128, 0u8)
+        );
+        clear!(VECTOR_META, low.as_str(), high.as_str());
         clear!(
             crate::fulltext::FULLTEXT_STATS,
             (ns, ""),

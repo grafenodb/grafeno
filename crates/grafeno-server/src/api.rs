@@ -208,6 +208,9 @@ pub struct RecallInput {
     /// A full-text index for `text`, with its query language (16.6).
     #[serde(default)]
     pub index: Option<String>,
+    /// A vector index for `embedding` (16.7).
+    #[serde(default)]
+    pub vector_index: Option<String>,
     /// `text`, `vector` or `hybrid` (the default uses what is given).
     #[serde(default)]
     pub mode: Option<grafeno::SearchMode>,
@@ -314,6 +317,7 @@ impl RecallInput {
             ranking: self.ranking.resolve(),
             include_archived: self.include_archived,
             index: self.index.clone(),
+            vector_index: self.vector_index.clone(),
             mode: self.mode,
             fusion: fusion_of(self.fusion.as_deref(), self.k, self.text_weight)?,
         })

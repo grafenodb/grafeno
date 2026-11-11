@@ -90,6 +90,11 @@ short-lived agents.
 | `indexes`      | `(ns, index name)`            | index definition (JSON)    |
 | `index_entries` | `(ns, index, sortable value, node_id)` | `()`: also a full-text index's terms (term, field, length, frequency, positions in the key) |
 | `fulltext_stats` | `(ns, index)`               | documents and terms per field of a full-text index (JSON), for BM25 |
+
+The vector tables (`vectors`, `vectors_q8`, `hnsw_links`, `vector_meta`)
+are keyed by a space: a namespace (its node embeddings) or `ns\0index`
+(a vector index, 16.7), whose metadata holds its similarity, `m` and
+`ef_construction`.
 | `namespaces`   | `ns`                          | creation time, description (JSON) |
 | `principals`   | key name                      | secret hash, grants, owner, `own_only` (JSON) |
 | `merges`       | `(ns, merge_id)`              | merge record: who, when, both nodes before, edges moved and dropped |

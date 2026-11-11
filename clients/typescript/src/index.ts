@@ -351,11 +351,30 @@ export interface TextSearchOptions {
 
 export type SearchMode = "text" | "vector" | "hybrid";
 
+/** Kept during a vector search's walk (engines with `search.vector.indexes`). */
+export interface VectorFilter {
+  /** Any of these labels. */
+  labels?: string[];
+  /** Each of these properties with this value. */
+  props?: Record<string, unknown>;
+}
+
+export interface VectorSearchOptions {
+  limit?: number;
+  /** Candidates on layer 0. */
+  ef?: number;
+  /** A vector index; without one, the node embeddings. */
+  index?: string;
+  filter?: VectorFilter;
+}
+
 /** What `search` looks for (engines with `search.hybrid`). */
 export interface SearchInput {
   text?: string;
   index?: string;
   embedding?: number[];
+  /** A vector index for the embedding. */
+  vector_index?: string;
   /** `text` (default), `vector`, or `hybrid` (both, fused). */
   mode?: SearchMode;
   /** `rank` (default, with `k`, 60) or `weighted` (with `text_weight`, 0.5). */
@@ -402,6 +421,8 @@ export interface RecallInput {
   touch?: boolean;
   /** A full-text index for `text`, with its query language. */
   index?: string;
+  /** A vector index for `embedding`. */
+  vector_index?: string;
   /** Use the words, the embedding, or both (default: what is given). */
   mode?: SearchMode;
   /** How text and vector results are put together. */
@@ -1518,8 +1539,23 @@ export class Namespace {
     return this.#call("POST", "/search", input);
   }
 
-  searchVector(embedding: number[], limit = 10, ef?: number): Promise<Hit[]> {
-    return this.#call("POST", "/search/vector", { embedding, limit, ef });
+  searchVector(
+    embedding: number[],
+    options: number | VectorSearchOptions = 10,
+    ef?: number,
+  ): Promise<Hit[]> {
+    const rest = typeof options === "number" ? { limit: options, ef } : options;
+    return this.#call("POST", "/search/vector", { embedding, ...rest });
+  }
+
+  /** Several vector searches at once: a list of hits per embedding. */
+  searchVectors(embeddings: number[][], options: VectorSearchOptions = {}): Promise<Hit[][]> {
+    return this.#call("POST", "/search/vector", { embeddings, ...options });
+  }
+
+  /** The nodes nearest to a node's own vector, itself left out. */
+  similar(node: Id, options: VectorSearchOptions = {}): Promise<Hit[]> {
+    return this.#call("POST", "/similar", { node, ...options });
   }
 
   /** Hybrid recall: full text and vectors fused, then graph expansion. */

@@ -17,6 +17,18 @@ version (now 18) is upgraded in place, with a copy kept first.
   Apache License 2.0, at the user's choice (`LICENSE-MIT`,
   `LICENSE-APACHE`). The packages, the Windows setup (a license page),
   the archives and the winget manifest carry it.
+- **Added**: named vector indexes, several per namespace, on a property
+  of one or more labels: `CREATE VECTOR INDEX … ON (d.embedding) OPTIONS
+  {dimension, similarity: 'cosine' | 'dot' | 'euclidean', m,
+  ef_construction, ef_search, background}`; searches filtered by labels
+  and properties during the walk; several vectors at once; a node's own
+  vector (`db.similar`, `POST /v1/{ns}/similar`); background builds with
+  their state in `SHOW INDEXES` (capability `search.vector.indexes`). The
+  TypeScript client has `searchVector(embedding, {index, filter})`,
+  `searchVectors` and `similar`.
+- **Changed**: replication entries move to format 7 when they hold an
+  index or constraint of 16.5 to 16.7 or a background build, so a member
+  of the version before refuses them instead of misreading them.
 - **Added**: full-text indexes over chosen properties of one or more
   labels, with a weight per property and an analyzer (`simple`,
   `standard`, `english`, `spanish`: accents, stop words, stemming):

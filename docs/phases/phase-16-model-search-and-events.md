@@ -2,7 +2,7 @@
 
 [All phases](README.md) · [← Phase 15: Engine and interface apart](phase-15-engine-and-interface-apart.md) · [Phase 17: Integrations →](phase-17-integrations.md)
 
-**Status:** in progress: 16.1 to 16.6 done.
+**Status:** in progress: 16.1 to 16.7 done.
 
 What the engine still lacks as a database people build on: a free
 license, null as a value, namespaces made from scripts, transactions that
@@ -22,7 +22,7 @@ Steps:
 - [16.4 Explicit transactions (done)](#164-explicit-transactions-done)
 - [16.5 Advanced indexes and constraints (done)](#165-advanced-indexes-and-constraints-done)
 - [16.6 Full-text search (done)](#166-full-text-search-done)
-- [16.7 Better vector indexes (planned)](#167-better-vector-indexes-planned)
+- [16.7 Better vector indexes (done)](#167-better-vector-indexes-done)
 - [16.8 More graph algorithms, for analysis and simulation (planned)](#168-more-graph-algorithms-for-analysis-and-simulation-planned)
 - [16.9 Recording how a query walks the graph (planned)](#169-recording-how-a-query-walks-the-graph-planned)
 - [16.10 Change events with values, off by default (planned)](#1610-change-events-with-values-off-by-default-planned)
@@ -426,7 +426,7 @@ As built:
 - Not done: analyzers for other languages, synonyms, and full-text
   indexes on edges.
 
-## 16.7 Better vector indexes (planned)
+## 16.7 Better vector indexes (done)
 
 **Where it starts from.** One HNSW graph per namespace over the node
 embedding, with one dimension and cosine similarity; int8 copies with
@@ -445,6 +445,60 @@ exact rescoring (12.5).
   progress, while writes continue.
 - Measured: recall at 10 and latency per similarity and filter
   selectivity, against 10.3's and 12.5's numbers.
+
+As built:
+
+- The HNSW code (`vector.rs`) works on a *space*: the node embeddings of a
+  namespace (its name, as before) or a vector index (`ns\0index`), in the
+  same tables, so no table was added. A space's metadata holds its
+  similarity, `m` and `ef_construction` (defaulted for existing ones:
+  cosine, 16, 100). Distances: `1 − dot` (cosine, normalized), `−dot`
+  (dot product), squared L2 (Euclidean), each also from the int8 copies
+  and from the stored bytes; scores are the cosine, the product, and
+  `1 / (1 + d)`. A node's level and the link counts follow its space's
+  `m`.
+- A vector index is an `IndexDef` with `vector: {dimension, similarity,
+  m, ef_construction, ef_search, building}` (`vindex.rs`). Writes go
+  through the index entry path, so every member derives the graph from
+  the nodes; a rebuild resets the spaces and fills them again; `check`
+  checks each graph and its count against the nodes; a namespace drop
+  clears its spaces.
+- Filtered search: the layer-0 walk keeps two heaps, candidates (every
+  node reached) and results (only those the filter keeps), and goes on
+  while fewer than `ef` are kept or a candidate is closer than the
+  farthest kept. Labels alone are checked in the label index; properties
+  (and a reader's view) read the node. When at most 4 096 nodes have the
+  filter's labels, they are scored exactly instead.
+- `ReadTx::vector_search(ns, query, &VectorSearch {index, limit, ef,
+  filter, exclude})` and `ReadTx::similar`; GQ `CREATE VECTOR INDEX`,
+  `db.searchVector(e, {…})`, `db.searchVectors`, `db.similar`; HTTP
+  `/search/vector` with `index`, `filter` and `embeddings`, and
+  `/similar`; `vector_index` in hybrid search and recall; `SHOW INDEXES`
+  gained `state`; capability `search.vector.indexes`; the TypeScript
+  client.
+- Background builds: `background: true` stores the index with
+  `building`; `WriteTx::build_index_step` indexes the next chunk of nodes
+  (in id order) and is logged as itself (`Bulk::BuildIndex`), so each
+  member does the same step; a server runs one step per pending index
+  every half second on the leader; `Grafeno::build_pending_indexes`
+  finishes them (the local shell calls it after each statement).
+- Replication entry format 7: entries holding an index or constraint of
+  16.5 to 16.7 or a build step (16.5 and 16.6 had added such indexes
+  without a new format; an older member would have misread them).
+- Measured (`grafeno/examples/vector_index_bench.rs`, release build,
+  laptop): 20 000 vectors of dimension 128 in 64 clusters, 200 queries,
+  `ef` 64, as 10.3 measured. Building each index took 7 s. Recall@10 was
+  1.000 for cosine, dot and Euclidean (10.3: 1.000 for cosine), p50 0.6
+  to 0.8 ms (12.5's int8 searches: 0.51 ms on the measuring machine of
+  then, 1.35 ms in 14.4's run). With a filter during the walk, recall@10
+  stayed at 1.000 (0.998 and 1.000 for dot) whether the filter kept a
+  half (p50 about 1.0 ms), a tenth (about 2.9 ms, scored exactly) or a
+  hundredth (about 0.3 ms, scored exactly); filtering the plain results
+  afterwards kept 0.51, 0.10 and 0.01 of them. Before labels were checked
+  in the label index and small sets scored exactly, a hundredth took 88
+  ms and a tenth 12 ms.
+- Not done: filters on ranges of values (they are equalities), and
+  vector indexes on edges.
 
 ## 16.8 More graph algorithms, for analysis and simulation (planned)
 

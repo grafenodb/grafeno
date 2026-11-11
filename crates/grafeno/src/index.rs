@@ -76,6 +76,10 @@ pub struct IndexDef {
     /// [`ReadTx::fulltext_search`], instead of their values.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fulltext: Option<crate::fulltext::Fulltext>,
+    /// A vector index (16.7) on the property: an HNSW graph of its vectors,
+    /// for [`ReadTx::vector_search`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vector: Option<crate::vindex::VectorSpec>,
 }
 
 impl IndexDef {
@@ -134,6 +138,8 @@ impl IndexDef {
             parts.push("fuzzy");
         } else if self.fulltext.is_some() {
             parts.push("fulltext");
+        } else if self.vector.is_some() {
+            parts.push("vector");
         } else if self.unique && self.required {
             parts.push("key");
         } else if self.unique {
@@ -162,11 +168,12 @@ impl IndexDef {
             && self.more_labels.is_empty()
             && !self.edges
             && self.fulltext.is_none()
+            && self.vector.is_none()
     }
 
     /// Looked up by value (not fuzzy, not full-text): what plans use.
     pub fn by_value(&self) -> bool {
-        !self.fuzzy && self.fulltext.is_none()
+        !self.fuzzy && self.fulltext.is_none() && self.vector.is_none()
     }
 
     pub(crate) fn composite_keys(&self) -> bool {
@@ -192,6 +199,14 @@ impl IndexDef {
             && self.unique == other.unique
             && self.fuzzy == other.fuzzy
             && self.fulltext == other.fulltext
+            && self
+                .vector
+                .as_ref()
+                .map(|spec| (spec.dimension, spec.similarity))
+                == other
+                    .vector
+                    .as_ref()
+                    .map(|spec| (spec.dimension, spec.similarity))
     }
 
     /// What it is on, for messages: `:Person(email)`, `[:rated](stars)`.
@@ -690,16 +705,17 @@ fn seek_ids(
     range: Option<&IndexRange>,
     limit: usize,
 ) -> Result<Vec<u128>> {
-    if def.fuzzy || def.fulltext.is_some() {
+    if !def.by_value() {
+        let (kind, how) = if def.fuzzy {
+            ("fuzzy", "fuzzy_search")
+        } else if def.fulltext.is_some() {
+            ("full-text", "fulltext_search")
+        } else {
+            ("vector", "vector_search")
+        };
         return Err(Error::Invalid(format!(
-            "{} is a {} index: search it with {}",
-            def.name,
-            if def.fuzzy { "fuzzy" } else { "full-text" },
-            if def.fuzzy {
-                "fuzzy_search"
-            } else {
-                "fulltext_search"
-            }
+            "{} is a {kind} index: search it with {how}",
+            def.name
         )));
     }
     match seek_bytes(def, prefix, range) {
@@ -733,7 +749,11 @@ impl ReadTx {
         self.index_defs(ns)?
             .into_iter()
             .map(|def| {
-                let entries = count(&self.index_entries, ns, &def.name)?;
+                let entries = if def.vector.is_some() {
+                    self.vector_count(ns, &def.name)?
+                } else {
+                    count(&self.index_entries, ns, &def.name)?
+                };
                 Ok(IndexInfo { def, entries })
             })
             .collect()
@@ -1006,6 +1026,29 @@ impl WriteTx {
                 "a fuzzy index is on one property of one node label, and not unique".into(),
             ));
         }
+        if let Some(spec) = &def.vector {
+            if def.unique
+                || def.required
+                || def.fuzzy
+                || def.edges
+                || def.fulltext.is_some()
+                || !def.more_keys.is_empty()
+            {
+                return Err(Error::Invalid(
+                    "a vector index is on one node property, and nothing else".into(),
+                ));
+            }
+            if spec.dimension == 0
+                || spec.dimension > 65_536
+                || !(2..=128).contains(&spec.m)
+                || spec.ef_construction == 0
+                || spec.ef_search == 0
+            {
+                return Err(Error::Invalid(
+                    "a vector index needs a dimension (1 to 65536), m from 2 to 128, and positive ef_construction and ef_search".into(),
+                ));
+            }
+        }
         if let Some(fulltext) = &def.fulltext {
             if def.unique || def.required || def.fuzzy || def.edges {
                 return Err(Error::Invalid(
@@ -1049,6 +1092,15 @@ impl WriteTx {
             )));
         }
         let records = self.records_of(ns, &def)?;
+        if def.vector.is_some() {
+            let count = self.fill_vector_index(ns, &def, &records)?;
+            self.tx
+                .open_table(INDEXES)
+                .map_err(storage)?
+                .insert((ns, def.name.as_str()), encode(&def)?.as_slice())
+                .map_err(storage)?;
+            return Ok(count);
+        }
         let mut seen: HashMap<Vec<u8>, (u128, Props)> = HashMap::new();
         let mut entries = Vec::new();
         let mut docs = Vec::new();
@@ -1138,6 +1190,9 @@ impl WriteTx {
             })
             .map_err(storage)?;
         crate::fulltext::drop_stats(&self.tx, ns, name)?;
+        let space = crate::vindex::space_of(ns, name);
+        crate::vindex::clear_space(&self.tx, &space)?;
+        self.vectors.forget(&space);
         Ok(existed)
     }
 
@@ -1232,6 +1287,9 @@ impl WriteTx {
     ) -> Result<()> {
         if !defs.iter().any(|def| def.edges == edges) {
             return Ok(());
+        }
+        if !edges && defs.iter().any(|def| def.vector.is_some()) {
+            self.index_vectors(defs, ns, id, new, old)?;
         }
         let old_entries = old
             .map(|(labels, props)| record_entries(defs, edges, labels, props))

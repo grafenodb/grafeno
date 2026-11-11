@@ -392,7 +392,8 @@ requests accept either that or an ISO 8601 string (`2024-05-01`,
 | `POST`   | `/v1/{ns}/subgraph`                   | `{seeds, depth, direction, filter}`                     | `{nodes, edges}`              |
 | `POST`   | `/v1/{ns}/search`                     | `{text?, index?, embedding?, mode, fusion?, k?, text_weight?, limit, candidates, fragments}` | `[{node, score, text_rank?, text_score?, vector_rank?, similarity?, fragments?}]`: `mode` `text`, `vector` or `hybrid` (16.6) |
 | `POST`   | `/v1/{ns}/search/text`                | `{query, limit, index?, fragments?}`                    | `[{node, score, fragments?}]`: with `index`, a full-text index and its query language |
-| `POST`   | `/v1/{ns}/search/vector`              | `{embedding, limit, ef}`                                | `[{node, score}]`             |
+| `POST`   | `/v1/{ns}/search/vector`              | `{embedding \| embeddings, limit, ef?, index?, filter?: {labels, props}}` | `[{node, score}]`, or a list per embedding: a vector index with `index`, kept by `filter` during the walk (16.7) |
+| `POST`   | `/v1/{ns}/similar`                    | `{node, limit, ef?, index?, filter?}`                   | `[{node, score}]`: nearest to the node's own vector, itself left out (16.7) |
 | `POST`   | `/v1/{ns}/recall`                     | recall query                                            | `[{node, score, signals}]`    |
 | `POST`   | `/v1/{ns}/context`                    | recall query + `{budget, fact_share, max_facts, facts, communities}` | `{overview, items, facts, tokens, rendered}`; `communities` puts that many matching community summaries first |
 | `POST`   | `/v1/{ns}/batch`                      | `{ops}`                                                 | `{results, refs}`             |
@@ -556,6 +557,7 @@ engine lacks instead of failing. The capabilities:
 | `namespaces`, `nodes`, `edges`, `facts` | the graph and its facts with valid and record time |
 | `null_values` | a `null` property is stored as a value; `remove_props` removes keys (16.2) |
 | `search.text`, `search.vector` | full-text and vector search |
+| `search.vector.indexes` | named vector indexes (similarity, `m`, `ef`), filtered and several-vector searches, `/similar`, background builds (16.7) |
 | `search.fulltext`, `search.hybrid` | full-text indexes with a query language and fragments; `POST /v1/{ns}/search` with a mode (16.6) |
 | `recall`, `context`, `memory` | hybrid recall, context for a prompt, importance and accesses |
 | `transactions` | `BEGIN`, `COMMIT` and `ROLLBACK` across requests (16.4) |

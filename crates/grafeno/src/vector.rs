@@ -15,6 +15,14 @@
 //! removes in one write transaction share a [`Cache`] of decoded vectors and
 //! link lists, updated by every write, so batch inserts do not read the same
 //! entries from redb over and over.
+//!
+//! Since 16.7 a graph is a *space*: the namespace's node embeddings (the
+//! space named as the namespace), or a named vector index (`ns\0index`),
+//! each with its own similarity (cosine, dot product or Euclidean), `m` and
+//! `ef_construction`, kept in its metadata. Only cosine spaces normalize
+//! their vectors. A search can take a filter, applied while the graph is
+//! walked: nodes that fail it are stepped through but not kept, so a
+//! selective filter still finds `limit` results.
 
 use std::cmp::{Ordering, Reverse};
 use std::collections::{BinaryHeap, HashMap, HashSet};
@@ -29,11 +37,10 @@ use crate::store::{
     HNSW_LINKS, LinkKey, RecordKey, VECTOR_META, VECTORS, VECTORS_Q8, decode, encode, storage,
 };
 
-/// Links per node on layers above 0.
-const M: usize = 16;
-/// Links per node on layer 0.
-const M0: usize = 2 * M;
-const EF_CONSTRUCTION: usize = 100;
+/// Links per node on layers above 0, by default.
+pub const DEFAULT_M: usize = 16;
+/// Candidates while inserting, by default.
+pub const DEFAULT_EF_CONSTRUCTION: usize = 100;
 /// The search that finds new neighbors for the neighbors of a removed node.
 const REPAIR_EF: usize = 16;
 const MAX_LEVEL: u8 = 16;
@@ -42,14 +49,119 @@ const MAX_LEVEL: u8 = 16;
 /// cache starts over, which bounds very large write transactions.
 pub const DEFAULT_VECTOR_CACHE: usize = 128 * 1024 * 1024;
 
+/// How close two vectors are.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Similarity {
+    /// The angle between them: vectors are normalized; the score is the
+    /// cosine, from -1 to 1.
+    #[default]
+    Cosine,
+    /// Their dot product, unnormalized: the score is the product.
+    Dot,
+    /// Their straight-line distance `d`: the score is `1 / (1 + d)`.
+    Euclidean,
+}
+
+impl Similarity {
+    pub fn from_name(name: &str) -> Option<Self> {
+        Some(match name.to_ascii_lowercase().as_str() {
+            "cosine" => Similarity::Cosine,
+            "dot" | "dot_product" | "inner" => Similarity::Dot,
+            "euclidean" | "l2" => Similarity::Euclidean,
+            _ => return None,
+        })
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Similarity::Cosine => "cosine",
+            Similarity::Dot => "dot",
+            Similarity::Euclidean => "euclidean",
+        }
+    }
+
+    /// Smaller is closer.
+    fn distance(self, a: &[f32], b: &[f32]) -> f32 {
+        match self {
+            Similarity::Cosine => 1.0 - dot(a, b),
+            Similarity::Dot => -dot(a, b),
+            Similarity::Euclidean => squared_l2(a, b),
+        }
+    }
+
+    /// A distance as the score a search reports (larger is closer).
+    fn score(self, distance: f32) -> f32 {
+        match self {
+            Similarity::Cosine => 1.0 - distance,
+            Similarity::Dot => -distance,
+            Similarity::Euclidean => 1.0 / (1.0 + distance.max(0.0).sqrt()),
+        }
+    }
+
+    /// The vector as stored: normalized for cosine.
+    fn prepare(self, vector: &[f32]) -> Result<Vec<f32>> {
+        match self {
+            Similarity::Cosine => normalize(vector),
+            _ if vector.iter().any(|value| !value.is_finite()) => {
+                Err(Error::Invalid("vector values must be finite".into()))
+            }
+            _ => Ok(vector.to_vec()),
+        }
+    }
+}
+
+/// The parameters of a space, fixed when it is created.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Params {
+    pub similarity: Similarity,
+    pub m: usize,
+    pub ef_construction: usize,
+}
+
+impl Default for Params {
+    fn default() -> Self {
+        Self {
+            similarity: Similarity::Cosine,
+            m: DEFAULT_M,
+            ef_construction: DEFAULT_EF_CONSTRUCTION,
+        }
+    }
+}
+
+fn default_m() -> usize {
+    DEFAULT_M
+}
+
+fn default_ef_construction() -> usize {
+    DEFAULT_EF_CONSTRUCTION
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct VectorMeta {
     dimension: usize,
     count: u64,
     entry: Option<NodeId>,
+    #[serde(default)]
+    similarity: Similarity,
+    #[serde(default = "default_m")]
+    m: usize,
+    #[serde(default = "default_ef_construction")]
+    ef_construction: usize,
 }
 
 impl VectorMeta {
+    pub(crate) fn new(dimension: usize, params: Params) -> Self {
+        Self {
+            dimension,
+            count: 0,
+            entry: None,
+            similarity: params.similarity,
+            m: params.m,
+            ef_construction: params.ef_construction,
+        }
+    }
+
     pub(crate) fn dimension(&self) -> usize {
         self.dimension
     }
@@ -59,15 +171,15 @@ impl VectorMeta {
     }
 }
 
-fn level_of(node: NodeId) -> u8 {
+fn level_of(node: NodeId, m: usize) -> u8 {
     let bits = (node.as_u128() as u64) & ((1 << 52) - 1);
     let uniform = (bits as f64 + 1.0) / (1u64 << 52) as f64;
-    let level = (-uniform.ln() / (M as f64).ln()).floor();
+    let level = (-uniform.ln() / (m.max(2) as f64).ln()).floor();
     (level as u8).min(MAX_LEVEL)
 }
 
-fn max_links(layer: u8) -> usize {
-    if layer == 0 { M0 } else { M }
+fn max_links(layer: u8, m: usize) -> usize {
+    if layer == 0 { 2 * m } else { m }
 }
 
 fn normalize(vector: &[f32]) -> Result<Vec<f32>> {
@@ -100,6 +212,66 @@ fn dot(a: &[f32], b: &[f32]) -> f32 {
     sums.iter().sum::<f32>() + rest
 }
 
+/// The squared straight-line distance, with eight independent sums.
+fn squared_l2(a: &[f32], b: &[f32]) -> f32 {
+    let (a_chunks, a_rest) = a.as_chunks::<8>();
+    let (b_chunks, b_rest) = b.as_chunks::<8>();
+    let mut sums = [0.0f32; 8];
+    for (x, y) in a_chunks.iter().zip(b_chunks) {
+        for lane in 0..8 {
+            let d = x[lane] - y[lane];
+            sums[lane] += d * d;
+        }
+    }
+    let rest: f32 = a_rest
+        .iter()
+        .zip(b_rest)
+        .map(|(x, y)| (x - y) * (x - y))
+        .sum();
+    sums.iter().sum::<f32>() + rest
+}
+
+/// [`squared_l2`] against a vector stored as little-endian bytes.
+fn squared_l2_bytes(query: &[f32], bytes: &[u8]) -> f32 {
+    let (values, _) = bytes.as_chunks::<4>();
+    query
+        .iter()
+        .zip(values)
+        .map(|(x, value)| {
+            let d = x - f32::from_le_bytes(*value);
+            d * d
+        })
+        .sum()
+}
+
+/// [`squared_l2`] against a quantized vector.
+fn squared_l2_q8(query: &[f32], bytes: &[u8]) -> f32 {
+    let Some((scale, values)) = bytes.split_first_chunk::<4>() else {
+        return f32::INFINITY;
+    };
+    let scale = f32::from_le_bytes(*scale) / 127.0;
+    query
+        .iter()
+        .zip(values)
+        .map(|(x, q)| {
+            let d = x - f32::from(*q as i8) * scale;
+            d * d
+        })
+        .sum()
+}
+
+/// The distance from `query` to a stored vector, from its bytes.
+fn distance_bytes(similarity: Similarity, query: &[f32], bytes: &[u8], quantized: bool) -> f32 {
+    match (similarity, quantized) {
+        (Similarity::Cosine, false) => 1.0 - dot_bytes(query, bytes),
+        (Similarity::Cosine, true) => 1.0 - dot_q8(query, bytes),
+        (Similarity::Dot, false) => -dot_bytes(query, bytes),
+        (Similarity::Dot, true) => -dot_q8(query, bytes),
+        (Similarity::Euclidean, false) => squared_l2_bytes(query, bytes),
+        (Similarity::Euclidean, true) => squared_l2_q8(query, bytes),
+    }
+}
+
 /// [`dot`] against a vector stored as little-endian bytes, without decoding
 /// it first. The sums run in the same order, so the result is identical.
 fn dot_bytes(query: &[f32], bytes: &[u8]) -> f32 {
@@ -121,7 +293,7 @@ fn dot_bytes(query: &[f32], bytes: &[u8]) -> f32 {
     sums.iter().sum::<f32>() + rest
 }
 
-/// A normalized vector quantized: its largest absolute value, then each
+/// A vector quantized: its largest absolute value, then each
 /// value scaled so that one becomes 127, rounded to a signed byte.
 pub(crate) fn quantize(vector: &[f32]) -> Vec<u8> {
     let scale = vector
@@ -233,7 +405,8 @@ impl NamespaceCache {
     /// namespace's dimension, and link lists of up to `M0` neighbors.
     fn bytes(&self) -> usize {
         const ENTRY: usize = 64;
-        self.vectors.len() * (ENTRY + self.vector_bytes) + self.links.len() * (ENTRY + M0 * 16)
+        self.vectors.len() * (ENTRY + self.vector_bytes)
+            + self.links.len() * (ENTRY + 2 * DEFAULT_M * 16)
     }
 
     fn trim(&mut self, dimension: usize) {
@@ -305,9 +478,11 @@ impl Ord for Scored {
     }
 }
 
-/// Read access to one namespace's HNSW graph.
+/// Read access to one space's HNSW graph.
 struct Space<'a, V, L> {
     ns: &'a str,
+    similarity: Similarity,
+    m: usize,
     vectors: &'a V,
     links: &'a L,
     /// `None` for searches: they visit each vector once, so decoding and
@@ -339,20 +514,17 @@ where
 
     /// `None` when the node has no vector: links may point to removed nodes.
     fn distance(&mut self, query: &[f32], id: u128) -> Result<Option<f32>> {
+        let similarity = self.similarity;
         if let Some(cached) = self.cache.as_ref().and_then(|cache| cache.vectors.get(&id)) {
-            return Ok(cached.as_ref().map(|vector| 1.0 - dot(query, vector)));
+            return Ok(cached
+                .as_ref()
+                .map(|vector| similarity.distance(query, vector)));
         }
         Ok(self
             .vectors
             .get((self.ns, id))
             .map_err(storage)?
-            .map(|guard| {
-                1.0 - if self.quantized {
-                    dot_q8(query, guard.value())
-                } else {
-                    dot_bytes(query, guard.value())
-                }
-            }))
+            .map(|guard| distance_bytes(similarity, query, guard.value(), self.quantized)))
     }
 
     fn links(&mut self, id: u128, layer: u8) -> Result<Arc<[u128]>> {
@@ -383,10 +555,30 @@ where
         ef: usize,
         layer: u8,
     ) -> Result<Vec<Scored>> {
+        self.search_layer_with(query, entries, ef, layer, &mut |_| Ok(true))
+    }
+
+    /// [`Space::search_layer`] keeping only the nodes `keep` accepts. The
+    /// others are still walked through, so the walk reaches past them: it
+    /// goes on while fewer than `ef` are kept or a candidate is closer than
+    /// the farthest kept one.
+    fn search_layer_with(
+        &mut self,
+        query: &[f32],
+        entries: &[Scored],
+        ef: usize,
+        layer: u8,
+        keep: &mut dyn FnMut(u128) -> Result<bool>,
+    ) -> Result<Vec<Scored>> {
         let mut visited: HashSet<u128> = entries.iter().map(|entry| entry.1).collect();
         let mut candidates: BinaryHeap<Reverse<Scored>> =
             entries.iter().copied().map(Reverse).collect();
-        let mut results: BinaryHeap<Scored> = entries.iter().copied().collect();
+        let mut results: BinaryHeap<Scored> = BinaryHeap::new();
+        for entry in entries {
+            if keep(entry.1)? {
+                results.push(*entry);
+            }
+        }
         while let Some(Reverse(candidate)) = candidates.pop() {
             if results.len() >= ef && results.peek().is_some_and(|worst| candidate.0 > worst.0) {
                 break;
@@ -400,9 +592,11 @@ where
                 };
                 if results.len() < ef || results.peek().is_some_and(|worst| distance < worst.0) {
                     candidates.push(Reverse(Scored(distance, neighbor)));
-                    results.push(Scored(distance, neighbor));
-                    if results.len() > ef {
-                        results.pop();
+                    if keep(neighbor)? {
+                        results.push(Scored(distance, neighbor));
+                        if results.len() > ef {
+                            results.pop();
+                        }
                     }
                 }
             }
@@ -424,9 +618,10 @@ where
             let Some(vector) = self.vector(id)? else {
                 continue;
             };
+            let similarity = self.similarity;
             if chosen
                 .iter()
-                .all(|(_, other)| 1.0 - dot(&vector, other) > distance)
+                .all(|(_, other)| similarity.distance(&vector, other) > distance)
             {
                 chosen.push((id, vector));
             } else {
@@ -464,7 +659,7 @@ where
             return Ok(Vec::new());
         };
         let mut entries = vec![Scored(distance, entry)];
-        for current in (layer + 1..=level_of(NodeId::from_u128(entry))).rev() {
+        for current in (layer + 1..=level_of(NodeId::from_u128(entry), self.m)).rev() {
             entries = self.search_layer(query, &entries, 1, current)?;
         }
         Ok(entries)
@@ -480,23 +675,30 @@ pub(crate) fn insert(
     node: NodeId,
     vector: &[f32],
 ) -> Result<()> {
-    let query = normalize(vector)?;
+    let params = {
+        let table = tx.open_table(VECTOR_META).map_err(storage)?;
+        read_meta(&table, ns)?.map_or(Params::default(), |meta| Params {
+            similarity: meta.similarity,
+            m: meta.m,
+            ef_construction: meta.ef_construction,
+        })
+    };
+    let query = params.similarity.prepare(vector)?;
     remove(tx, cache, ns, node)?;
 
     let mut meta_table = tx.open_table(VECTOR_META).map_err(storage)?;
-    let mut meta = read_meta(&meta_table, ns)?.unwrap_or(VectorMeta {
-        dimension: query.len(),
-        count: 0,
-        entry: None,
-    });
+    let mut meta =
+        read_meta(&meta_table, ns)?.unwrap_or_else(|| VectorMeta::new(query.len(), params));
     if meta.count > 0 && meta.dimension != query.len() {
         return Err(Error::Invalid(format!(
-            "namespace {ns:?} stores vectors of dimension {}, got {}",
+            "{} stores vectors of dimension {}, got {}",
+            describe_space(ns),
             meta.dimension,
             query.len()
         )));
     }
     meta.dimension = query.len();
+    let (similarity, m) = (meta.similarity, meta.m);
 
     let id = node.as_u128();
     let mut vectors = tx.open_table(VECTORS).map_err(storage)?;
@@ -511,12 +713,14 @@ pub(crate) fn insert(
     let cache = cache.namespace(ns);
     cache.trim(query.len());
     cache.vectors.insert(id, Some(Arc::from(query.as_slice())));
-    let level = level_of(node);
+    let level = level_of(node, m);
 
     if let Some(entry) = meta.entry {
-        let entry_level = level_of(entry);
+        let entry_level = level_of(entry, m);
         let mut entries = Space {
             ns,
+            similarity,
+            m,
             vectors: &vectors,
             links: &links,
             cache: Some(&mut *cache),
@@ -528,22 +732,24 @@ pub(crate) fn insert(
             // Read phase: compute every link list of this layer…
             let mut space = Space {
                 ns,
+                similarity,
+                m,
                 vectors: &vectors,
                 links: &links,
                 cache: Some(&mut *cache),
                 quantized: false,
             };
-            let mut found = space.search_layer(&query, &entries, EF_CONSTRUCTION, layer)?;
+            let mut found = space.search_layer(&query, &entries, meta.ef_construction, layer)?;
             // Links left pointing at this id (from before it lost its vector)
             // lead the search back to the node itself: never its own neighbor.
             found.retain(|Scored(_, other)| *other != id);
-            let own = space.select(&found, M)?;
+            let own = space.select(&found, m)?;
             let mut updates = vec![(id, own.clone())];
             for &neighbor in &own {
                 let mut list = space.links(neighbor, layer)?.to_vec();
                 list.push(id);
-                if list.len() > max_links(layer) {
-                    list = space.prune(neighbor, &list, max_links(layer))?;
+                if list.len() > max_links(layer, m) {
+                    list = space.prune(neighbor, &list, max_links(layer, m))?;
                 }
                 updates.push((neighbor, list));
             }
@@ -587,10 +793,16 @@ pub(crate) fn remove(
     if vectors.remove((ns, id)).map_err(storage)?.is_none() {
         return Ok(false);
     }
+    let (similarity, m) = {
+        let table = tx.open_table(VECTOR_META).map_err(storage)?;
+        read_meta(&table, ns)?.map_or((Similarity::Cosine, DEFAULT_M), |meta| {
+            (meta.similarity, meta.m)
+        })
+    };
     let cache = cache.namespace(ns);
     cache.vectors.insert(id, None);
     let mut links = tx.open_table(HNSW_LINKS).map_err(storage)?;
-    for layer in 0..=level_of(node) {
+    for layer in 0..=level_of(node, m) {
         let own = links
             .remove((ns, id, layer))
             .map_err(storage)?
@@ -599,6 +811,8 @@ pub(crate) fn remove(
         cache.links.remove(&(id, layer));
         let mut space = Space {
             ns,
+            similarity,
+            m,
             vectors: &vectors,
             links: &links,
             cache: Some(&mut *cache),
@@ -650,7 +864,7 @@ pub(crate) fn remove(
                 && let Some(vector) = space.vector(neighbor)?
             {
                 let mut entries = Vec::new();
-                for &start in candidates.iter().take(M) {
+                for &start in candidates.iter().take(m) {
                     if let Some(distance) = space.distance(&vector, start)? {
                         entries.push(Scored(distance, start));
                     }
@@ -662,7 +876,7 @@ pub(crate) fn remove(
             }
             updates.push((
                 neighbor,
-                space.prune(neighbor, &candidates, max_links(layer))?,
+                space.prune(neighbor, &candidates, max_links(layer, m))?,
             ));
         }
         // A neighbor that only the removed node linked to would be lost to
@@ -699,9 +913,9 @@ pub(crate) fn remove(
                 Some((_, list)) => list.clone(),
                 None => space.links(closest, layer)?.to_vec(),
             };
-            if list.len() >= max_links(layer) {
+            if list.len() >= max_links(layer, m) {
                 // Make room by dropping its farthest link.
-                list = space.prune(closest, &list, max_links(layer) - 1)?;
+                list = space.prune(closest, &list, max_links(layer, m) - 1)?;
             }
             list.push(orphan);
             updates.retain(|(node, _)| *node != closest);
@@ -720,7 +934,7 @@ pub(crate) fn remove(
         .ok_or_else(|| Error::Storage(format!("vector metadata missing for {ns:?}")))?;
     meta.count = meta.count.saturating_sub(1);
     if meta.entry == Some(node) {
-        meta.entry = highest_node(&vectors, ns)?;
+        meta.entry = highest_node(&vectors, ns, m)?;
     }
     meta_table
         .insert(ns, encode(&meta)?.as_slice())
@@ -732,6 +946,7 @@ pub(crate) fn remove(
 fn highest_node(
     vectors: &impl ReadableTable<RecordKey, &'static [u8]>,
     ns: &str,
+    m: usize,
 ) -> Result<Option<NodeId>> {
     let mut best: Option<(u8, NodeId)> = None;
     for item in vectors.range((ns, 0u128)..).map_err(storage)? {
@@ -741,12 +956,20 @@ fn highest_node(
             break;
         }
         let node = NodeId::from_u128(id);
-        let level = level_of(node);
+        let level = level_of(node, m);
         if best.is_none_or(|(top, _)| level > top) {
             best = Some((level, node));
         }
     }
     Ok(best.map(|(_, node)| node))
+}
+
+/// What names a space in messages: a namespace, or an index of one.
+fn describe_space(space: &str) -> String {
+    match space.split_once('\0') {
+        Some((ns, index)) => format!("vector index {index:?} of {ns:?}"),
+        None => format!("namespace {space:?}"),
+    }
 }
 
 /// The `limit` nodes most similar to `query`, best first. `ef` is the size of
@@ -762,6 +985,33 @@ pub(crate) fn search(
     limit: usize,
     ef: usize,
 ) -> Result<Vec<Hit>> {
+    search_with(
+        vectors,
+        quantized,
+        links,
+        meta,
+        ns,
+        query,
+        limit,
+        ef,
+        &mut |_| Ok(true),
+    )
+}
+
+/// [`search`] keeping only the nodes `keep` accepts, decided during the
+/// walk.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn search_with(
+    vectors: &impl ReadableTable<RecordKey, &'static [u8]>,
+    quantized: &impl ReadableTable<RecordKey, &'static [u8]>,
+    links: &impl ReadableTable<LinkKey, &'static [u8]>,
+    meta: &impl ReadableTable<&'static str, &'static [u8]>,
+    ns: &str,
+    query: &[f32],
+    limit: usize,
+    ef: usize,
+    keep: &mut dyn FnMut(u128) -> Result<bool>,
+) -> Result<Vec<Hit>> {
     let Some(meta) = read_meta(meta, ns)? else {
         return Ok(Vec::new());
     };
@@ -770,27 +1020,34 @@ pub(crate) fn search(
     };
     if query.len() != meta.dimension {
         return Err(Error::Invalid(format!(
-            "namespace {ns:?} stores vectors of dimension {}, got {}",
+            "{} stores vectors of dimension {}, got {}",
+            describe_space(ns),
             meta.dimension,
             query.len()
         )));
     }
-    let query = normalize(query)?;
+    let similarity = meta.similarity;
+    let query = similarity.prepare(query)?;
     // Walk the graph with the quantized vectors…
     let mut space = Space {
         ns,
+        similarity,
+        m: meta.m,
         vectors: quantized,
         links,
         cache: None,
         quantized: true,
     };
     let entries = space.descend(&query, entry, 0)?;
-    let found = space.search_layer(&query, &entries, ef.max(limit), 0)?;
+    let found = space.search_layer_with(&query, &entries, ef.max(limit), 0, keep)?;
     // …then rescore the candidates with the exact ones.
     let mut exact = Vec::with_capacity(found.len());
     for Scored(_, id) in found {
         if let Some(guard) = vectors.get((ns, id)).map_err(storage)? {
-            exact.push(Scored(1.0 - dot_bytes(&query, guard.value()), id));
+            exact.push(Scored(
+                distance_bytes(similarity, &query, guard.value(), false),
+                id,
+            ));
         }
     }
     exact.sort();
@@ -799,7 +1056,54 @@ pub(crate) fn search(
         .take(limit)
         .map(|Scored(distance, id)| Hit {
             node: NodeId::from_u128(id),
-            score: 1.0 - distance,
+            score: similarity.score(distance),
+        })
+        .collect())
+}
+
+/// The `limit` of `ids` closest to `query`, scored exactly from their
+/// stored vectors (ids without one are left out): what a filter that few
+/// nodes pass asks for, cheaper than a walk.
+pub(crate) fn rank_ids(
+    vectors: &impl ReadableTable<RecordKey, &'static [u8]>,
+    meta: &impl ReadableTable<&'static str, &'static [u8]>,
+    ns: &str,
+    query: &[f32],
+    ids: &[u128],
+    limit: usize,
+) -> Result<Vec<Hit>> {
+    let Some(meta) = read_meta(meta, ns)? else {
+        return Ok(Vec::new());
+    };
+    if query.len() != meta.dimension {
+        return Err(Error::Invalid(format!(
+            "{} stores vectors of dimension {}, got {}",
+            describe_space(ns),
+            meta.dimension,
+            query.len()
+        )));
+    }
+    let similarity = meta.similarity;
+    let query = similarity.prepare(query)?;
+    let mut best: BinaryHeap<Scored> = BinaryHeap::new();
+    for &id in ids {
+        let Some(guard) = vectors.get((ns, id)).map_err(storage)? else {
+            continue;
+        };
+        best.push(Scored(
+            distance_bytes(similarity, &query, guard.value(), false),
+            id,
+        ));
+        if best.len() > limit {
+            best.pop();
+        }
+    }
+    Ok(best
+        .into_sorted_vec()
+        .into_iter()
+        .map(|Scored(distance, id)| Hit {
+            node: NodeId::from_u128(id),
+            score: similarity.score(distance),
         })
         .collect())
 }
@@ -841,7 +1145,10 @@ pub(crate) fn check(
             ));
         }
         let norm = dot(&vector, &vector).sqrt();
-        if (norm - 1.0).abs() > 1e-3 {
+        let normalized = meta
+            .as_ref()
+            .is_none_or(|meta| meta.similarity == Similarity::Cosine);
+        if normalized && (norm - 1.0).abs() > 1e-3 {
             problems.push(format!(
                 "vector of node {node} is not normalized (norm {norm})"
             ));
@@ -883,7 +1190,7 @@ pub(crate) fn check(
                 "links of node {node} without a vector, layer {layer}"
             ));
         }
-        if layer > level_of(node) {
+        if layer > level_of(node, meta.as_ref().map_or(DEFAULT_M, |meta| meta.m)) {
             problems.push(format!(
                 "links of node {node} on layer {layer}, above its level"
             ));

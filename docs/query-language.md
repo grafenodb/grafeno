@@ -196,7 +196,9 @@ CALL db.search('borrow checker', 5) YIELD node, score RETURN node.title, score;
 | `db.search(text, limit = 10)` | `node`, `score` | the node text (BM25), best first |
 | `db.search(text, {limit, mode, embedding, index, fusion, k, text_weight, candidates})` | `node`, `score` | text, vector or hybrid search (see *Full-text search*) |
 | `db.searchIndex(index, query, limit = 10 \| {limit, fragments})` | `node`, `score`, `fragments` | a full-text index, with its query language and the fragments that matched |
-| `db.searchVector(embedding, limit = 10)` | `node`, `score` | nearest nodes by embedding |
+| `db.searchVector(embedding, limit = 10 \| {limit, index, ef, labels, where})` | `node`, `score` | nearest nodes by embedding, or in a vector index (see *Vector indexes*) |
+| `db.searchVectors(embeddings, limit \| {…})` | `query`, `node`, `score` | the same for several embeddings at once (`query` is the position in the list) |
+| `db.similar(node, limit \| {…})` | `node`, `score` | the nodes nearest to a node's own vector, itself left out |
 | `temporal.series(start, end, step)` | `at` | times from start to end every step (see *Time and durations*) |
 | `dbms.procedures()` | `name`, `arguments`, `columns`, `description` | this list |
 
@@ -593,6 +595,48 @@ rank (`fusion: 'rank'`, the default: each list adds `1 / (k + rank)`,
 MCP `recall`) takes the same `index`, `mode`, `fusion`, `k` and
 `text_weight`.
 
+## Vector indexes
+
+Each node may have one embedding (`embedding` when it is written), all of
+one dimension per namespace, compared by cosine (`db.searchVector`). A
+vector index holds instead a property of the nodes with its labels (a list
+of numbers), with its own dimension, similarity and parameters; a
+namespace may have several:
+
+```text
+CREATE VECTOR INDEX docs FOR (d:Doc|Page) ON (d.embedding)
+  OPTIONS {dimension: 768, similarity: 'cosine', m: 16, ef_construction: 100, ef_search: 64};
+CALL db.searchVector($e, {index: 'docs', limit: 10, labels: ['Doc'], where: {lang: 'es'}});
+CALL db.searchVectors([$e1, $e2], {index: 'docs', limit: 5}) YIELD query, node, score;
+MATCH (d:Doc {title: 'Graphs'}) CALL db.similar(d, {index: 'docs', limit: 5}) YIELD node, score;
+```
+
+- **Similarity**: `cosine` (vectors are normalized; the score is the
+  cosine), `dot` (the dot product, unnormalized), or `euclidean` (the
+  score is `1 / (1 + distance)`). `m` (links per node, 2 to 128),
+  `ef_construction` (candidates while inserting) and `ef_search`
+  (candidates while searching, unless a search gives `ef`) tune the HNSW
+  graph: higher is slower and finds more of the true nearest.
+- **Writes**: a node with the labels and a list of numbers of the index's
+  dimension in the property is in it; another dimension is refused; a
+  value that is not a list of numbers is left out. The index is kept in
+  the same transaction as the write, exported, replicated and dropped as
+  any index.
+- **Filters** (`labels`: any of them; `where`: property values) are
+  applied while the graph is walked: nodes that fail them are stepped
+  through, not kept, so a filter that keeps a tenth of the nodes still
+  returns `limit` of them. When at most 4 096 nodes have the filter's
+  labels, those nodes are scored exactly instead. Filtering the results
+  afterwards would keep about the share the filter keeps (see the phase's
+  measurements).
+- **Background builds**: `OPTIONS {…, background: true}` creates the
+  index empty, then a server fills it a chunk at a time (2 000 nodes per
+  write, replicated as it goes), while writes go on and keep the nodes
+  they touch indexed; `SHOW INDEXES` shows `state` `building`, then
+  `online`. The local shell finishes such builds before its next prompt.
+- Hybrid search may use one: `db.search(text, {mode: 'hybrid',
+  embedding: $e, vector_index: 'docs'})`; recall takes `vector_index` too.
+
 ## Constraints on facts
 
 A person works at one company at a time. An edge constraint says so, and
@@ -743,7 +787,7 @@ CREATE INDEX FOR (p:Person) ON (p.last, p.first);        // Person_last_first: s
 CREATE INDEX FOR ()-[r:rated]-() ON (r.stars);           // rated_stars: on edges
 CREATE INDEX named FOR (n:Person|Company) ON (n.name);   // over several labels
 CREATE FUZZY INDEX FOR (p:Person) ON (p.name);           // trigrams, for db.searchFuzzy
-SHOW INDEXES;                                             // name, label, property, unique, entries, fuzzy, on, key
+SHOW INDEXES;                                             // name, label, property, unique, entries, fuzzy, on, key, kind, state
 SHOW NAMESPACES;                                          // name, nodes, edges, created_at, description (those the caller may read)
 SHOW CONSTRAINTS;
 DROP INDEX people_by_name;
