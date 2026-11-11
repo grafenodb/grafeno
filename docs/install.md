@@ -69,7 +69,7 @@ release, and against its minisign signature when a key is known
 (`GRAFENO_MINISIGN_KEY`, and `minisign` installed); a mismatch stops it. On
 SELinux systems it labels a binary it installs so systemd may run it.
 Options, as flags or environment variables (for unattended use):
-`--version 0.1.0` (`GRAFENO_VERSION`), `--binary` (`GRAFENO_METHOD=binary`),
+`--version 0.2.0` (`GRAFENO_VERSION`), `--binary` (`GRAFENO_METHOD=binary`),
 `--no-repo` (`GRAFENO_REPO=0`), `--prefix DIR` (`GRAFENO_PREFIX`),
 `--service`, `--no-start`; `GRAFENO_BASE_URL` and `GRAFENO_REPO_URL` point
 it at mirrors.
@@ -93,7 +93,7 @@ sudo apt update && sudo apt install grafeno
 Or a downloaded package:
 
 ```bash
-sudo apt install ./grafeno_0.1.0-1_amd64.deb
+sudo apt install ./grafeno_0.2.0-1_amd64.deb
 ```
 
 ### Fedora, RHEL and derivatives
@@ -114,7 +114,7 @@ not signed (the repository's copy is): install it with `--nogpgcheck` after
 checking its SHA-256:
 
 ```bash
-sudo dnf install --nogpgcheck ./grafeno-0.1.0-1.x86_64.rpm
+sudo dnf install --nogpgcheck ./grafeno-0.2.0-1.x86_64.rpm
 ```
 
 #### What the packages do
@@ -256,7 +256,7 @@ at 10 MiB.
 Unattended (scripts, provisioning), the same answers are parameters:
 
 ```powershell
-.\grafeno-0.1.0-windows-x64-setup.exe /VERYSILENT /SUPPRESSMSGBOXES /DIR="C:\Grafeno" /DATADIR="D:\GrafenoData" /PORT=7810 /NETWORK=0 /ACCOUNT=virtual /ADMIN=admin /ADMINPASSWORD="..." /TASKS="service,path"
+.\grafeno-0.2.0-windows-x64-setup.exe /VERYSILENT /SUPPRESSMSGBOXES /DIR="C:\Grafeno" /DATADIR="D:\GrafenoData" /PORT=7810 /NETWORK=0 /ACCOUNT=virtual /ADMIN=admin /ADMINPASSWORD="..." /TASKS="service,path"
 ```
 
 `/NETWORK=1` listens on every interface and opens the port in the firewall;
@@ -640,8 +640,8 @@ of `GET /v1/about`, now 1).
 | ----- | ------- | ----- |
 | Linux `.tar.gz`, `.deb`, `.rpm`, x86_64 and aarch64 | `docker build -f packaging/linux/Dockerfile --output dist/linux .` | Docker |
 | The APT and DNF repositories | `GRAFENO_GPG_KEY=<key id> packaging/repo/build-repo.sh dist/linux site https://grafenodb.github.io/grafeno` | GnuPG, rpm, createrepo_c, apt-utils |
-| Windows setup `.exe` | `cargo build --release -p grafeno-server`, then `iscc /DAppVersion=0.1.0 packaging\windows\grafeno.iss` | Rust (MSVC), Inno Setup 6 |
-| winget manifests | `python packaging/windows/winget/make-manifests.py 0.1.0 dist\grafeno-0.1.0-windows-x64-setup.exe <url> dist\winget` | Python |
+| Windows setup `.exe` | `cargo build --release -p grafeno-server`, then `iscc /DAppVersion=0.2.0 packaging\windows\grafeno.iss` | Rust (MSVC), Inno Setup 6 |
+| winget manifests | `python packaging/windows/winget/make-manifests.py 0.2.0 dist\grafeno-0.2.0-windows-x64-setup.exe <url> dist\winget` | Python |
 
 No Node and no graphical toolkit: the engine builds from Rust alone. The
 aarch64 binary is cross-compiled with Zig (`cargo zigbuild`), and the

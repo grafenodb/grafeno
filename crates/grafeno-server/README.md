@@ -540,9 +540,9 @@ exactly these). `GET /v1/about` (public) says what the engine is:
 ```json
 {
   "product": "grafeno",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "api": { "version": 1, "supported": [1] },
-  "layout": 17,
+  "layout": 18,
   "capabilities": ["namespaces", "nodes", "…", "cluster.groups", "query.split"],
   "auth": { "token": true, "accounts": true, "open": false, "password_sign_in": true },
   "cluster": null

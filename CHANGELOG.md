@@ -11,7 +11,18 @@ API version (`GET /v1/about`, now 1) changes only when a change would
 break a client of the previous one, and the database files' layout
 version (now 18) is upgraded in place, with a copy kept first.
 
-## Unreleased
+## 0.2.0 (2026-11-11)
+
+Phase 16: the data model, search, analysis and events (the story, step
+by step, is in [docs/development-history.md](https://github.com/grafenodb/grafeno/blob/main/docs/development-history.md)).
+
+**Upgrading.** The database files move to layout 18, upgraded in place
+when 0.2.0 first opens them, with a copy of the old file kept first. In a
+cluster, upgrade every member before writing with the new features: their
+log entries (format 7) are refused by members still on 0.1.0. Behavior
+that changes for existing data: `SET n.key = null` now keeps the key with
+a `null` value (`REMOVE` deletes it), and the text-similarity functions
+answer only to their `text.*` names (see below).
 
 - **Fixed**: an algorithm's `write: '@embedding'` in GQ stored a property
   named `@embedding` instead of each node's vector; it now sets the vector,
