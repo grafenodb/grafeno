@@ -146,7 +146,224 @@ pub(crate) const ALGORITHMS: &[Procedure] = &[
         columns: &["node", "embedding"],
         description: "Structural embeddings (FastRP); SET n.@embedding = embedding stores them.",
     },
+    // Analysis (16.8).
+    Procedure {
+        name: "algo.kCore",
+        args: "{…}",
+        columns: &["node", "core"],
+        description: "k-core decomposition: each node's core number (the largest k for which it is in a subgraph where every node has k neighbors).",
+    },
+    Procedure {
+        name: "algo.leiden",
+        args: "{resolution: 1, levels: 10, iterations: 10, weight, …}",
+        columns: &["node", "community", "modularity"],
+        description: "Communities by modularity, each one connected (Louvain's, split into their connected parts).",
+    },
+    Procedure {
+        name: "algo.hits",
+        args: "{iterations: 20, tolerance: 1e-8, weight, top, …}",
+        columns: &["node", "hub", "authority"],
+        description: "Hubs and authorities (HITS): good hubs point to good authorities; ordered by authority.",
+    },
+    Procedure {
+        name: "algo.eigenvector",
+        args: "{iterations: 100, tolerance: 1e-6, direction: 'in', weight, top, …}",
+        columns: &["node", "score"],
+        description: "Eigenvector centrality: nodes scored by the scores of those whose edges reach them, highest first.",
+    },
+    Procedure {
+        name: "algo.harmonic",
+        args: "{weight, direction: 'out', top, …}",
+        columns: &["node", "score"],
+        description: "Harmonic centrality: the sum of 1 / distance to every other node, highest first.",
+    },
+    Procedure {
+        name: "algo.articulationPoints",
+        args: "{…}",
+        columns: &["node"],
+        description: "Nodes whose removal would split their component (edges taken both ways).",
+    },
+    Procedure {
+        name: "algo.bridges",
+        args: "{…}",
+        columns: &["edge"],
+        description: "Edges whose removal would split their component (edges taken both ways).",
+    },
+    Procedure {
+        name: "algo.spanningTree",
+        args: "{maximum: false, weight, …}",
+        columns: &["edge", "weight"],
+        description: "A minimum (or maximum) spanning forest by edge weight: one tree per component.",
+    },
+    Procedure {
+        name: "algo.maxFlow",
+        args: "source, sink, {weight: capacity, …}",
+        columns: &["edge", "flow", "value", "cut"],
+        description: "The maximum flow from source to sink along edge directions (capacities from `weight`): one row per edge that carries flow, `cut` for the edges of a minimum cut.",
+    },
+    Procedure {
+        name: "algo.bipartiteMatching",
+        args: "{left: label, …}",
+        columns: &["left", "right", "edge"],
+        description: "A maximum matching between the nodes with the `left` label and the others, over edges with one end on each side.",
+    },
+    Procedure {
+        name: "algo.topologicalOrder",
+        args: "{…}",
+        columns: &["node", "position"],
+        description: "The nodes in an order where every edge goes forward; fails, naming a cycle, when there is one.",
+    },
+    Procedure {
+        name: "algo.cycle",
+        args: "{…}",
+        columns: &["nodes"],
+        description: "One cycle of the edges, its nodes in order (no row when there is none).",
+    },
+    Procedure {
+        name: "algo.randomWalks",
+        args: "starts | null, {length: 10, walks: 1, seed: 42, direction: 'out', weight, …}",
+        columns: &["start", "walk"],
+        description: "Random walks (edges chosen by weight), the same for a seed: from the starts, or every node.",
+    },
+    Procedure {
+        name: "algo.clustering",
+        args: "{…}",
+        columns: &["node", "coefficient"],
+        description: "The local clustering coefficient: the share of a node's neighbor pairs that are linked.",
+    },
+    Procedure {
+        name: "algo.conductance",
+        args: "{property: 'community', …}",
+        columns: &["community", "conductance"],
+        description: "For each group of nodes (by the value of `property`), the weight of its edges going out over its volume: 0 closed, 1 open.",
+    },
+    // Simulation (16.8).
+    Procedure {
+        name: "algo.distanceField",
+        args: "sources, {maxCost, weight, direction: 'both', …}",
+        columns: &["node", "cost", "nearest"],
+        description: "The cost from every node to the nearest of the sources, and which one, in one search: where agents go next to reach the nearest goal.",
+    },
+    Procedure {
+        name: "algo.influence",
+        args: "sources, {value: property, decay: 0.5, threshold: 0.01, maxCost, combine: 'sum' | 'max', weight, direction: 'both', …}",
+        columns: &["node", "influence"],
+        description: "An influence map: each source's value (its property, or 1) weakened by decay^cost along the cheapest way, combined at each node.",
+    },
+    Procedure {
+        name: "algo.floodFill",
+        args: "seeds, {where: {property: value}, inside: [labels], direction: 'both', …}",
+        columns: &["node", "steps"],
+        description: "The region reachable from the seeds through nodes that satisfy the condition, with how many steps away each is.",
+    },
+    Procedure {
+        name: "algo.diffusion",
+        args: "{amount: property, rate: 0.5, steps: 10, capacity: property, weight, direction: 'both', …}",
+        columns: &["node", "amount"],
+        description: "A quantity spreading along edges over steps (a share leaves each node, split by edge weight), at most `capacity` per node; the total stays.",
+    },
+    Procedure {
+        name: "algo.automaton",
+        args: "{state: property, rule: 'life' | 'threshold' | 'majority', birth: [3], survive: [2, 3], share: 0.5, recover: false, steps: 10, direction: 'both', …}",
+        columns: &["node", "state", "changedAt"],
+        description: "A rule applied to every node at once from its neighbors' states, step by step until it settles.",
+    },
+    Procedure {
+        name: "algo.assignment",
+        args: "{agents: label, tasks: label, weight: cost, …}",
+        columns: &["agent", "task", "cost"],
+        description: "Agents assigned to tasks at least total cost (an edge between them is an allowed pair, its weight the cost).",
+    },
+    Procedure {
+        name: "algo.minCostFlow",
+        args: "{supply: property, capacity: property, cost: property, …}",
+        columns: &["edge", "flow", "value", "cost", "unmet"],
+        description: "Resources sent from nodes that supply them (supply > 0) to nodes that need them (< 0) at least cost, each edge carrying at most its capacity.",
+    },
 ];
+
+/// The node positions an argument names: a node, an id, a list of them,
+/// or null for every node.
+fn positions(procedure: &str, p: &Projection, value: &Value) -> Result<Vec<u32>, QueryError> {
+    match value {
+        Value::Null => Ok((0..p.len() as u32).collect()),
+        Value::List(items) => items
+            .iter()
+            .map(|item| position(procedure, p, node_id(procedure, item)?))
+            .collect(),
+        other => Ok(vec![position(procedure, p, node_id(procedure, other)?)?]),
+    }
+}
+
+/// A property of every node of the projection (absent: `None`).
+fn node_props(
+    ctx: &Context,
+    p: &Projection,
+    key: &str,
+) -> Result<Vec<Option<serde_json::Value>>, QueryError> {
+    (0..p.len() as u32)
+        .map(|at| {
+            Ok(ctx
+                .node(p.id(at))?
+                .and_then(|node| node.props.get(key).cloned()))
+        })
+        .collect()
+}
+
+/// A numeric property of every node (`default` where absent).
+fn node_numbers(
+    ctx: &Context,
+    p: &Projection,
+    key: &str,
+    default: f64,
+) -> Result<Vec<f64>, QueryError> {
+    Ok(node_props(ctx, p, key)?
+        .into_iter()
+        .map(|value| value.and_then(|v| v.as_f64()).unwrap_or(default))
+        .collect())
+}
+
+/// The edge at index `edge` as a value.
+fn edge_value(ctx: &Context, p: &Projection, edge: u32) -> Result<Value, QueryError> {
+    Ok(match p.edge_id(edge) {
+        Some(id) => ctx
+            .edge(id)?
+            .map_or(Value::Null, |edge| Value::Edge(Arc::new(edge))),
+        None => Value::Null,
+    })
+}
+
+/// Each edge's weight, by edge index.
+fn edge_weights(p: &Projection) -> Vec<f64> {
+    let mut out = vec![1.0; p.edge_count()];
+    for node in 0..p.len() as u32 {
+        for step in p.neighbors(node, Direction::Out) {
+            out[step.edge as usize] = step.weight;
+        }
+    }
+    out
+}
+
+/// The positions of the nodes with `label` in the projection.
+fn labelled(ctx: &Context, p: &Projection, label: &str) -> Result<Vec<u32>, QueryError> {
+    let ids = match ctx.write {
+        // Writing: the transaction's own nodes, as the projection has them.
+        Some(_) => {
+            let mut ids = Vec::new();
+            for at in 0..p.len() as u32 {
+                if ctx
+                    .node(p.id(at))?
+                    .is_some_and(|node| node.has_label(label))
+                {
+                    ids.push(p.id(at));
+                }
+            }
+            ids
+        }
+        None => ctx.read.nodes_with_label(ctx.ns, label)?,
+    };
+    Ok(ids.into_iter().filter_map(|id| p.position(id)).collect())
+}
 
 // ---------------------------------------------------------------- settings
 
@@ -277,10 +494,19 @@ impl Settings {
             valid_at: self.time("validAt")?,
             known_at: self.time("knownAt")?,
             weight: self.text("weight")?,
-            // Only paths return edges; other algorithms skip their ids.
+            // Only algorithms that return edges keep their ids.
             edge_ids: {
                 let name = self.procedure.to_lowercase();
-                name.contains("path") || name.contains("astar")
+                name.contains("path")
+                    || name.contains("astar")
+                    || [
+                        "algo.bridges",
+                        "algo.spanningtree",
+                        "algo.maxflow",
+                        "algo.bipartitematching",
+                        "algo.mincostflow",
+                    ]
+                    .contains(&name.as_str())
             },
             view: None,
         })
@@ -424,7 +650,13 @@ pub(crate) fn call(
     let positional = match name {
         "algo.shortestPath" | "algo.astar" | "algo.allShortestPaths" => 2,
         "algo.kShortestPaths" => 3,
-        "algo.distances" | "algo.linkPrediction" => 1,
+        "algo.distances"
+        | "algo.linkPrediction"
+        | "algo.randomWalks"
+        | "algo.distanceField"
+        | "algo.influence"
+        | "algo.floodFill" => 1,
+        "algo.maxFlow" => 2,
         _ => 0,
     };
     if args.len() < positional || args.len() > positional + 1 {
@@ -434,7 +666,25 @@ pub(crate) fn call(
         )));
     }
     let settings = Settings::new(name, args.get(positional))?;
-    let spec = settings.spec()?;
+    // The modes of every algorithm, carried out where the rows go
+    // (exec.rs): only checked here.
+    let _ = settings.get("write");
+    if let Some(mode) = settings.text("mode")?
+        && !["stream", "stats"].contains(&mode.as_str())
+    {
+        return Err(QueryError::runtime(format!(
+            "{name}() runs in mode 'stream' or 'stats' (with write: … it writes), not {mode:?}"
+        )));
+    }
+    let mut spec = settings.spec()?;
+    if name == "algo.assignment" && spec.labels.is_empty() {
+        // The agents and the tasks, whatever else there is.
+        for key in ["agents", "tasks"] {
+            if let Some(Value::Str(label)) = settings.map.get(key) {
+                spec.labels.push(label.clone());
+            }
+        }
+    }
     let stop = ctx.budget.stopper();
     let stopped = |error: grafeno::Error| -> QueryError {
         if stop() {
@@ -813,6 +1063,509 @@ pub(crate) fn call(
                                 .map(|x| Value::Float(f64::from(x)))
                                 .collect(),
                         ),
+                    ])
+                })
+                .collect::<Result<_, QueryError>>()?
+        }
+        "algo.kCore" => {
+            settings.finish()?;
+            let p = project(&spec)?;
+            let cores = algo::k_core(&p);
+            (0..p.len() as u32)
+                .map(|at| {
+                    Ok(vec![
+                        node_value(ctx, &p, at)?,
+                        Value::Int(i64::from(cores[at as usize])),
+                    ])
+                })
+                .collect::<Result<_, QueryError>>()?
+        }
+        "algo.leiden" => {
+            let defaults = Louvain::default();
+            let louvain = Louvain {
+                resolution: settings.float("resolution", defaults.resolution)?,
+                max_levels: settings.count("levels", defaults.max_levels)?,
+                max_iterations: settings.count("iterations", defaults.max_iterations)?,
+                tolerance: settings.float("tolerance", defaults.tolerance)?,
+            };
+            settings.finish()?;
+            let p = project(&spec)?;
+            let (groups, modularity, _) = algo::leiden(&p, &louvain, &stop).map_err(stopped)?;
+            let mut rows = grouped(ctx, &p, &groups)?;
+            for row in &mut rows {
+                row.push(Value::Float(modularity));
+            }
+            rows
+        }
+        "algo.hits" => {
+            let iterations = settings.count("iterations", 20)?;
+            let tolerance = settings.float("tolerance", 1e-8)?;
+            let top = settings.optional_count("top")?;
+            settings.finish()?;
+            let p = project(&spec)?;
+            let (hubs, authorities, _) =
+                algo::hits(&p, iterations, tolerance, &stop).map_err(stopped)?;
+            let mut rows = ranked(ctx, &p, &authorities, top)?;
+            for row in &mut rows {
+                let at = match &row[0] {
+                    Value::Node(node) => p.position(node.id),
+                    _ => None,
+                };
+                let authority = row.pop().expect("a score");
+                row.push(Value::Float(at.map_or(0.0, |at| hubs[at as usize])));
+                row.push(authority);
+            }
+            rows
+        }
+        "algo.eigenvector" => {
+            let direction = settings.direction(Direction::In)?;
+            let iterations = settings.count("iterations", 100)?;
+            let tolerance = settings.float("tolerance", 1e-6)?;
+            let top = settings.optional_count("top")?;
+            settings.finish()?;
+            let p = project(&spec)?;
+            let (scores, _) =
+                algo::eigenvector(&p, direction, iterations, tolerance, &stop).map_err(stopped)?;
+            ranked(ctx, &p, &scores, top)?
+        }
+        "algo.harmonic" => {
+            let direction = settings.direction(Direction::Out)?;
+            let top = settings.optional_count("top")?;
+            settings.finish()?;
+            let p = project(&spec)?;
+            let scores = algo::closeness(&p, direction, true, &stop).map_err(stopped)?;
+            ranked(ctx, &p, &scores, top)?
+        }
+        "algo.articulationPoints" | "algo.bridges" => {
+            settings.finish()?;
+            let p = project(&spec)?;
+            let (points, bridges) = algo::cut_points(&p);
+            if name == "algo.bridges" {
+                bridges
+                    .into_iter()
+                    .map(|edge| Ok(vec![edge_value(ctx, &p, edge)?]))
+                    .collect::<Result<_, QueryError>>()?
+            } else {
+                points
+                    .into_iter()
+                    .map(|at| Ok(vec![node_value(ctx, &p, at)?]))
+                    .collect::<Result<_, QueryError>>()?
+            }
+        }
+        "algo.spanningTree" => {
+            let maximum = settings.flag("maximum", false)?;
+            settings.finish()?;
+            let p = project(&spec)?;
+            let weights = edge_weights(&p);
+            let (edges, _) = algo::spanning_forest(&p, maximum);
+            edges
+                .into_iter()
+                .map(|edge| {
+                    Ok(vec![
+                        edge_value(ctx, &p, edge)?,
+                        Value::Float(weights[edge as usize]),
+                    ])
+                })
+                .collect::<Result<_, QueryError>>()?
+        }
+        "algo.maxFlow" => {
+            settings.finish()?;
+            let p = project(&spec)?;
+            let (from, to) = endpoints(&p)?;
+            let flow = algo::max_flow(&p, from, to, &stop).map_err(stopped)?;
+            let cut: std::collections::HashSet<u32> = flow.cut.iter().copied().collect();
+            flow.edges
+                .iter()
+                .map(|(edge, amount)| {
+                    Ok(vec![
+                        edge_value(ctx, &p, *edge)?,
+                        Value::Float(*amount),
+                        Value::Float(flow.value),
+                        Value::Bool(cut.contains(edge)),
+                    ])
+                })
+                .collect::<Result<_, QueryError>>()?
+        }
+        "algo.bipartiteMatching" => {
+            let Some(left) = settings.text("left")? else {
+                return Err(QueryError::runtime(
+                    "algo.bipartiteMatching() needs left: the label of one side",
+                ));
+            };
+            settings.finish()?;
+            let p = project(&spec)?;
+            let mut is_left = vec![false; p.len()];
+            for at in labelled(ctx, &p, &left)? {
+                is_left[at as usize] = true;
+            }
+            algo::bipartite_matching(&p, &is_left)
+                .into_iter()
+                .map(|(a, b, edge)| {
+                    Ok(vec![
+                        node_value(ctx, &p, a)?,
+                        node_value(ctx, &p, b)?,
+                        edge_value(ctx, &p, edge)?,
+                    ])
+                })
+                .collect::<Result<_, QueryError>>()?
+        }
+        "algo.topologicalOrder" | "algo.cycle" => {
+            settings.finish()?;
+            let p = project(&spec)?;
+            match (algo::topological_order(&p), name) {
+                (Ok(order), "algo.topologicalOrder") => order
+                    .into_iter()
+                    .enumerate()
+                    .map(|(at, node)| Ok(vec![node_value(ctx, &p, node)?, Value::Int(at as i64)]))
+                    .collect::<Result<_, QueryError>>()?,
+                (Ok(_), _) => Vec::new(),
+                (Err(cycle), "algo.cycle") => vec![vec![Value::List(
+                    cycle
+                        .into_iter()
+                        .map(|at| node_value(ctx, &p, at))
+                        .collect::<Result<_, _>>()?,
+                )]],
+                (Err(cycle), _) => {
+                    let ids: Vec<String> = cycle.iter().map(|at| p.id(*at).to_string()).collect();
+                    return Err(QueryError::runtime(format!(
+                        "the edges make a cycle, so there is no topological order: {}",
+                        ids.join(" → ")
+                    )));
+                }
+            }
+        }
+        "algo.randomWalks" => {
+            let length = settings.count("length", 10)?;
+            let walks = settings.count("walks", 1)?;
+            let direction = settings.direction(Direction::Out)?;
+            let seed = settings.seed()?;
+            settings.finish()?;
+            let p = project(&spec)?;
+            let starts = positions(name, &p, &args[0])?;
+            algo::random_walks(&p, &starts, length, walks, direction, seed, &stop)
+                .map_err(stopped)?
+                .into_iter()
+                .map(|walk| {
+                    Ok(vec![
+                        node_value(ctx, &p, walk[0])?,
+                        Value::List(
+                            walk.iter()
+                                .map(|at| node_value(ctx, &p, *at))
+                                .collect::<Result<_, _>>()?,
+                        ),
+                    ])
+                })
+                .collect::<Result<_, QueryError>>()?
+        }
+        "algo.clustering" => {
+            settings.finish()?;
+            let p = project(&spec)?;
+            let found = algo::triangles(&p, &stop).map_err(stopped)?;
+            (0..p.len() as u32)
+                .map(|at| {
+                    Ok(vec![
+                        node_value(ctx, &p, at)?,
+                        Value::Float(found.coefficient[at as usize]),
+                    ])
+                })
+                .collect::<Result<_, QueryError>>()?
+        }
+        "algo.conductance" => {
+            let property = settings
+                .text("property")?
+                .unwrap_or_else(|| "community".into());
+            settings.finish()?;
+            let p = project(&spec)?;
+            let groups: Vec<Option<i64>> = node_props(ctx, &p, &property)?
+                .into_iter()
+                .map(|value| value.and_then(|v| v.as_i64()))
+                .collect();
+            algo::conductance(&p, &groups)
+                .into_iter()
+                .map(|(group, score)| vec![Value::Int(group), Value::Float(score)])
+                .collect()
+        }
+        "algo.distanceField" => {
+            let direction = settings.direction(Direction::Both)?;
+            let max_cost = settings
+                .get("maxCost")
+                .map(|_| settings.float("maxCost", 0.0))
+                .transpose()?;
+            settings.finish()?;
+            let p = project(&spec)?;
+            let sources = positions(name, &p, &args[0])?;
+            let field =
+                algo::distance_field(&p, &sources, direction, max_cost, &stop).map_err(stopped)?;
+            let mut rows = Vec::new();
+            for (at, found) in field.into_iter().enumerate() {
+                if let Some((cost, nearest)) = found {
+                    rows.push(vec![
+                        node_value(ctx, &p, at as u32)?,
+                        Value::Float(cost),
+                        node_value(ctx, &p, nearest)?,
+                    ]);
+                }
+            }
+            rows
+        }
+        "algo.influence" => {
+            let direction = settings.direction(Direction::Both)?;
+            let value = settings.text("value")?;
+            let settings_value = algo::Influence {
+                decay: settings.float("decay", 0.5)?,
+                threshold: settings.float("threshold", 0.01)?,
+                max_cost: settings
+                    .get("maxCost")
+                    .map(|_| settings.float("maxCost", 0.0))
+                    .transpose()?,
+                sum: match settings.text("combine")?.as_deref() {
+                    None | Some("sum") => true,
+                    Some("max") => false,
+                    Some(other) => {
+                        return Err(settings.fail(
+                            "combine",
+                            "'sum' or 'max'",
+                            &Value::Str(other.into()),
+                        ));
+                    }
+                },
+            };
+            settings.finish()?;
+            let p = project(&spec)?;
+            let sources = positions(name, &p, &args[0])?;
+            let values = match &value {
+                Some(key) => node_numbers(ctx, &p, key, 1.0)?,
+                None => vec![1.0; p.len()],
+            };
+            let weighted: Vec<(u32, f64)> = sources
+                .iter()
+                .map(|at| (*at, values[*at as usize]))
+                .collect();
+            let map = algo::influence(&p, &weighted, direction, &settings_value, &stop)
+                .map_err(stopped)?;
+            let mut rows = Vec::new();
+            for (at, here) in map.into_iter().enumerate() {
+                if here != 0.0 {
+                    rows.push(vec![node_value(ctx, &p, at as u32)?, Value::Float(here)]);
+                }
+            }
+            rows
+        }
+        "algo.floodFill" => {
+            let direction = settings.direction(Direction::Both)?;
+            let condition = match settings.get("where") {
+                None => None,
+                Some(Value::Map(map)) => Some(map.clone()),
+                Some(other) => {
+                    return Err(settings.fail("where", "a map of property values", other));
+                }
+            };
+            let inside_labels = settings.texts("inside")?;
+            settings.finish()?;
+            let p = project(&spec)?;
+            let seeds = positions(name, &p, &args[0])?;
+            let mut inside = vec![true; p.len()];
+            if condition.is_some() || !inside_labels.is_empty() {
+                for (at, slot) in inside.iter_mut().enumerate() {
+                    let Some(node) = ctx.node(p.id(at as u32))? else {
+                        *slot = false;
+                        continue;
+                    };
+                    let labels_ok = inside_labels.is_empty()
+                        || inside_labels.iter().any(|label| node.has_label(label));
+                    let props_ok = condition.as_ref().is_none_or(|map| {
+                        map.iter().all(|(key, value)| {
+                            value
+                                .to_property()
+                                .is_ok_and(|wanted| node.props.get(key) == Some(&wanted))
+                        })
+                    });
+                    *slot = labels_ok && props_ok;
+                }
+            }
+            let steps = algo::flood_fill(&p, &seeds, &inside, direction);
+            let mut rows = Vec::new();
+            for (at, found) in steps.into_iter().enumerate() {
+                if let Some(steps) = found {
+                    rows.push(vec![
+                        node_value(ctx, &p, at as u32)?,
+                        Value::Int(i64::from(steps)),
+                    ]);
+                }
+            }
+            rows
+        }
+        "algo.diffusion" => {
+            let Some(amount) = settings.text("amount")? else {
+                return Err(QueryError::runtime(
+                    "algo.diffusion() needs amount: the property that holds each node's amount",
+                ));
+            };
+            let capacity = settings.text("capacity")?;
+            let direction = settings.direction(Direction::Both)?;
+            let rate = settings.float("rate", 0.5)?;
+            let steps = settings.count("steps", 10)?;
+            settings.finish()?;
+            let p = project(&spec)?;
+            let initial = node_numbers(ctx, &p, &amount, 0.0)?;
+            let capacity = capacity
+                .map(|key| node_numbers(ctx, &p, &key, f64::INFINITY))
+                .transpose()?;
+            let after = algo::diffuse(
+                &p,
+                &initial,
+                direction,
+                &algo::Diffusion {
+                    rate,
+                    steps,
+                    capacity,
+                },
+                &stop,
+            )
+            .map_err(stopped)?;
+            after
+                .into_iter()
+                .enumerate()
+                .map(|(at, value)| Ok(vec![node_value(ctx, &p, at as u32)?, Value::Float(value)]))
+                .collect::<Result<_, QueryError>>()?
+        }
+        "algo.automaton" => {
+            let Some(state) = settings.text("state")? else {
+                return Err(QueryError::runtime(
+                    "algo.automaton() needs state: the property that holds each node's state (true or false)",
+                ));
+            };
+            let counts =
+                |key: &'static str, default: Vec<usize>| -> Result<Vec<usize>, QueryError> {
+                    match settings.get(key) {
+                        None => Ok(default),
+                        Some(Value::List(items)) => items
+                            .iter()
+                            .map(|item| match item {
+                                Value::Int(n) if *n >= 0 => Ok(*n as usize),
+                                other => Err(settings.fail(key, "a list of whole numbers", other)),
+                            })
+                            .collect(),
+                        Some(other) => Err(settings.fail(key, "a list of whole numbers", other)),
+                    }
+                };
+            let rule = match settings.text("rule")?.as_deref().unwrap_or("life") {
+                "life" => algo::Rule::Life {
+                    birth: counts("birth", vec![3])?,
+                    survive: counts("survive", vec![2, 3])?,
+                },
+                "threshold" => algo::Rule::Threshold {
+                    share: settings.float("share", 0.5)?,
+                    recover: settings.flag("recover", false)?,
+                },
+                "majority" => algo::Rule::Majority,
+                other => {
+                    return Err(settings.fail(
+                        "rule",
+                        "'life', 'threshold' or 'majority'",
+                        &Value::Str(other.into()),
+                    ));
+                }
+            };
+            let steps = settings.count("steps", 10)?;
+            let direction = settings.direction(Direction::Both)?;
+            settings.finish()?;
+            let p = project(&spec)?;
+            let initial: Vec<bool> = node_props(ctx, &p, &state)?
+                .into_iter()
+                .map(|value| value.and_then(|v| v.as_bool()).unwrap_or(false))
+                .collect();
+            let (after, changed, _) =
+                algo::automaton(&p, &initial, &rule, steps, direction, &stop).map_err(stopped)?;
+            (0..p.len())
+                .map(|at| {
+                    Ok(vec![
+                        node_value(ctx, &p, at as u32)?,
+                        Value::Bool(after[at]),
+                        changed[at].map_or(Value::Null, |step| Value::Int(step as i64)),
+                    ])
+                })
+                .collect::<Result<_, QueryError>>()?
+        }
+        "algo.assignment" => {
+            let (Some(agents), Some(tasks)) = (settings.text("agents")?, settings.text("tasks")?)
+            else {
+                return Err(QueryError::runtime(
+                    "algo.assignment() needs agents and tasks: the label of each side",
+                ));
+            };
+            settings.finish()?;
+            let p = project(&spec)?;
+            let rows_at = labelled(ctx, &p, &agents)?;
+            let columns_at = labelled(ctx, &p, &tasks)?;
+            let column_of: HashMap<u32, usize> = columns_at
+                .iter()
+                .enumerate()
+                .map(|(i, at)| (*at, i))
+                .collect();
+            let mut costs = vec![vec![None; columns_at.len()]; rows_at.len()];
+            for (row, &agent) in rows_at.iter().enumerate() {
+                for step in p.neighbors(agent, Direction::Both) {
+                    if let Some(&column) = column_of.get(&step.node) {
+                        let slot: &mut Option<f64> = &mut costs[row][column];
+                        *slot = Some(slot.map_or(step.weight, |c: f64| c.min(step.weight)));
+                    }
+                }
+            }
+            let (pairs, _) = algo::assignment(&costs);
+            let mut out = Vec::new();
+            for (row, column) in pairs.into_iter().enumerate() {
+                if let Some(column) = column {
+                    out.push(vec![
+                        node_value(ctx, &p, rows_at[row])?,
+                        node_value(ctx, &p, columns_at[column])?,
+                        Value::Float(costs[row][column].unwrap_or(0.0)),
+                    ]);
+                }
+            }
+            out
+        }
+        "algo.minCostFlow" => {
+            let (Some(supply), Some(capacity), Some(cost)) = (
+                settings.text("supply")?,
+                settings.text("capacity")?,
+                settings.text("cost")?,
+            ) else {
+                return Err(QueryError::runtime(
+                    "algo.minCostFlow() needs supply (a node property), capacity and cost (edge properties)",
+                ));
+            };
+            settings.finish()?;
+            let by_capacity = project(&ProjectionSpec {
+                weight: Some(capacity),
+                ..spec.clone()
+            })?;
+            let by_cost = project(&ProjectionSpec {
+                weight: Some(cost),
+                ..spec.clone()
+            })?;
+            let (capacities, costs) = (edge_weights(&by_capacity), edge_weights(&by_cost));
+            // The two projections hold the same edges in the same order.
+            if capacities.len() != costs.len()
+                || (0..capacities.len() as u32)
+                    .any(|edge| by_capacity.edge_id(edge) != by_cost.edge_id(edge))
+            {
+                return Err(QueryError::runtime(
+                    "algo.minCostFlow(): the graph changed while it was read; run it again",
+                ));
+            }
+            let supplies = node_numbers(ctx, &by_capacity, &supply, 0.0)?;
+            let flow = algo::min_cost_flow(&by_capacity, &capacities, &costs, &supplies, &stop)
+                .map_err(stopped)?;
+            flow.edges
+                .iter()
+                .map(|(edge, amount)| {
+                    Ok(vec![
+                        edge_value(ctx, &by_capacity, *edge)?,
+                        Value::Float(*amount),
+                        Value::Float(flow.value),
+                        Value::Float(flow.cost),
+                        Value::Float(flow.unmet),
                     ])
                 })
                 .collect::<Result<_, QueryError>>()?

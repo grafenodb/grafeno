@@ -2,7 +2,7 @@
 
 [All phases](README.md) · [← Phase 15: Engine and interface apart](phase-15-engine-and-interface-apart.md) · [Phase 17: Integrations →](phase-17-integrations.md)
 
-**Status:** in progress: 16.1 to 16.7 done.
+**Status:** in progress: 16.1 to 16.8 done.
 
 What the engine still lacks as a database people build on: a free
 license, null as a value, namespaces made from scripts, transactions that
@@ -23,7 +23,7 @@ Steps:
 - [16.5 Advanced indexes and constraints (done)](#165-advanced-indexes-and-constraints-done)
 - [16.6 Full-text search (done)](#166-full-text-search-done)
 - [16.7 Better vector indexes (done)](#167-better-vector-indexes-done)
-- [16.8 More graph algorithms, for analysis and simulation (planned)](#168-more-graph-algorithms-for-analysis-and-simulation-planned)
+- [16.8 More graph algorithms, for analysis and simulation (done)](#168-more-graph-algorithms-for-analysis-and-simulation-done)
 - [16.9 Recording how a query walks the graph (planned)](#169-recording-how-a-query-walks-the-graph-planned)
 - [16.10 Change events with values, off by default (planned)](#1610-change-events-with-values-off-by-default-planned)
 
@@ -500,7 +500,7 @@ As built:
 - Not done: filters on ranges of values (they are equalities), and
   vector indexes on edges.
 
-## 16.8 More graph algorithms, for analysis and simulation (planned)
+## 16.8 More graph algorithms, for analysis and simulation (done)
 
 **Where it starts from.** `CALL algo.*` offers paths (shortest, A*, k
 shortest, all shortest), centrality (degree, PageRank, betweenness,
@@ -527,6 +527,52 @@ similarity, link prediction and FastRP. None of these changes.
   budget and the rights of 14.4, with an `EXPLAIN` cost.
 - Tests against known results on small graphs; time and memory on the
   10.6 graphs.
+
+As built:
+
+- Engine (`grafeno/src/algo/analysis.rs`, `simulation.rs`), over the
+  projection of 9.x: k-core by peeling, HITS and eigenvector centrality by
+  power iteration (the eigenvector one adds each node's own score, so a
+  bipartite graph does not oscillate), articulation points and bridges by
+  one iterative depth-first search, Kruskal's spanning forest, Dinic's
+  maximum flow with its minimum cut, Hopcroft-Karp matching, Kahn's
+  topological order (and a cycle when it fails), weighted random walks
+  from a seed, conductance per group, and Leiden's guarantee on top of
+  Louvain (each community split into its connected parts; not Leiden's
+  full refinement). Simulation: multi-source Dijkstra (distance fields),
+  influence as `value × decay^cost`, breadth-first flood fill through a
+  condition, diffusion that keeps the total (shares split by weight, a
+  full node sends back what does not fit), synchronous rules (life,
+  threshold, majority), the Hungarian method for assignment, and
+  successive cheapest paths for flows at least cost. Harmonic centrality
+  and the clustering coefficient reuse closeness and triangles.
+- GQ (`algorithms.rs`): 22 procedures with the usual projection settings;
+  edge results give the edges (their ids are kept in the projection only
+  for these). Node properties (amounts, states, supplies, conditions) are
+  read through the caller's view. Minimum-cost flows build two
+  projections (capacity and cost) and check they hold the same edges.
+- Modes, for every algorithm: `mode: 'stats'` (a row per numeric
+  column) and `write` (a property, or a map of columns to properties),
+  carried out where the rows go (`exec.rs`); they must be in a literal
+  settings map, so that a writing call makes the statement a write
+  before it runs (rights, write transaction). Over HTTP,
+  `/v1/{ns}/algo/{name}` serves every algorithm, nodes and edges in
+  their compact form. Capabilities `algorithms.analysis` and
+  `algorithms.simulation`.
+- Measured (`grafeno/examples/algo_bench.rs`, the 10.6 graph of 100 000
+  nodes and 500 000 edges in communities, release build, laptop; memory
+  is what each step allocated beyond what was held, counted by the
+  allocator): k-core 64 ms (11 MiB), Leiden 771 ms (43 MiB, the same 384
+  communities as Louvain here), HITS 20 rounds 86 ms, eigenvector 100
+  rounds 343 ms, cut points 55 ms (16 MiB), spanning forest 36 ms (19
+  MiB), maximum flow 356 ms (46 MiB), matching 78 ms, random walks (10 000
+  of 20 steps) 29 ms, distance field from 100 sources 63 ms, influence of
+  10 sources 256 ms, flood fill 12 ms, diffusion 20 steps 393 ms (27
+  MiB), life rule 20 steps 75 ms, assignment 300 × 300 1 ms, minimum-cost
+  flow of 50 units 615 ms (55 MiB). The algorithms of before took what
+  they took in 9.x's table, within this laptop's variation.
+- Not done: Leiden's refinement phase itself, rules with more than two
+  states, and diffusion with losses.
 
 ## 16.9 Recording how a query walks the graph (planned)
 

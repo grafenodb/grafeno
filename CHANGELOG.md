@@ -17,6 +17,14 @@ version (now 18) is upgraded in place, with a copy kept first.
   Apache License 2.0, at the user's choice (`LICENSE-MIT`,
   `LICENSE-APACHE`). The packages, the Windows setup (a license page),
   the archives and the winget manifest carry it.
+- **Added**: graph algorithms for analysis (`algo.kCore`, `leiden`,
+  `hits`, `eigenvector`, `harmonic`, `articulationPoints`, `bridges`,
+  `spanningTree`, `maxFlow`, `bipartiteMatching`, `topologicalOrder`,
+  `cycle`, `randomWalks`, `clustering`, `conductance`) and for simulation
+  (`algo.distanceField`, `influence`, `floodFill`, `diffusion`,
+  `automaton`, `assignment`, `minCostFlow`); every algorithm takes
+  `mode: 'stats'` and `write: 'property'` (capabilities
+  `algorithms.analysis`, `algorithms.simulation`).
 - **Added**: named vector indexes, several per namespace, on a property
   of one or more labels: `CREATE VECTOR INDEX … ON (d.embedding) OPTIONS
   {dimension, similarity: 'cosine' | 'dot' | 'euclidean', m,

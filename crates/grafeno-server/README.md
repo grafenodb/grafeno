@@ -557,6 +557,7 @@ engine lacks instead of failing. The capabilities:
 | `namespaces`, `nodes`, `edges`, `facts` | the graph and its facts with valid and record time |
 | `null_values` | a `null` property is stored as a value; `remove_props` removes keys (16.2) |
 | `search.text`, `search.vector` | full-text and vector search |
+| `algorithms.analysis`, `algorithms.simulation` | `algo.kCore`, `leiden`, `hits`, `eigenvector`, `harmonic`, `articulationPoints`, `bridges`, `spanningTree`, `maxFlow`, `bipartiteMatching`, `topologicalOrder`, `cycle`, `randomWalks`, `clustering`, `conductance`; `algo.distanceField`, `influence`, `floodFill`, `diffusion`, `automaton`, `assignment`, `minCostFlow` (16.8) |
 | `search.vector.indexes` | named vector indexes (similarity, `m`, `ef`), filtered and several-vector searches, `/similar`, background builds (16.7) |
 | `search.fulltext`, `search.hybrid` | full-text indexes with a query language and fragments; `POST /v1/{ns}/search` with a mode (16.6) |
 | `recall`, `context`, `memory` | hybrid recall, context for a prompt, importance and accesses |

@@ -2811,14 +2811,15 @@ async fn algorithm(
                 .columns
                 .iter()
                 .map(|column| match *column {
-                    "node" | "other" => {
+                    "node" | "other" | "agent" | "task" | "left" | "right" | "start"
+                    | "nearest" => {
                         format!("{{id: {column}.@id, labels: {column}.@labels, name: {column}.name}} AS {column}")
                     }
-                    "nodes" => {
-                        "[n IN nodes | {id: n.@id, labels: n.@labels, name: n.name}] AS nodes"
-                            .to_owned()
-                    }
+                    "nodes" | "walk" => format!(
+                        "[n IN {column} | {{id: n.@id, labels: n.@labels, name: n.name}}] AS {column}"
+                    ),
                     "edges" => "[e IN edges | e.@id] AS edges".to_owned(),
+                    "edge" => "edge.@id AS edge".to_owned(),
                     other => other.to_owned(),
                 })
                 .collect();
@@ -2840,7 +2841,7 @@ async fn algorithm(
                     "write needs a property name (letters, digits, _) or @embedding, not {property:?}"
                 )));
             }
-            if algorithm.columns.first() != Some(&"node") {
+            if algorithm.columns.first() != Some(&"node") || algorithm.columns.len() < 2 {
                 return Err(ApiError::bad_request(format!(
                     "{} yields no column per node to write",
                     algorithm.name

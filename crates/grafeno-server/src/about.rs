@@ -59,6 +59,11 @@ pub const CAPABILITIES: &[&str] = &[
     "batches",
     "traversal",
     "algorithms",
+    // k-core, Leiden, HITS, flows, matching, order, walks… (16.8).
+    "algorithms.analysis",
+    // Distance fields, influence, flood fill, diffusion, rules,
+    // assignment, cheap flows (16.8).
+    "algorithms.simulation",
     // Knowledge upkeep (phase 11).
     "resolution",
     "match-rules",

@@ -273,6 +273,40 @@ nodes reads ten).
 | `algo.linkPrediction(node)` | `other`, `score` | likely new edges: nodes two hops away, by `metric: 'adamicAdar'` (or `'commonNeighbors'`, `'resourceAllocation'`, `'preferentialAttachment'`, `'totalNeighbors'`, `'jaccard'`), `limit: 10` |
 | `algo.fastRP()` | `node`, `embedding` | structural embeddings: `dimension: 128`, `iterationWeights: [0, 1, 1]`, `selfInfluence: 0`, `normalizationStrength: 0`, `seed: 42` |
 
+More analysis (16.8):
+
+| Procedure | Yields | Settings (defaults) |
+| --- | --- | --- |
+| `algo.kCore()` | `node`, `core` | each node's core number: the largest k for which it is in a subgraph where every node has at least k neighbors |
+| `algo.leiden()` | `node`, `community`, `modularity` | Louvain's communities, each split into its connected parts, so none is disconnected; Louvain's settings |
+| `algo.hits()` | `node`, `hub`, `authority` | hubs point to good authorities, authorities are pointed to by good hubs: `iterations: 20`, `tolerance: 1e-8`, `top`; ordered by authority |
+| `algo.eigenvector()` | `node`, `score` | scored by the scores of those whose edges reach the node: `direction: 'in'` (or `'both'`), `iterations: 100`, `tolerance: 1e-6`, `top` |
+| `algo.harmonic()` | `node`, `score` | the sum of 1 / distance to every other node (closeness with `harmonic: true`), `top` |
+| `algo.articulationPoints()` | `node` | nodes whose removal splits their component |
+| `algo.bridges()` | `edge` | edges whose removal splits their component |
+| `algo.spanningTree()` | `edge`, `weight` | a minimum spanning forest by `weight` (one tree per component), or `maximum: true` |
+| `algo.maxFlow(source, sink)` | `edge`, `flow`, `value`, `cut` | the most that can go from source to sink along the edges' directions, each edge carrying at most its `weight`: a row per edge that carries flow, `cut` true on the edges of a minimum cut |
+| `algo.bipartiteMatching()` | `left`, `right`, `edge` | the most pairs between the nodes with the label `left` and the others, over edges with one end on each side |
+| `algo.topologicalOrder()` | `node`, `position` | an order where every edge goes forward; a query error naming a cycle when there is one |
+| `algo.cycle()` | `nodes` | one cycle, in order (no row when there is none) |
+| `algo.randomWalks(starts)` | `start`, `walk` | walks from a node, a list of nodes, or every node (`null`), each step chosen by edge weight: `length: 10`, `walks: 1`, `seed: 42`; the same seed, the same walks |
+| `algo.clustering()` | `node`, `coefficient` | the share of a node's neighbor pairs that are linked |
+| `algo.conductance()` | `community`, `conductance` | for each group of nodes by the integer in `property` (`'community'`): the weight of its edges going out over its volume, 0 for a closed group |
+
+Simulation (16.8): places, agents and resources. Edge weights are
+costs for fields and influence, shares for diffusion, capacities and costs
+for flows; nodes' amounts and states are properties.
+
+| Procedure | Yields | Settings (defaults) |
+| --- | --- | --- |
+| `algo.distanceField(sources)` | `node`, `cost`, `nearest` | from every node, the cost to the nearest source and which one, in one search: an agent steps to the neighbor with the lowest cost to reach its nearest goal. `maxCost`, `direction: 'both'` |
+| `algo.influence(sources)` | `node`, `influence` | each source's value (its property `value`, or 1) times `decay^cost` (`decay: 0.5`) along the cheapest way, down to `threshold: 0.01` and up to `maxCost`, combined by `combine: 'sum'` (or `'max'`) |
+| `algo.floodFill(seeds)` | `node`, `steps` | the region reachable from the seeds through nodes with the property values in `where` (and the labels in `inside`), with how many steps away |
+| `algo.diffusion()` | `node`, `amount` | the property `amount` spreading over `steps: 10`: at each step `rate: 0.5` of a node's amount leaves it, split among its neighbors by edge weight; a node holds at most its `capacity` property, and what does not fit stays; the total stays the same |
+| `algo.automaton()` | `node`, `state`, `changedAt` | a rule on the boolean property `state`, for every node at once, until nothing changes or `steps: 10`: `rule: 'life'` (turn on with a count in `birth: [3]`, stay on with one in `survive: [2, 3]`), `'threshold'` (turn on when `share: 0.5` of the neighbors are on; with `recover: true`, turn off below it) or `'majority'` |
+| `algo.assignment()` | `agent`, `task`, `cost` | agents (label `agents`) to tasks (label `tasks`) at least total cost: an edge between them is an allowed pair, its `weight` the cost |
+| `algo.minCostFlow()` | `edge`, `flow`, `value`, `cost`, `unmet` | sends what nodes supply (property `supply` > 0) to those that need it (< 0) at least total cost, each edge carrying at most its `capacity` property at `cost` per unit; `unmet` is the supply no way could carry |
+
 Unless noted, directions default to `'out'`; FastRP defaults to
 `'both'`, and weak components, label propagation, Louvain, triangles and
 link prediction always follow edges both ways. Centralities come highest first; groups are numbered
@@ -285,11 +319,27 @@ directions), with no projection: `algo.commonNeighbors(a, b)`,
 `algo.jaccard(a, b)`, `algo.overlap(a, b)`; and `algo.cosine(list, list)`
 compares two vectors (`algo.cosine(a.@embedding, b.@embedding)`).
 
-**Modes.** Results stream as rows. For statistics, aggregate them
-(`CALL algo.louvain() YIELD community RETURN count(DISTINCT community)`);
-to keep them, `SET` them, which turns the query into one write
-transaction. Algorithms stop at the query's time limit or when it is
-cancelled.
+**Modes.** Results stream as rows: aggregate them (`CALL algo.louvain()
+YIELD community RETURN count(DISTINCT community)`), or `SET` them, which
+turns the query into one write transaction. Two settings do this for
+every algorithm, when the settings are written in the query (a literal
+map, so that whether it writes is known before it runs):
+
+- `mode: 'stats'` yields `column`, `count`, `min`, `max`, `mean`, `sum`:
+  a row `rows` with how many rows there were, and one per numeric column.
+- `write: 'property'` stores the first column after the node in that
+  property of each node, and `write: {hub: 'hub', authority: 'auth'}`
+  several columns; it yields `property`, `column`, `nodes` (how many were
+  written). The query is then a write, with the rights a write needs.
+
+```text
+CALL algo.kCore({mode: 'stats'}) YIELD column, max;
+CALL algo.kCore({write: 'core'}) YIELD nodes;
+```
+
+Algorithms run on what the caller may see (14.4), within the query's
+limits, and stop at its time limit or when it is cancelled. `EXPLAIN`
+estimates their cost like the other procedures'.
 
 ### `EXPLAIN` and `PROFILE`
 

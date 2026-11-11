@@ -281,6 +281,11 @@ presentan el proyecto y los primeros pasos.
   NAMESPACE` in GQ, checked on the namespace they name;
   `grafeno namespaces create | describe | drop`; `grafeno shell
   --stop-on-error`.
+- **Phase 16.8, more graph algorithms:** analysis (k-core, Leiden,
+  HITS, eigenvector, cut points, spanning trees, flows, matching, order,
+  walks, conductance) and simulation (distance fields, influence, flood
+  fill, diffusion, rules, assignment, cheap flows), with stats and write
+  modes.
 - **Phase 16.7, vector indexes:** named vector indexes with cosine, dot
   or Euclidean similarity and their own HNSW parameters, filters applied
   during the walk, several vectors at once, similar nodes, and background

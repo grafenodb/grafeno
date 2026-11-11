@@ -1295,29 +1295,114 @@ impl<'a> Runner<'a> {
             }
             Clause::Call(call) => {
                 let yields = yielded(call)?;
+                let mode = call.mode();
+                let columns = call_columns(call)?;
                 let edges = EdgeFilter::any();
-                let ctx = self.ctx(&edges);
                 let procedure = procedures::find(&call.name)?;
                 let mut out = Vec::new();
-                for row in flow.rows {
-                    let args = call
-                        .args
-                        .iter()
-                        .map(|arg| eval(&ctx, arg, Scope::Row(&row)))
-                        .collect::<Result<Vec<_>, _>>()?;
-                    for result in procedures::call(&ctx, &call.name, &args)? {
-                        let mut next = row.clone();
-                        for (column, alias) in &yields {
-                            let at = procedure
-                                .columns
-                                .iter()
-                                .position(|name| name.eq_ignore_ascii_case(column))
-                                .expect("checked by yielded()");
-                            next.insert(alias.clone(), result[at].clone());
+                // What a write mode puts on nodes: (node, property, value).
+                let mut writes: Vec<(NodeId, String, Value)> = Vec::new();
+                {
+                    let ctx = self.ctx(&edges);
+                    for row in flow.rows {
+                        let args = call
+                            .args
+                            .iter()
+                            .map(|arg| eval(&ctx, arg, Scope::Row(&row)))
+                            .collect::<Result<Vec<_>, _>>()?;
+                        let results = procedures::call(&ctx, &call.name, &args)?;
+                        let results = match &mode {
+                            crate::ast::CallMode::Stream => results,
+                            crate::ast::CallMode::Stats => stats_rows(procedure.columns, &results),
+                            crate::ast::CallMode::Write(targets) => {
+                                let node_at = results.first().and_then(|first| {
+                                    first
+                                        .iter()
+                                        .position(|value| matches!(value, Value::Node(_)))
+                                });
+                                let mut written = Vec::new();
+                                for (column, property) in targets {
+                                    let at = match column {
+                                        Some(column) => procedure
+                                            .columns
+                                            .iter()
+                                            .position(|name| name.eq_ignore_ascii_case(column))
+                                            .ok_or_else(|| {
+                                                QueryError::runtime(format!(
+                                                    "{}() yields {}: it has no column {column} to write",
+                                                    procedure.name,
+                                                    procedure.columns.join(", ")
+                                                ))
+                                            })?,
+                                        None => procedure
+                                            .columns
+                                            .iter()
+                                            .enumerate()
+                                            .position(|(at, _)| Some(at) != node_at)
+                                            .unwrap_or(0),
+                                    };
+                                    let Some(node_at) = node_at else {
+                                        if !results.is_empty() {
+                                            return Err(QueryError::runtime(format!(
+                                                "{}() gives no node to write to",
+                                                procedure.name
+                                            )));
+                                        }
+                                        written.push(vec![
+                                            Value::Str(property.clone()),
+                                            Value::Str(procedure.columns[at].to_owned()),
+                                            Value::Int(0),
+                                        ]);
+                                        continue;
+                                    };
+                                    let mut count = 0;
+                                    for result in &results {
+                                        if let Value::Node(node) = &result[node_at] {
+                                            writes.push((
+                                                node.id,
+                                                property.clone(),
+                                                result[at].clone(),
+                                            ));
+                                            count += 1;
+                                        }
+                                    }
+                                    written.push(vec![
+                                        Value::Str(property.clone()),
+                                        Value::Str(procedure.columns[at].to_owned()),
+                                        Value::Int(count),
+                                    ]);
+                                }
+                                written
+                            }
+                        };
+                        for result in results {
+                            let mut next = row.clone();
+                            for (column, alias) in &yields {
+                                let at = columns
+                                    .iter()
+                                    .position(|name| name.eq_ignore_ascii_case(column))
+                                    .expect("checked by yielded()");
+                                next.insert(alias.clone(), result[at].clone());
+                            }
+                            out.push(next);
                         }
-                        out.push(next);
                     }
                 }
+                if !writes.is_empty() {
+                    let ns = self.ns;
+                    let Some(tx) = self.tx.as_deref_mut() else {
+                        return Err(QueryError::runtime("write: needs a writable database"));
+                    };
+                    for (node, property, value) in writes {
+                        let value = value.to_property().map_err(QueryError::runtime)?;
+                        let mut props = grafeno::Props::new();
+                        props.insert(property, value);
+                        tx.set_node_props(ns, node, props)?;
+                        self.stats.properties_set += 1;
+                    }
+                }
+                let edges = EdgeFilter::any();
+                let ctx = self.ctx(&edges);
                 if let Some(filter) = &call.filter {
                     out = keep(&ctx, out, filter)?;
                 }
@@ -1519,31 +1604,73 @@ fn keep(ctx: &Context, rows: Vec<Row>, filter: &Expr) -> Result<Vec<Row>, QueryE
 }
 
 /// The `(column, alias)` pairs a CALL binds.
+/// The columns a call gives back: its procedure's, or those of its mode.
+fn call_columns(call: &ProcedureCall) -> Result<Vec<&'static str>, QueryError> {
+    let procedure = procedures::find(&call.name)?;
+    Ok(match call.mode() {
+        crate::ast::CallMode::Stream => procedure.columns.to_vec(),
+        crate::ast::CallMode::Stats => crate::ast::STATS_COLUMNS.to_vec(),
+        crate::ast::CallMode::Write(_) => crate::ast::WRITE_COLUMNS.to_vec(),
+    })
+}
+
 fn yielded(call: &ProcedureCall) -> Result<Vec<(String, String)>, QueryError> {
     let procedure = procedures::find(&call.name)?;
+    let columns = call_columns(call)?;
     match &call.yields {
-        None => Ok(procedure
-            .columns
+        None => Ok(columns
             .iter()
             .map(|column| ((*column).to_owned(), (*column).to_owned()))
             .collect()),
         Some(items) => {
             for (column, _) in items {
-                if !procedure
-                    .columns
-                    .iter()
-                    .any(|name| name.eq_ignore_ascii_case(column))
-                {
+                if !columns.iter().any(|name| name.eq_ignore_ascii_case(column)) {
                     return Err(QueryError::runtime(format!(
                         "{}() yields {}, not {column}",
                         procedure.name,
-                        procedure.columns.join(", ")
+                        columns.join(", ")
                     )));
                 }
             }
             Ok(items.clone())
         }
     }
+}
+
+/// An algorithm's rows summed up: per numeric column, how many values,
+/// the least, the most, the mean and the sum; first, the rows themselves.
+fn stats_rows(columns: &[&str], rows: &[Vec<Value>]) -> Vec<Vec<Value>> {
+    let mut out = vec![vec![
+        Value::Str("rows".into()),
+        Value::Int(rows.len() as i64),
+        Value::Null,
+        Value::Null,
+        Value::Null,
+        Value::Null,
+    ]];
+    for (at, column) in columns.iter().enumerate() {
+        let numbers: Vec<f64> = rows
+            .iter()
+            .filter_map(|row| match row.get(at) {
+                Some(Value::Int(n)) => Some(*n as f64),
+                Some(Value::Float(f)) => Some(*f),
+                _ => None,
+            })
+            .collect();
+        if numbers.is_empty() {
+            continue;
+        }
+        let sum: f64 = numbers.iter().sum();
+        out.push(vec![
+            Value::Str((*column).to_owned()),
+            Value::Int(numbers.len() as i64),
+            Value::Float(numbers.iter().copied().fold(f64::INFINITY, f64::min)),
+            Value::Float(numbers.iter().copied().fold(f64::NEG_INFINITY, f64::max)),
+            Value::Float(sum / numbers.len() as f64),
+            Value::Float(sum),
+        ]);
+    }
+    out
 }
 
 /// Whether a pattern predicate matches from `row` at least once.

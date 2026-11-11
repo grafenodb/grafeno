@@ -418,7 +418,7 @@ fn settings_are_checked() {
         &db,
         "CALL dbms.procedures() YIELD name WHERE name STARTS WITH 'algo.' RETURN count(name)",
     );
-    assert_eq!(listed, json!([[18]]));
+    assert_eq!(listed, json!([[40]]));
 }
 
 #[test]

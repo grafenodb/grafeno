@@ -14,11 +14,13 @@
 //! take and return these positions, and [`Projection::id`] turns them back
 //! into node ids.
 
+mod analysis;
 mod centrality;
 mod community;
 mod embedding;
 mod paths;
 mod similarity;
+mod simulation;
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -26,6 +28,10 @@ use std::sync::{Arc, Mutex};
 use grafeno_core::{Edge, EdgeId, Error, NodeId, Result, Timestamp};
 use redb::ReadableTable;
 
+pub use analysis::{
+    Flow, bipartite_matching, conductance, cut_points, eigenvector, hits, k_core, leiden, max_flow,
+    random_walks, spanning_forest, topological_order,
+};
 pub use centrality::{PageRank, betweenness, closeness, degree, page_rank};
 pub use community::{
     Louvain, Triangles, label_propagation, louvain, louvain_levels, modularity, strongly_connected,
@@ -37,6 +43,10 @@ pub use paths::{
 };
 pub use similarity::{
     LinkMetric, SimilarityMetric, link_score, neighbor_similarity, predict_links, similar_neighbors,
+};
+pub use simulation::{
+    CostFlow, Diffusion, Influence, Rule, assignment, automaton, diffuse, distance_field,
+    flood_fill, influence, min_cost_flow,
 };
 
 use crate::store::{Adj, AdjKey, Adjacent, LabelKey, RecordKey, decode, nodes_with_label, storage};

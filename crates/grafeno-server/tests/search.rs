@@ -245,3 +245,36 @@ fn a_server_builds_background_indexes() {
     drop(_server);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[tokio::test]
+async fn new_algorithms_over_http() {
+    let app = router(AppState::new(Arc::new(Grafeno::in_memory().unwrap()), None));
+    let (status, made) = call(
+        &app,
+        "/v1/s/query",
+        json!({"query": "CREATE (a:R {name: 'a'})-[:D]->(b:R {name: 'b'})-[:D]->(c:R {name: 'c'})"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{made}");
+    let (status, cores) = call(&app, "/v1/s/algo/kCore", json!({})).await;
+    assert_eq!(status, StatusCode::OK, "{cores}");
+    assert_eq!(cores["rows"].as_array().unwrap().len(), 3);
+    let (status, points) = call(&app, "/v1/s/algo/articulationPoints", json!({})).await;
+    assert_eq!(status, StatusCode::OK, "{points}");
+    assert_eq!(points["rows"][0][0]["name"], "b");
+    // One column per node: nothing to write.
+    let (status, _) = call(
+        &app,
+        "/v1/s/algo/articulationPoints",
+        json!({"write": "cut"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let (status, written) = call(&app, "/v1/s/algo/kCore", json!({"write": "core"})).await;
+    assert_eq!(status, StatusCode::OK, "{written}");
+    assert_eq!(written["rows"][0][0], 3);
+    let (status, bridges) = call(&app, "/v1/s/algo/bridges", json!({})).await;
+    assert_eq!(status, StatusCode::OK, "{bridges}");
+    assert_eq!(bridges["rows"].as_array().unwrap().len(), 2);
+    assert!(bridges["rows"][0][0].is_string(), "{bridges}");
+}

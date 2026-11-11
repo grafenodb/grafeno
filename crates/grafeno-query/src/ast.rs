@@ -169,6 +169,7 @@ impl Clause {
                 | Clause::Retract(_)
                 | Clause::Foreach { .. }
         ) || matches!(self, Clause::Subquery(query) if query.clauses.iter().any(Clause::writes))
+            || matches!(self, Clause::Call(call) if call.writes())
     }
 
     /// The keyword, for plans and error messages.
@@ -201,6 +202,64 @@ pub(crate) struct ProcedureCall {
     pub(crate) yields: Option<Vec<(String, String)>>,
     pub(crate) filter: Option<Expr>,
 }
+
+/// How an algorithm's rows are given back (16.8): as they are, summed up
+/// per column, or written to the nodes' properties.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum CallMode {
+    Stream,
+    Stats,
+    /// Columns (`None`: the first one that is not a node) and the property
+    /// each goes to.
+    Write(Vec<(Option<String>, String)>),
+}
+
+impl ProcedureCall {
+    /// The mode its settings ask for: they must be a literal map, so that
+    /// whether the statement writes is known before it runs.
+    pub(crate) fn mode(&self) -> CallMode {
+        if !self.name.starts_with("algo.") {
+            return CallMode::Stream;
+        }
+        let Some(Expr::Map(entries)) = self.args.last() else {
+            return CallMode::Stream;
+        };
+        for (key, value) in entries {
+            if key == "write" {
+                match value {
+                    Expr::Literal(Value::Str(property)) => {
+                        return CallMode::Write(vec![(None, property.clone())]);
+                    }
+                    Expr::Map(columns) => {
+                        let mut out = Vec::new();
+                        for (column, property) in columns {
+                            if let Expr::Literal(Value::Str(property)) = property {
+                                out.push((Some(column.clone()), property.clone()));
+                            }
+                        }
+                        return CallMode::Write(out);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        if entries.iter().any(|(key, value)| {
+            key == "mode" && *value == Expr::Literal(Value::Str("stats".into()))
+        }) {
+            return CallMode::Stats;
+        }
+        CallMode::Stream
+    }
+
+    pub(crate) fn writes(&self) -> bool {
+        matches!(self.mode(), CallMode::Write(_))
+    }
+}
+
+/// The columns of an algorithm run with `mode: 'stats'`.
+pub(crate) const STATS_COLUMNS: [&str; 6] = ["column", "count", "min", "max", "mean", "sum"];
+/// The columns of an algorithm run with `write: …`.
+pub(crate) const WRITE_COLUMNS: [&str; 3] = ["property", "column", "nodes"];
 
 /// `(a)-[r]->(b)-[s]-(c)`: a start node and the steps after it.
 #[derive(Clone, Debug, PartialEq)]
