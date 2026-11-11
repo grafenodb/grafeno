@@ -266,7 +266,7 @@ fn not_null_and_type_constraints() {
         &db,
         "CREATE CONSTRAINT FOR (i:Item) REQUIRE i.price IS :: FLOAT",
     );
-    assert!(refused.contains("not a FLOAT"), "{refused}");
+    assert!(refused.contains("not of type FLOAT"), "{refused}");
     let unknown = fail(
         &db,
         "CREATE CONSTRAINT FOR (i:Item) REQUIRE i.price IS :: MONEY",
