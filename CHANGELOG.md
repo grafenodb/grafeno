@@ -13,6 +13,18 @@ version (now 18) is upgraded in place, with a copy kept first.
 
 ## Unreleased
 
+- **Added**: change events with values, off by default. With
+  `[events] enabled = true` in `grafeno.toml`, `CREATE EVENT SUBSCRIPTION
+  name ON NODES | EDGES | PROPERTIES | TEXT | VECTORS [FOR :Label] [KEYS
+  …] [WHERE key = value …] [WITH VECTORS] [DELIVER TO STREAM | WEBHOOK
+  'url' [SECRET 's']]` (with `DROP EVENT SUBSCRIPTION` and `SHOW EVENT
+  SUBSCRIPTIONS`) records, on the change log's entries, the values before
+  and after, the keys that changed, texts and vectors; read at
+  `GET /v1/{ns}/events/{name}` (a page or server-sent events) or posted to
+  a signed webhook in order (capability `events.values`). A new namespace
+  privilege, `events`, which administrators have. `GET /v1/{ns}/changes`
+  is unchanged. The TypeScript client's `events()`.
+
 - **License**: Grafeno is free software under the MIT license or the
   Apache License 2.0, at the user's choice (`LICENSE-MIT`,
   `LICENSE-APACHE`). The packages, the Windows setup (a license page),

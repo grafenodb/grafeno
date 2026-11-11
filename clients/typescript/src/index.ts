@@ -851,6 +851,46 @@ export type TraceEvent = { seq: number; step: number } & (
   | { kind: "row"; index: number; nodes: Id[]; edges: Id[] }
 );
 
+/** The values a subscription's event carries (engines with `events.values`). */
+export interface EventValues {
+  /** The record's properties before the transaction (absent: it was created). */
+  before?: Record<string, unknown>;
+  /** Its properties after (absent: it was deleted). */
+  after?: Record<string, unknown>;
+  /** The property keys whose values differ. */
+  changed?: string[];
+  /** The node's text, when a subscription follows texts. */
+  text?: string;
+  /** The node's vector, when a subscription asked `WITH VECTORS`. */
+  vector?: number[];
+  vector_changed?: boolean;
+  /** The subscriptions that asked for this entry. */
+  subscriptions: string[];
+}
+
+/** One event: a change log entry with its values. */
+export interface ChangeEvent {
+  seq: number;
+  op: "created" | "updated" | "deleted";
+  node?: Id;
+  edge?: Id;
+  labels: string[];
+  at: string;
+  by?: string;
+  values?: EventValues;
+  [key: string]: unknown;
+}
+
+/** A page of a subscription's events; continue after `through`. */
+export interface EventPage {
+  changes: ChangeEvent[];
+  last: number;
+  oldest: number;
+  /** Entries were pruned before they were read. */
+  gap: boolean;
+  through: number;
+}
+
 /** How a statement walked the graph (engines with `query.trace`). */
 export interface Trace {
   format: number;
@@ -1636,6 +1676,15 @@ export class Namespace {
    */
   algorithm(name: string, options: AlgorithmOptions = {}): Promise<QueryResult> {
     return this.#call("POST", `/algo/${encodeURIComponent(name)}`, options);
+  }
+
+  /**
+   * The events of subscription `name` after `since`, with their values
+   * (engines with `events.values`; created with `CREATE EVENT SUBSCRIPTION`).
+   * Continue with `since: page.through`.
+   */
+  events(name: string, options: { since?: number; limit?: number } = {}): Promise<EventPage> {
+    return this.#call("GET", `/events/${encodeURIComponent(name)}${queryString(options)}`);
   }
 
   /** Applies every operation in one transaction: all of them or none. */

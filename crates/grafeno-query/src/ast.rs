@@ -47,6 +47,31 @@ pub(crate) enum Schema {
     Namespace(NamespaceOp),
     /// Users, roles and grants (14.3).
     Access(crate::access::Access),
+    /// Event subscriptions (16.10).
+    Events(EventsOp),
+}
+
+/// `CREATE EVENT SUBSCRIPTION`, `DROP EVENT SUBSCRIPTION` and `SHOW EVENT
+/// SUBSCRIPTIONS` (16.10).
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum EventsOp {
+    Create {
+        name: String,
+        if_not_exists: bool,
+        on: Vec<grafeno::EventTarget>,
+        labels: Vec<String>,
+        keys: Vec<String>,
+        /// `WHERE key = value AND …`: values are literals or parameters.
+        equal: Vec<(String, Expr)>,
+        vector_values: bool,
+        /// `DELIVER TO WEBHOOK url [SECRET secret]`; a stream when absent.
+        webhook: Option<Box<(Expr, Option<Expr>)>>,
+    },
+    Drop {
+        name: String,
+        if_exists: bool,
+    },
+    Show,
 }
 
 /// A statement on a namespace as a whole (16.3).
@@ -102,7 +127,9 @@ pub(crate) enum Mode {
 impl Statement {
     pub(crate) fn writes(&self) -> bool {
         match &self.schema {
-            Some(Schema::Show { .. } | Schema::ShowNamespaces) => false,
+            Some(Schema::Show { .. } | Schema::ShowNamespaces | Schema::Events(EventsOp::Show)) => {
+                false
+            }
             Some(Schema::Access(access)) => access.writes(),
             Some(_) => true,
             None => self

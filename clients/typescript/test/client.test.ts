@@ -4,6 +4,9 @@
 
 import { type ChildProcess, spawn } from "node:child_process";
 import { once } from "node:events";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { after, before, test } from "node:test";
 import assert from "node:assert/strict";
@@ -20,7 +23,10 @@ let server: ChildProcess;
 let url: string;
 
 before(async () => {
-  server = spawn(binary, ["serve", "--memory", "--addr", "127.0.0.1:0", "--token", token], {
+  // Event subscriptions are off unless the settings turn them on.
+  const config = join(mkdtempSync(join(tmpdir(), "grafeno-client-")), "grafeno.toml");
+  writeFileSync(config, ["[events]", "enabled = true", ""].join("\n"));
+  server = spawn(binary, ["serve", "--config", config, "--memory", "--addr", "127.0.0.1:0", "--token", token], {
     stdio: ["ignore", "ignore", "pipe"],
   });
   url = await new Promise<string>((resolve, reject) => {
@@ -101,6 +107,21 @@ test("a traced query gives its walk", async () => {
   assert.ok(kinds.includes("expand") && kinds.includes("row"));
   assert.equal(result.trace!.cut, false);
   assert.equal((await ns.query("RETURN 1")).trace, undefined);
+});
+
+test("event subscriptions carry values", async () => {
+  const ns = new Grafeno({ url, token }).namespace("watched");
+  await ns.query("CREATE EVENT SUBSCRIPTION moves ON PROPERTIES FOR :Person KEYS city");
+  await ns.query("CREATE (:Person {name: 'Ana', city: 'Lima'})");
+  await ns.query("MATCH (p:Person) SET p.city = 'Cusco', p.age = 40");
+  const page = await ns.events("moves", { since: 0 });
+  assert.equal(page.changes.length, 2);
+  const moved = page.changes[1].values!;
+  assert.equal(moved.before!.city, "Lima");
+  assert.equal(moved.after!.city, "Cusco");
+  assert.deepEqual(moved.changed, ["age", "city"]);
+  const rest = await ns.events("moves", { since: page.through });
+  assert.equal(rest.changes.length, 0);
 });
 
 test("explicit transactions commit together or not at all", async () => {

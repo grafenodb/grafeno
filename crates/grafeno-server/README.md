@@ -170,7 +170,8 @@ is an action on an object, granted or denied; a denial wins over any
 grant. On the server: `create_namespace`, `manage_accounts`,
 `manage_roles`, `backup`, `metrics`, `audit`, `cluster`. On a namespace
 pattern: `read`, `create`, `update`, `delete`, `merge`, `retract`,
-`import`, `export`, `schema`, `algorithms`, `drop`, `create_namespace`
+`import`, `export`, `schema`, `algorithms`, `drop`, `create_namespace`,
+`events` (event subscriptions and their values, 16.10)
 (the levels above are bundles of these: `GET /v1/privileges` lists them).
 On a label or a property: `read` and `write` (checked by queries from
 14.4). A role named `public`, when defined, is every account's.
@@ -425,6 +426,7 @@ requests accept either that or an ISO 8601 string (`2024-05-01`,
 | `GET`    | `/v1/{ns}/export/nodes.csv`, `/export/edges.csv` |                                              | as CSV, with typed headers (`name:int`, `:LABEL`) |
 | `POST`   | `/v1/{ns}/import/graphml`, `/import/nodes.csv`, `/import/edges.csv` | the file (admin)          | `{nodes, edges, failed, errors}`; Grafeno ids update, other ids map to new nodes |
 | `GET`    | `/v1/{ns}/changes`                    | `?since=&limit=`; `Accept: text/event-stream` or `?stream=true` for a stream | `{changes, last, oldest, gap}`, or server-sent events (`id` = sequence number; resume with `Last-Event-ID`) |
+| `GET`    | `/v1/{ns}/events/{name}`              | `?since=&limit=`; `Accept: text/event-stream` or `?stream=true` for a stream | the events of a subscription with their values: `{changes, last, oldest, gap, through}` (continue after `through`), or server-sent events named `event`; needs `read` and `events` |
 | `POST`   | `/v1/{ns}/ingest`                     | NDJSON: `{"key", "node": {…}}` or `{"key", "edge": {from, label, to, …}}` per line; ends may be `$key` | `{lines, nodes, edges, duplicates, failed, errors}`; a key sent again writes nothing |
 | `GET`    | `/v1/{ns}/webhooks`                   |                                                         | the namespace's webhooks (admin) |
 | `POST`   | `/v1/{ns}/webhooks`                   | `{url, secret, labels, since}`                          | a URL that receives the changes in order, signed with `X-Grafeno-Signature: sha256=<HMAC>` |
@@ -568,6 +570,7 @@ engine lacks instead of failing. The capabilities:
 | `query.trace` | `TRACE` and `trace: true` on `/query`: the walk of a statement, event by event (16.9) |
 | `resolution`, `match-rules`, `extraction`, `constraints`, `communities`, `summaries`, `indexes` | keeping knowledge in shape (phase 11) |
 | `changes`, `changes.stream`, `webhooks`, `ingest` | the change log, as pages and as a stream, webhooks, NDJSON ingestion |
+| `events.values` | event subscriptions (`CREATE EVENT SUBSCRIPTION`) whose events carry values, read at `/v1/{ns}/events/{name}` or posted to a webhook; off unless `[events] enabled = true` (16.10) |
 | `export`, `import`, `import.csv`, `import.graphml`, `backup` | moving data in and out |
 | `metrics`, `settings` | `GET /v1/metrics`, `GET /v1/settings` |
 | `accounts`, `sessions`, `keys`, `roles`, `grants`, `policies`, `audit` | access (phase 14) |

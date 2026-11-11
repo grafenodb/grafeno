@@ -166,6 +166,36 @@ async fn roles_grant_deny_and_nest() {
         .collect();
     assert_eq!(names, ["team-a"], "{listed}");
 
+    // Event subscriptions and their values need `events` (16.10).
+    let show = json!({ "query": "SHOW EVENT SUBSCRIPTIONS" });
+    let (code, _) = call(
+        &app,
+        &analyst,
+        "POST",
+        "/v1/team-a/query",
+        Some(show.clone()),
+    )
+    .await;
+    assert_eq!(code, StatusCode::FORBIDDEN);
+    let (code, _) = call(&app, &analyst, "GET", "/v1/team-a/events/x", None).await;
+    assert_eq!(code, StatusCode::FORBIDDEN);
+    ok(
+        &app,
+        "PUT",
+        "/v1/roles/watcher",
+        json!({ "privileges": [on_ns("read", "team-a"), on_ns("events", "team-a")] }),
+    )
+    .await;
+    let watcher = account(&app, "wes", json!(["watcher"])).await;
+    let (code, body) = call(&app, &watcher, "POST", "/v1/team-a/query", Some(show)).await;
+    assert_eq!(code, StatusCode::OK, "{body}");
+    let (code, _) = call(&app, &watcher, "GET", "/v1/team-a/events/x", None).await;
+    assert_eq!(
+        code,
+        StatusCode::BAD_REQUEST,
+        "allowed, and no such subscription"
+    );
+
     // A denial added to the inner role reaches the account at once.
     ok(
         &app,

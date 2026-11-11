@@ -1060,6 +1060,51 @@ grafeno shell --config /etc/grafeno/grafeno.toml --stop-on-error -f setup.gq
 `--stop-on-error` stops at the first statement that fails; without it the
 rest of the script still runs and the exit code says something failed.
 
+## Event subscriptions
+
+The change log (`GET /v1/{ns}/changes`) says which records changed. An
+event subscription also records their values, for the changes it follows.
+Subscriptions are off unless the server's settings say `[events] enabled
+= true`; until then `CREATE EVENT SUBSCRIPTION` is refused.
+
+```text
+CREATE EVENT SUBSCRIPTION moves ON PROPERTIES FOR :Person KEYS city;
+CREATE EVENT SUBSCRIPTION lima ON NODES WHERE p.city = 'Lima'
+  DELIVER TO WEBHOOK 'https://example.org/hook' SECRET $secret;
+CREATE EVENT SUBSCRIPTION embeddings IF NOT EXISTS ON TEXT, VECTORS FOR :Doc WITH VECTORS;
+SHOW EVENT SUBSCRIPTIONS;
+DROP EVENT SUBSCRIPTION lima IF EXISTS;
+```
+
+| Part | What it does |
+| --- | --- |
+| `ON NODES` / `EDGES` | nodes or edges created, changed or deleted: their properties before and after |
+| `ON PROPERTIES` | records whose properties changed; with `KEYS a, b`, only changes of those keys |
+| `ON TEXT` | nodes whose text changed: the new text |
+| `ON VECTORS` | nodes whose vector changed; `WITH VECTORS` adds the new vector itself |
+| `FOR :A\|B` | only records with one of these labels (before or after the change) |
+| `WHERE key = value AND …` | only records with these values, before or after (`x.key` also works); values are literals or parameters |
+| `DELIVER TO STREAM` | read by clients (the default) |
+| `DELIVER TO WEBHOOK 'url' [SECRET 's']` | posted in order, signed like webhooks (`X-Grafeno-Signature`) |
+
+An event is a change log entry with `values`: `before` and `after` (the
+record's properties; `before` is absent for a creation, `after` for a
+deletion), `changed` (the keys whose values differ), `text`, `vector`,
+`vector_changed`, and `subscriptions` (the ones it is for). Several
+changes to one record in one transaction are one event. Clients read them
+at `GET /v1/{ns}/events/{name}?since=` (continue after the page's
+`through`), or as server-sent events named `event`; a webhook receives
+`{namespace, subscription, events, last, gap}`. Events keep the change
+log's order and window: a reader that falls behind the window gets a
+`gap`. `SHOW EVENT SUBSCRIPTIONS` returns `name`, `on`, `labels`, `keys`,
+`where`, `vectors`, `delivery` (`stream` or the URL; never the secret),
+`created_at` and `created_by`.
+
+These statements and reading the events need the namespace's `events`
+privilege (administrators have it), and reading also needs `read`. A
+reader whose roles limit which records it sees is refused the events,
+since they show whole records.
+
 ## Users, roles and privileges
 
 Accounts and roles (see the server's README) are managed in GQ by those who

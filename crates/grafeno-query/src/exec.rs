@@ -13,8 +13,8 @@ use serde::Serialize;
 use crate::QueryError;
 use crate::aggregate::{Groups, Spec};
 use crate::ast::{
-    Clause, Expr, Key, Mode, NamespaceOp, NodePattern, Pattern, ProcedureCall, Projection, Query,
-    RelPattern, RemoveItem, Schema, SetItem, Statement,
+    Clause, EventsOp, Expr, Key, Mode, NamespaceOp, NodePattern, Pattern, ProcedureCall,
+    Projection, Query, RelPattern, RemoveItem, Schema, SetItem, Statement,
 };
 use crate::eval::{Context, Params, Row, Scope, eval, property, to_time, truth};
 use crate::limits::{Budget, Limits};
@@ -380,6 +380,161 @@ fn constraint_table(rows: Vec<Vec<Value>>) -> QueryResult {
     }
 }
 
+/// The columns of `SHOW EVENT SUBSCRIPTIONS` (16.10).
+const EVENT_COLUMNS: [&str; 9] = [
+    "name",
+    "on",
+    "labels",
+    "keys",
+    "where",
+    "vectors",
+    "delivery",
+    "created_at",
+    "created_by",
+];
+
+fn subscription_row(subscription: grafeno::Subscription) -> Vec<Value> {
+    let names = |items: Vec<String>| Value::List(items.into_iter().map(Value::Str).collect());
+    vec![
+        Value::Str(subscription.name),
+        names(
+            subscription
+                .on
+                .iter()
+                .map(|target| {
+                    serde_json::to_value(target)
+                        .ok()
+                        .and_then(|v| v.as_str().map(str::to_owned))
+                        .unwrap_or_default()
+                })
+                .collect(),
+        ),
+        names(subscription.labels),
+        names(subscription.keys),
+        Value::from_json(&serde_json::Value::Object(subscription.equal)),
+        Value::Bool(subscription.vector_values),
+        // The secret stays unsaid.
+        Value::Str(match subscription.delivery {
+            grafeno::Delivery::Stream => "stream".into(),
+            grafeno::Delivery::Webhook { url, .. } => url,
+        }),
+        Value::Time(subscription.created_at),
+        subscription.created_by.map_or(Value::Null, Value::Str),
+    ]
+}
+
+/// Event subscription statements (16.10).
+fn run_events(
+    read: &ReadTx,
+    tx: Option<&mut WriteTx>,
+    ns: &str,
+    op: &EventsOp,
+    params: &Params,
+) -> Result<QueryResult, QueryError> {
+    let table = |rows: Vec<Vec<Value>>| QueryResult {
+        columns: EVENT_COLUMNS.map(String::from).to_vec(),
+        rows,
+        stats: WriteStats::default(),
+        profile: None,
+        trace: None,
+    };
+    let text = |expr: &Expr, what: &str| match crate::plan::constant(expr, Some(params)) {
+        Some(Value::Str(text)) => Ok(text),
+        _ => Err(QueryError::runtime(format!(
+            "the {what} must be a string or a parameter holding one"
+        ))),
+    };
+    match op {
+        EventsOp::Show => Ok(table(
+            read.subscriptions(ns)?
+                .into_iter()
+                .map(subscription_row)
+                .collect(),
+        )),
+        EventsOp::Drop { name, if_exists } => {
+            let tx = tx.ok_or_else(|| {
+                QueryError::runtime("event subscriptions need a write transaction")
+            })?;
+            if !tx.drop_subscription(ns, name)? && !*if_exists {
+                return Err(QueryError::runtime(format!(
+                    "no event subscription {name:?} (IF EXISTS ignores that)"
+                )));
+            }
+            Ok(table(Vec::new()))
+        }
+        EventsOp::Create {
+            name,
+            if_not_exists,
+            on,
+            labels,
+            keys,
+            equal,
+            vector_values,
+            webhook,
+        } => {
+            let tx = tx.ok_or_else(|| {
+                QueryError::runtime("event subscriptions need a write transaction")
+            })?;
+            if let Some(existing) = tx
+                .subscriptions(ns)?
+                .into_iter()
+                .find(|subscription| &subscription.name == name)
+            {
+                if *if_not_exists {
+                    return Ok(table(vec![subscription_row(existing)]));
+                }
+                return Err(QueryError::runtime(format!(
+                    "event subscription {name:?} already exists (drop it first, or IF NOT EXISTS leaves it as it is)"
+                )));
+            }
+            let mut values = grafeno::Props::new();
+            for (key, expr) in equal {
+                let value = crate::plan::constant(expr, Some(params)).ok_or_else(|| {
+                    QueryError::runtime(format!(
+                        "WHERE {key} = …: the value must be a literal or a parameter"
+                    ))
+                })?;
+                values.insert(key.clone(), value.to_json());
+            }
+            let delivery = match webhook {
+                None => grafeno::Delivery::Stream,
+                Some(webhook) => {
+                    let (url, secret) = webhook.as_ref();
+                    let url = text(url, "webhook's URL")?;
+                    if !(url.starts_with("http://") || url.starts_with("https://")) {
+                        return Err(QueryError::runtime(
+                            "the webhook's URL must start with http:// or https://",
+                        ));
+                    }
+                    grafeno::Delivery::Webhook {
+                        url,
+                        secret: secret
+                            .as_ref()
+                            .map(|secret| text(secret, "secret"))
+                            .transpose()?,
+                    }
+                }
+            };
+            let subscription = grafeno::Subscription {
+                labels: labels.clone(),
+                keys: keys.clone(),
+                equal: values,
+                vector_values: *vector_values,
+                delivery,
+                ..grafeno::Subscription::new(name, on.clone())
+            };
+            tx.create_subscription(ns, subscription)?;
+            let created = tx
+                .subscriptions(ns)?
+                .into_iter()
+                .filter(|subscription| &subscription.name == name)
+                .map(subscription_row)
+                .collect();
+            Ok(table(created))
+        }
+    }
+}
+
 /// `CREATE INDEX`, `DROP INDEX`, `SHOW INDEXES` and the constraint forms.
 fn run_schema(
     read: &ReadTx,
@@ -473,6 +628,7 @@ fn run_schema(
                 trace: None,
             })
         }
+        Schema::Events(op) => run_events(read, tx, ns, op, params),
         Schema::ShowNamespaces => Ok(QueryResult {
             columns: ["name", "nodes", "edges", "created_at", "description"]
                 .iter()
@@ -666,6 +822,9 @@ pub enum StatementKind {
     /// [`Requirements::namespace`] on the namespace it names, not on the
     /// one it runs in (16.3).
     Namespace,
+    /// Creates, drops or lists event subscriptions: needs the `events`
+    /// privilege on the namespace (16.10).
+    Events,
 }
 
 pub fn statement_kind(query: &str) -> Result<StatementKind, QueryError> {
@@ -675,6 +834,9 @@ pub fn statement_kind(query: &str) -> Result<StatementKind, QueryError> {
     }
     if statement.mode != Mode::Explain && matches!(statement.schema, Some(Schema::Namespace(_))) {
         return Ok(StatementKind::Namespace);
+    }
+    if statement.mode != Mode::Explain && matches!(statement.schema, Some(Schema::Events(_))) {
+        return Ok(StatementKind::Events);
     }
     Ok(if statement.mode == Mode::Explain || !statement.writes() {
         StatementKind::Read
@@ -712,6 +874,7 @@ pub fn requirements(
     let (kind, lacking) = match &statement.schema {
         Some(Schema::Access(access)) => (StatementKind::Access, access.lacking(context)),
         Some(Schema::Namespace(_)) => (StatementKind::Namespace, None),
+        Some(Schema::Events(_)) => (StatementKind::Events, None),
         Some(_) if statement.writes() => (StatementKind::Schema, None),
         _ if statement.writes() => (StatementKind::Write, None),
         _ => (StatementKind::Read, None),
@@ -2993,6 +3156,13 @@ fn explain(
             Schema::Drop { name, .. } => format!("drop {name}"),
             Schema::Show { .. } => "list the indexes".into(),
             Schema::ShowNamespaces => "list the namespaces".into(),
+            Schema::Events(EventsOp::Show) => "list the event subscriptions".into(),
+            Schema::Events(EventsOp::Create { name, .. }) => {
+                format!("create the event subscription {name:?}")
+            }
+            Schema::Events(EventsOp::Drop { name, .. }) => {
+                format!("drop the event subscription {name:?}")
+            }
             Schema::Namespace(op) => match op {
                 NamespaceOp::Create { name, .. } => format!("create the namespace {name:?}"),
                 NamespaceOp::Alter { name, .. } => format!("change the comment of {name:?}"),

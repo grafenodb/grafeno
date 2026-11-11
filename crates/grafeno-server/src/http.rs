@@ -539,6 +539,7 @@ pub fn router_with(state: AppState, options: &Options) -> Router {
             post(rollback_transaction),
         )
         .route("/{ns}/changes", get(changes))
+        .route("/{ns}/events/{name}", get(subscription_events))
         .route("/{ns}/ingest", post(ingest))
         .route("/{ns}/webhooks", get(list_webhooks).post(create_webhook))
         .route(
@@ -2612,6 +2613,9 @@ pub(crate) fn check_statement(
                 .then(|| caller.refusal(&ns, &writes[..3]))
         }
         grafeno_query::StatementKind::Schema => missing(&caller, &ns, Role::Admin),
+        // Subscriptions and their events show values as they change (16.10).
+        grafeno_query::StatementKind::Events => (!caller.can(grafeno::Act::Events, &ns))
+            .then(|| caller.refusal(&ns, &[grafeno::Act::Events])),
         grafeno_query::StatementKind::Access => needs.lacking.map(|privilege| {
             format!(
                 "{:?} has no `{privilege}` privilege on the server",
@@ -3198,6 +3202,63 @@ async fn changes(
         queue: Default::default(),
         gap_told: false,
         view: auth::current().view(),
+        subscription: None,
+    };
+    let stream = futures_util::stream::unfold(feed, |feed| async move {
+        feed.next()
+            .await
+            .map(|(event, feed)| (Ok::<_, std::convert::Infallible>(event), feed))
+    });
+    Ok(axum::response::sse::Sse::new(stream)
+        .keep_alive(axum::response::sse::KeepAlive::default())
+        .into_response())
+}
+
+/// The events of a subscription (16.10) after `since`, with their values:
+/// a page of JSON (`changes` holds the events; continue after `through`),
+/// or server-sent events named `event` (as `/changes` streams).
+async fn subscription_events(
+    State(state): State<AppState>,
+    Path((ns, name)): Path<(String, String)>,
+    Params(params): Params<ChangesParams>,
+    headers: axum::http::HeaderMap,
+) -> ApiResult<Response> {
+    let wants_stream = params.stream.unwrap_or(false)
+        || headers
+            .get(header::ACCEPT)
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|v| v.contains("text/event-stream"));
+    let resume = headers
+        .get("last-event-id")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.trim().parse::<u64>().ok());
+    let since = resume.or(params.since).unwrap_or(0);
+    let view = auth::current().view();
+    // Refused or unknown before a stream opens.
+    let limit = if wants_stream {
+        1
+    } else {
+        params.limit.unwrap_or(500).min(MAX_PAGE)
+    };
+    let (read_ns, read_name, read_view) = (ns.clone(), name.clone(), view.clone());
+    let page = blocking(&state, move |db| {
+        db.begin_read()?
+            .with_view(read_view)
+            .events(&read_ns, &read_name, since, limit)
+    })
+    .await?;
+    if !wants_stream {
+        return Ok(Json(page).into_response());
+    }
+    let feed = crate::events::Feed {
+        db: state.db.clone(),
+        ns,
+        cursor: since,
+        commits: state.events.subscribe(),
+        queue: Default::default(),
+        gap_told: false,
+        view,
+        subscription: Some(name),
     };
     let stream = futures_util::stream::unfold(feed, |feed| async move {
         feed.next()

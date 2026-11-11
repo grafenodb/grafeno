@@ -5,9 +5,9 @@ use grafeno::Direction;
 use crate::QueryError;
 use crate::access::{Access, Target, UserSet};
 use crate::ast::{
-    BinOp, Clause, Expr, Key, MapItem, Mode, NamespaceOp, NodePattern, Pattern, PatternKind,
-    ProcedureCall, Projection, Quantifier, Query, RelPattern, RemoveItem, ReturnItem, Schema,
-    SetItem, Statement, UnOp,
+    BinOp, Clause, EventsOp, Expr, Key, MapItem, Mode, NamespaceOp, NodePattern, Pattern,
+    PatternKind, ProcedureCall, Projection, Quantifier, Query, RelPattern, RemoveItem, ReturnItem,
+    Schema, SetItem, Statement, UnOp,
 };
 use crate::lexer::{Spanned, Token, lex};
 use crate::value::Value;
@@ -508,6 +508,123 @@ impl Parser<'_> {
         Ok(None)
     }
 
+    /// `CREATE EVENT SUBSCRIPTION`, `DROP EVENT SUBSCRIPTION` and `SHOW
+    /// EVENT SUBSCRIPTIONS`, if one starts here (16.10).
+    fn events_statement(&mut self) -> Result<Option<EventsOp>, QueryError> {
+        if !self.keyword_at(1, "EVENT") {
+            return Ok(None);
+        }
+        if self.at_keyword("SHOW") && self.keyword_at(2, "SUBSCRIPTIONS") {
+            self.position += 3;
+            return Ok(Some(EventsOp::Show));
+        }
+        if !self.keyword_at(2, "SUBSCRIPTION") {
+            return Ok(None);
+        }
+        if self.at_keyword("DROP") {
+            self.position += 3;
+            let name = self.access_name("the subscription's name")?;
+            let if_exists = self.at_keyword("IF") && self.keyword_at(1, "EXISTS");
+            if if_exists {
+                self.position += 2;
+            }
+            return Ok(Some(EventsOp::Drop { name, if_exists }));
+        }
+        if !self.at_keyword("CREATE") {
+            return Ok(None);
+        }
+        self.position += 3;
+        let name = self.access_name("the subscription's name")?;
+        let if_not_exists = self.if_not_exists();
+        if !self.eat_keyword("ON") {
+            return Err(
+                self.unexpected("ON and what it follows (NODES, EDGES, PROPERTIES, TEXT, VECTORS)")
+            );
+        }
+        let mut on = Vec::new();
+        loop {
+            let target = if self.eat_keyword("NODES") {
+                grafeno::EventTarget::Nodes
+            } else if self.eat_keyword("EDGES") {
+                grafeno::EventTarget::Edges
+            } else if self.eat_keyword("PROPERTIES") {
+                grafeno::EventTarget::Properties
+            } else if self.eat_keyword("TEXT") {
+                grafeno::EventTarget::Text
+            } else if self.eat_keyword("VECTORS") {
+                grafeno::EventTarget::Vectors
+            } else {
+                return Err(self.unexpected("NODES, EDGES, PROPERTIES, TEXT or VECTORS"));
+            };
+            if !on.contains(&target) {
+                on.push(target);
+            }
+            if !self.eat(&Token::Comma) {
+                break;
+            }
+        }
+        let mut labels = Vec::new();
+        if self.eat_keyword("FOR") {
+            self.expect(Token::Colon, "`:Label`")?;
+            labels.push(self.ident("a label")?);
+            while self.eat(&Token::Pipe) {
+                self.eat(&Token::Colon);
+                labels.push(self.ident("a label")?);
+            }
+        }
+        let mut keys = Vec::new();
+        if self.eat_keyword("KEYS") {
+            keys.push(self.ident("a property key")?);
+            while self.eat(&Token::Comma) {
+                keys.push(self.ident("a property key")?);
+            }
+        }
+        let mut equal = Vec::new();
+        if self.eat_keyword("WHERE") {
+            loop {
+                // `key = value`, or `x.key = value`.
+                let mut key = self.ident("a property key")?;
+                if self.eat(&Token::Dot) {
+                    key = self.ident("a property key")?;
+                }
+                self.expect(Token::Eq, "`=` and the value")?;
+                equal.push((key, self.unary()?));
+                if !self.eat_keyword("AND") {
+                    break;
+                }
+            }
+        }
+        let vector_values = self.at_keyword("WITH") && self.keyword_at(1, "VECTORS");
+        if vector_values {
+            self.position += 2;
+        }
+        let mut webhook = None;
+        if self.at_keyword("DELIVER") && self.keyword_at(1, "TO") {
+            self.position += 2;
+            if self.eat_keyword("WEBHOOK") {
+                let url = self.unary()?;
+                let secret = if self.eat_keyword("SECRET") {
+                    Some(self.unary()?)
+                } else {
+                    None
+                };
+                webhook = Some(Box::new((url, secret)));
+            } else if !self.eat_keyword("STREAM") {
+                return Err(self.unexpected("STREAM or WEBHOOK 'url'"));
+            }
+        }
+        Ok(Some(EventsOp::Create {
+            name,
+            if_not_exists,
+            on,
+            labels,
+            keys,
+            equal,
+            vector_values,
+            webhook,
+        }))
+    }
+
     fn access_name(&mut self, expected: &str) -> Result<String, QueryError> {
         match self.peek().clone() {
             Token::Ident(name) | Token::Str(name) => {
@@ -589,6 +706,9 @@ impl Parser<'_> {
                 None
             }
         };
+        if let Some(op) = self.events_statement()? {
+            return Ok(Some(Schema::Events(op)));
+        }
         if let Some(op) = self.namespace_statement()? {
             return Ok(Some(Schema::Namespace(op)));
         }

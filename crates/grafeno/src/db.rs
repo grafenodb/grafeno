@@ -521,6 +521,7 @@ impl Grafeno {
             constraint_cache: None,
             constraint_log: Vec::new(),
             deferred_rules: None,
+            subscription_cache: None,
             log_changes: self.shared.changes.retention().enabled,
             pending_changes: crate::changes::Pending::default(),
             capture: self
@@ -1383,6 +1384,8 @@ pub struct WriteTx {
     /// Records whose property rules (16.5) are checked at
     /// [`WriteTx::check_deferred`] instead of at each write, when on.
     pub(crate) deferred_rules: Option<Vec<(String, bool, u128)>>,
+    /// The event subscriptions of a namespace, read once (16.10).
+    pub(crate) subscription_cache: Option<(String, Arc<Vec<crate::subscriptions::Subscription>>)>,
     /// Whether commits append to the change log.
     pub(crate) log_changes: bool,
     /// What this transaction changed, for the log.
@@ -1540,6 +1543,7 @@ impl WriteTx {
     }
 
     pub fn commit(mut self) -> Result<()> {
+        self.fill_values()?;
         if let Some(at) = self.log_entry()? {
             self.commit_at = Some(at);
         }
@@ -1873,6 +1877,13 @@ impl WriteTx {
     pub(crate) fn remove_node_record(&mut self, ns: &str, node: &Node) -> Result<()> {
         let id = node.id;
         self.note(Touch::Node(ns.to_owned(), id.as_u128()));
+        self.remember_before(
+            ns,
+            id.as_u128(),
+            false,
+            &node.labels,
+            Some((node.labels.as_slice(), &node.props)),
+        )?;
         self.index_node(ns, None, Some(node))?;
         let mut names = self.tx.open_table(NAMES).map_err(storage)?;
         for name in names_of(node) {
@@ -2008,6 +2019,8 @@ impl WriteTx {
     pub fn delete_edge(&mut self, ns: &str, id: EdgeId) -> Result<()> {
         let edge = self.edge_to_act(crate::Act::Delete, ns, id)?;
         self.note(Touch::Edge(ns.to_owned(), id.as_u128()));
+        let label = std::slice::from_ref(&edge.label);
+        self.remember_before(ns, id.as_u128(), true, label, Some((label, &edge.props)))?;
         self.index_edge(ns, None, Some(&edge))?;
         let (from, to, edge_id) = (edge.from.as_u128(), edge.to.as_u128(), id.as_u128());
         let label = edge.label.as_str();
@@ -2048,6 +2061,13 @@ impl WriteTx {
             .insert((ns, id), bytes.as_slice())
             .map_err(storage)?;
 
+        self.remember_before(
+            ns,
+            id,
+            false,
+            &node.labels,
+            previous.map(|old| (old.labels.as_slice(), &old.props)),
+        )?;
         let defs = self.index_defs(ns)?;
         self.index_node_with(&defs, ns, Some(node), previous)?;
         if !self.applying {
@@ -2113,6 +2133,15 @@ impl WriteTx {
             .map(|old| decode(old.value()))
             .transpose()?;
         let existed = previous.is_some();
+        self.remember_before(
+            ns,
+            id,
+            true,
+            std::slice::from_ref(&edge.label),
+            previous
+                .as_ref()
+                .map(|old| (std::slice::from_ref(&old.label), &old.props)),
+        )?;
         let defs = self.index_defs(ns)?;
         self.index_edge_with(&defs, ns, Some(edge), previous.as_ref())?;
         let labels = [edge.label.clone()];

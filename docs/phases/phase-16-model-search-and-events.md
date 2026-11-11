@@ -2,7 +2,7 @@
 
 [All phases](README.md) · [← Phase 15: Engine and interface apart](phase-15-engine-and-interface-apart.md) · [Phase 17: Integrations →](phase-17-integrations.md)
 
-**Status:** in progress: 16.1 to 16.9 done.
+**Status:** done (16.1 to 16.10).
 
 What the engine still lacks as a database people build on: a free
 license, null as a value, namespaces made from scripts, transactions that
@@ -25,7 +25,7 @@ Steps:
 - [16.7 Better vector indexes (done)](#167-better-vector-indexes-done)
 - [16.8 More graph algorithms, for analysis and simulation (done)](#168-more-graph-algorithms-for-analysis-and-simulation-done)
 - [16.9 Recording how a query walks the graph (done)](#169-recording-how-a-query-walks-the-graph-done)
-- [16.10 Change events with values, off by default (planned)](#1610-change-events-with-values-off-by-default-planned)
+- [16.10 Change events with values, off by default (done)](#1610-change-events-with-values-off-by-default-done)
 
 The owner's decisions (2026-11-10): the license is MIT or Apache-2.0, at
 the user's choice; null is stored as a value; transactions become explicit
@@ -633,7 +633,7 @@ As built:
   of property values names none); the bindings that made it are in the
   events before it.
 
-## 16.10 Change events with values, off by default (planned)
+## 16.10 Change events with values, off by default (done)
 
 **Where it starts from.** The change log (11.4) records which records
 changed, not their values; it is on by default and feeds streams,
@@ -656,3 +656,65 @@ webhooks and background work.
 Done when: events are off on a new install, a subscription delivers the
 values it asks for over streams and webhooks, and the change log still
 works as before.
+
+As built:
+
+- The values ride on the change log's own entries (`Change.values`, absent
+  otherwise), so they share its order, sequence numbers, window, gaps and
+  replication: there is no second log. A transaction keeps each record's
+  labels and properties before its first change, only while some
+  subscription of the namespace follows one of the record's labels (old or
+  new); at commit (or when a cluster builds the entry it replicates) each
+  entry gets what the subscriptions that match it ask for: properties
+  before and after and the keys that changed (`NODES`, `EDGES`,
+  `PROPERTIES`, with `KEYS` narrowing which changes count), the text
+  (`TEXT`), the vector or only that it changed (`VECTORS`, `WITH VECTORS`),
+  and the names of those subscriptions. `GET /v1/{ns}/changes` strips
+  the values: it works as before.
+- Off by default: `[events] enabled = true` in `grafeno.toml`
+  (`Grafeno::enable_events`); while off, `CREATE EVENT SUBSCRIPTION` is
+  refused with that hint and commits add nothing. Subscriptions are kept
+  in the namespace's state (kind `event.subscription`), so they replicate
+  and are dropped with the namespace.
+- GQ: `CREATE EVENT SUBSCRIPTION name [IF NOT EXISTS] ON NODES | EDGES |
+  PROPERTIES | TEXT | VECTORS[, …] [FOR :A|B] [KEYS a, b] [WHERE key =
+  value AND …] [WITH VECTORS] [DELIVER TO STREAM | WEBHOOK 'url' [SECRET
+  's']]`, `DROP EVENT SUBSCRIPTION name [IF EXISTS]`, `SHOW EVENT
+  SUBSCRIPTIONS` (the secret is never shown). They need the new
+  namespace privilege `events` (which built-in administrators have);
+  reading the events also needs `read`, and a reader limited record by
+  record (14.4) is refused, since the values show whole records.
+- Delivery: `GET /v1/{ns}/events/{name}` as a page (`through` says where
+  to continue past entries the subscription skips) or as server-sent
+  events named `event`, resumed with `Last-Event-ID`; `DELIVER TO WEBHOOK`
+  posts batches of up to 200 events in order, signed as webhooks are
+  (`X-Grafeno-Signature`), retried with the same backoff, from the leader
+  only, its place kept in the namespace's state (kind `event.delivery`;
+  a subscription made again with the same name starts over). Capability
+  `events.values`; the TypeScript client's `events(name, {since,
+  limit})`.
+- The replication entry format stays 7 (not yet released): an entry with
+  values, or a role with the `events` privilege, is marked 7, so a member
+  that does not know them refuses it instead of dropping them.
+- Measured (`grafeno/examples/events_bench.rs`, release build, each case
+  in its own process, three rounds): 50 000 nodes with text created and
+  then each one's city changed (100 000 writes, transactions of 1 000):
+  2.39 to 2.46 s with events off, 2.42 to 2.61 s on with no subscription,
+  2.54 to 2.58 s with one subscription on a label held by a tenth of the
+  nodes (+5%; +14% before records no subscription follows were skipped
+  before reading them), 2.93 to 3.32 s with one that follows everything
+  with vectors (+27%, the log twice as large: 25.6 MiB against 13.0). With
+  a 384-dimension vector per node, set and then changed (20 000 nodes),
+  the vector index sets the pace: 23.6 to 24.6 s with events off or on,
+  but the log holds 190 MiB of events against 5.7 MiB, so `WITH VECTORS`
+  calls for a smaller window (`[changes] max_entries`, `max_age_days`).
+- Tests: `grafeno/tests/subscriptions.rs` (off by default; values for
+  what each subscription asks and nothing else; a change folded into the
+  same commit; deletions; values replicated to a member whose events are
+  off), HTTP (`grafeno-server/tests/events.rs`: refused while off, GQ
+  statements, the page, the stream, a webhook that receives only what
+  matched and keeps its place; `tests/roles.rs`: the `events` privilege),
+  and the TypeScript client against the real server.
+- Not done: conditions in `WHERE` are equalities on properties (before or
+  after the change); events of edges carry the edge's properties, not its
+  ends' (the change log names the ends).

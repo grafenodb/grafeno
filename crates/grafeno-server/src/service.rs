@@ -37,6 +37,8 @@ pub struct ServerSettings {
     pub import_chunk: usize,
     /// The change log's window.
     pub changes: grafeno::Retention,
+    /// Change events with values (16.10).
+    pub events: bool,
     /// Explicit transactions (16.4).
     pub transactions: crate::transactions::TransactionSettings,
     /// How much of the audit log is kept (14.5).
@@ -97,6 +99,7 @@ impl ServerSettings {
             writer: config.writer.options(),
             import_chunk: config.writer.import_chunk(),
             changes: config.changes.retention(),
+            events: config.events.enabled(),
             transactions: config.transactions.settings(),
             audit: config.audit.retention(),
             background: config.background.clone(),
@@ -160,6 +163,7 @@ impl ServerSettings {
                 "max_entries": self.changes.max_entries,
                 "max_age_secs": self.changes.max_age_secs,
             },
+            "events": { "enabled": self.events },
             "audit": {
                 "max_entries": self.audit.max_entries,
                 "max_age_secs": self.audit.max_age_secs,
@@ -193,6 +197,7 @@ pub fn run(
     grafeno_query::set_parallelism(settings.scan_threads);
     db.set_durability(settings.durability);
     db.set_change_retention(settings.changes);
+    db.enable_events(settings.events);
     db.set_audit_retention(settings.audit);
     let mut state = AppState::with_writer(db.clone(), settings.token.as_deref(), settings.writer)
         .with_background(settings.background.clone())
@@ -237,6 +242,7 @@ pub fn run(
             });
             group_db.set_durability(settings.durability);
             group_db.set_change_retention(settings.changes);
+            group_db.enable_events(settings.events);
             let group_path = settings
                 .db
                 .as_deref()

@@ -34,6 +34,9 @@
 //! max_entries = 1000000  # 0 for no limit
 //! max_age_days = 7       # 0 for no limit
 //!
+//! [events]               # change events with values (16.10)
+//! enabled = false        # subscriptions record values when true
+//!
 //! [auth]                 # accounts and sign-in (14.1)
 //! session_minutes = 15   # an access token's life
 //! refresh_days = 30      # a session's life, refreshed or not
@@ -100,6 +103,9 @@ pub struct Config {
     pub writer: WriterConfig,
     #[serde(default, skip_serializing_if = "ChangesConfig::is_empty")]
     pub changes: ChangesConfig,
+    /// Change events with values (16.10), off by default.
+    #[serde(default, skip_serializing_if = "EventsConfig::is_empty")]
+    pub events: EventsConfig,
     /// How much of the audit log is kept (14.5).
     #[serde(default, skip_serializing_if = "AuditConfig::is_empty")]
     pub audit: AuditConfig,
@@ -226,6 +232,26 @@ impl ChangesConfig {
                 .max_age_days
                 .map_or(base.max_age_secs, |days| days.saturating_mul(86_400)),
         }
+    }
+}
+
+/// `[events]`: change events with values (16.10). Off unless `enabled`;
+/// while off, no subscription can be created and writes record nothing
+/// more than the change log.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EventsConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+}
+
+impl EventsConfig {
+    fn is_empty(&self) -> bool {
+        *self == Self::default()
+    }
+
+    pub fn enabled(&self) -> bool {
+        self.enabled.unwrap_or(false)
     }
 }
 

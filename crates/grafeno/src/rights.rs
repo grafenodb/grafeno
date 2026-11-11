@@ -77,11 +77,13 @@ pub enum Act {
     Metrics,
     Audit,
     Cluster,
+    /// Event subscriptions on a namespace and their events (16.10).
+    Events,
 }
 
 impl Act {
     /// Every action on a namespace, in order.
-    pub const NAMESPACE: [Act; 12] = [
+    pub const NAMESPACE: [Act; 13] = [
         Act::Read,
         Act::Create,
         Act::Update,
@@ -94,6 +96,7 @@ impl Act {
         Act::Algorithms,
         Act::Drop,
         Act::CreateNamespace,
+        Act::Events,
     ];
     /// Every action on the server.
     pub const SERVER: [Act; 7] = [
@@ -318,6 +321,7 @@ pub fn level_actions(role: Role) -> &'static [Act] {
             Act::Schema,
             Act::Drop,
             Act::CreateNamespace,
+            Act::Events,
         ],
     }
 }

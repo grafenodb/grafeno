@@ -48,6 +48,7 @@ pub use view::View;
 mod state;
 mod stats;
 mod store;
+mod subscriptions;
 mod text;
 pub mod textsim;
 mod traverse;
@@ -88,6 +89,7 @@ pub use rights::{
     Privilege, Revoke, Rights, RoleDef, check_role_name, level_actions, level_name, level_of,
 };
 pub use stats::{NamespaceInfo, NamespaceStats};
+pub use subscriptions::{ChangeValues, Delivery, EventTarget, Subscription};
 pub use text::tokenize;
 pub use traverse::{Direction, EdgeFilter, Neighbor, Path, Subgraph};
 pub use vector::Similarity;

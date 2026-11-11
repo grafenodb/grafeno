@@ -599,6 +599,8 @@ impl WriteTx {
 
     /// What this transaction did, as a log entry (`None`: nothing).
     pub(crate) fn build_entry(&mut self) -> Result<Option<Entry>> {
+        // The values subscriptions asked for travel with the entry.
+        self.fill_values()?;
         let Some(capture) = self.capture.take() else {
             return Ok(None);
         };
@@ -660,9 +662,19 @@ impl WriteTx {
                 Some("exists" | "typed")
             ),
             Op::Bulk(Bulk::BuildIndex { .. }) => true,
+            // The events privilege (16.10).
+            Op::Role {
+                role: Some(role), ..
+            } => role.to_string().contains("\"events\""),
             _ => false,
         };
-        let format = if ops.iter().any(newer_schema) {
+        // Values for event subscriptions (16.10) would be dropped.
+        let values = self
+            .pending_changes
+            .entries()
+            .iter()
+            .any(|(_, change)| change.values.is_some());
+        let format = if values || ops.iter().any(newer_schema) {
             7
         } else if ops.iter().any(|op| matches!(op, Op::Audit { .. })) {
             6

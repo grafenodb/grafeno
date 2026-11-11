@@ -52,6 +52,9 @@ pub struct Feed {
     /// What the subscriber may see (14.4): changes of hidden records are
     /// left out.
     pub view: Option<Arc<grafeno::View>>,
+    /// The events of this subscription, with their values (16.10),
+    /// instead of the whole change log.
+    pub subscription: Option<String>,
 }
 
 impl Feed {
@@ -67,8 +70,13 @@ impl Feed {
             self.commits.borrow_and_update();
             let (db, ns, since) = (self.db.clone(), self.ns.clone(), self.cursor);
             let view = self.view.clone();
+            let subscription = self.subscription.clone();
             let page = tokio::task::spawn_blocking(move || -> grafeno::Result<ChangePage> {
-                db.begin_read()?.with_view(view).changes(&ns, since, 500)
+                let read = db.begin_read()?.with_view(view);
+                match subscription {
+                    Some(name) => read.events(&ns, &name, since, 500),
+                    None => read.changes(&ns, since, 500),
+                }
             })
             .await
             .ok()?
@@ -81,12 +89,17 @@ impl Feed {
             }
             // Past hidden changes too, so they are not read again.
             self.cursor = page.next(self.cursor);
+            let kind = if self.subscription.is_some() {
+                "event"
+            } else {
+                "change"
+            };
             for change in page.changes {
                 let data = serde_json::to_string(&change).unwrap_or_default();
                 self.queue.push_back(
                     Event::default()
                         .id(change.seq.to_string())
-                        .event("change")
+                        .event(kind)
                         .data(data),
                 );
             }
@@ -212,7 +225,7 @@ pub fn deliver(state: &AppState, backoff: &mut HashMap<String, Instant>) -> graf
                     "gap": page.gap,
                 }))
                 .unwrap_or_default();
-                post(&hook, &body)
+                post_hook(&hook, &body)
             };
             match outcome {
                 Ok(()) => {
@@ -241,21 +254,128 @@ pub fn deliver(state: &AppState, backoff: &mut HashMap<String, Instant>) -> graf
             let ns = ns.clone();
             state.writer.write(move |tx| save_webhook(tx, &ns, &hook))?;
         }
+        delivered += deliver_events(state, &read, &ns, backoff)?;
     }
     Ok(delivered)
 }
 
-fn post(hook: &Webhook, body: &[u8]) -> Result<(), String> {
+/// State kind of where an event subscription's webhook is, keyed by the
+/// subscription's name (16.10).
+pub const EVENT_DELIVERY: &str = "event.delivery";
+
+/// Where the webhook of an event subscription is.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct EventDelivery {
+    /// The subscription it is for (a new one with the name starts over).
+    pub created_at: Option<Timestamp>,
+    /// The last change log entry delivered (or skipped).
+    pub cursor: u64,
+    #[serde(default)]
+    pub delivered: u64,
+    #[serde(default)]
+    pub failures: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_delivery: Option<Timestamp>,
+}
+
+pub fn event_delivery(
+    read: &ReadTx,
+    ns: &str,
+    name: &str,
+) -> grafeno::Result<Option<EventDelivery>> {
+    Ok(read
+        .state(ns, EVENT_DELIVERY, name)?
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok()))
+}
+
+/// Posts the events of the namespace's subscriptions delivered to a
+/// webhook, in order, as [`deliver`] does for webhooks.
+fn deliver_events(
+    state: &AppState,
+    read: &ReadTx,
+    ns: &str,
+    backoff: &mut HashMap<String, Instant>,
+) -> grafeno::Result<usize> {
+    let mut delivered = 0;
+    for subscription in read.subscriptions(ns)? {
+        let grafeno::Delivery::Webhook { url, secret } = &subscription.delivery else {
+            continue;
+        };
+        let key = format!("event\0{ns}\0{}", subscription.name);
+        if backoff.get(&key).is_some_and(|at| Instant::now() < *at) {
+            continue;
+        }
+        let mut place = event_delivery(read, ns, &subscription.name)?
+            .filter(|place| place.created_at == Some(subscription.created_at))
+            .unwrap_or_else(|| EventDelivery {
+                created_at: Some(subscription.created_at),
+                ..Default::default()
+            });
+        let page = read.events(ns, &subscription.name, place.cursor, DELIVERY_BATCH)?;
+        let next = page.next(place.cursor);
+        if page.changes.is_empty() && next == place.cursor {
+            continue;
+        }
+        let outcome = if page.changes.is_empty() {
+            Ok(())
+        } else {
+            let body = serde_json::to_vec(&json!({
+                "namespace": ns,
+                "subscription": subscription.name,
+                "events": page.changes,
+                "last": page.last,
+                "gap": page.gap,
+            }))
+            .unwrap_or_default();
+            post(url, secret.as_deref(), &body)
+        };
+        match outcome {
+            Ok(()) => {
+                let count = page.changes.len();
+                delivered += count;
+                place.delivered += count as u64;
+                place.cursor = next;
+                place.failures = 0;
+                place.last_error = None;
+                if count > 0 {
+                    place.last_delivery = Some(Timestamp::now());
+                }
+                backoff.remove(&key);
+            }
+            Err(error) => {
+                place.failures += 1;
+                place.last_error = Some(error);
+                let wait =
+                    Duration::from_secs(1 << place.failures.min(10)).min(Duration::from_secs(600));
+                backoff.insert(key, Instant::now() + wait);
+            }
+        }
+        let (ns, name) = (ns.to_owned(), subscription.name.clone());
+        let bytes = serde_json::to_vec(&place).unwrap_or_default();
+        state
+            .writer
+            .write(move |tx| tx.put_state(&ns, EVENT_DELIVERY, &name, &bytes))?;
+    }
+    Ok(delivered)
+}
+
+fn post_hook(hook: &Webhook, body: &[u8]) -> Result<(), String> {
+    post(&hook.url, hook.secret.as_deref(), body)
+}
+
+fn post(url: &str, secret: Option<&str>, body: &[u8]) -> Result<(), String> {
     let agent: ureq::Agent = ureq::Agent::config_builder()
         .timeout_global(Some(Duration::from_secs(10)))
         .http_status_as_error(false)
         .build()
         .into();
     let mut request = agent
-        .post(&hook.url)
+        .post(url)
         .header("Content-Type", "application/json")
         .header("User-Agent", "grafeno-webhook");
-    if let Some(secret) = &hook.secret {
+    if let Some(secret) = secret {
         request = request.header(
             "X-Grafeno-Signature",
             &format!("sha256={}", sign(secret.as_bytes(), body)),

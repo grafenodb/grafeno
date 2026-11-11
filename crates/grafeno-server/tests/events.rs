@@ -334,3 +334,153 @@ async fn background_work_runs_from_the_log() {
     // Its own summaries do not call for another refresh.
     assert!(step(state.clone(), "communities").await.is_none());
 }
+
+#[tokio::test]
+async fn subscriptions_carry_values_over_http() {
+    let db = Arc::new(Grafeno::in_memory().unwrap());
+    let state = AppState::new(db.clone(), None);
+    let app = router(state.clone());
+    let query = |text: &str| json!({ "query": text });
+    // Off by default.
+    let (status, refused) = call(
+        &app,
+        "POST",
+        "/v1/k/query",
+        Some(query("CREATE EVENT SUBSCRIPTION moves ON PROPERTIES")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{refused}");
+    assert!(
+        refused.to_string().contains("[events] enabled"),
+        "{refused}"
+    );
+
+    db.enable_events(true);
+    // A receiver for the webhook subscription.
+    let received: Arc<Mutex<Vec<Value>>> = Arc::default();
+    let sink = received.clone();
+    let receiver = Router::new().route(
+        "/hook",
+        axum::routing::post(move |body: axum::body::Bytes| {
+            let sink = sink.clone();
+            async move {
+                sink.lock()
+                    .unwrap()
+                    .push(serde_json::from_slice(&body).unwrap());
+                StatusCode::OK
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    tokio::spawn(async move { axum::serve(listener, receiver).await.unwrap() });
+
+    for text in [
+        "CREATE EVENT SUBSCRIPTION moves ON PROPERTIES FOR :Person KEYS city".to_owned(),
+        format!(
+            "CREATE EVENT SUBSCRIPTION lima ON NODES WHERE p.city = 'Lima' DELIVER TO WEBHOOK 'http://127.0.0.1:{port}/hook'"
+        ),
+    ] {
+        let (status, body) = call(&app, "POST", "/v1/k/query", Some(query(&text))).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+    }
+    let (_, shown) = call(
+        &app,
+        "POST",
+        "/v1/k/query",
+        Some(query("SHOW EVENT SUBSCRIPTIONS")),
+    )
+    .await;
+    assert_eq!(shown["rows"].as_array().unwrap().len(), 2, "{shown}");
+    let (status, _) = call(
+        &app,
+        "POST",
+        "/v1/k/query",
+        Some(query("CREATE EVENT SUBSCRIPTION moves ON NODES")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "already there");
+
+    for text in [
+        "CREATE (:Person {name: 'Ana', city: 'Lima'})",
+        "MATCH (p:Person {name: 'Ana'}) SET p.city = 'Cusco'",
+        "CREATE (:Person {name: 'Eva', city: 'Quito'})",
+    ] {
+        let (status, body) = call(&app, "POST", "/v1/k/query", Some(query(text))).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+    }
+    let (status, page) = call(&app, "GET", "/v1/k/events/moves?since=0", None).await;
+    assert_eq!(status, StatusCode::OK, "{page}");
+    let events = page["changes"].as_array().unwrap();
+    assert_eq!(events.len(), 3, "{page}");
+    assert_eq!(events[1]["values"]["before"]["city"], "Lima");
+    assert_eq!(events[1]["values"]["after"]["city"], "Cusco");
+    assert_eq!(page["through"], 3);
+    let (status, _) = call(&app, "GET", "/v1/k/events/nothing", None).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    // The change log shows no values.
+    let (_, log) = call(&app, "GET", "/v1/k/changes", None).await;
+    assert!(log["changes"][1].get("values").is_none(), "{log}");
+
+    // The stream.
+    let request = Request::builder()
+        .uri("/v1/k/events/moves?stream=true&since=1")
+        .body(Body::empty())
+        .unwrap();
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let mut body = response.into_body();
+    let mut text = String::new();
+    while !text.contains("id: 3") {
+        let frame = tokio::time::timeout(Duration::from_secs(5), body.frame())
+            .await
+            .expect("an event in time")
+            .unwrap()
+            .unwrap();
+        if let Ok(data) = frame.into_data() {
+            text.push_str(&String::from_utf8_lossy(&data));
+        }
+    }
+    assert!(
+        text.contains("event: event") && text.contains("Cusco"),
+        "{text}"
+    );
+
+    // The webhook gets Ana while she was in Lima: created, then moved
+    // (before Lima), and not Eva.
+    let delivered = tokio::task::spawn_blocking({
+        let state = state.clone();
+        move || events::deliver(&state, &mut Default::default()).unwrap()
+    })
+    .await
+    .unwrap();
+    assert_eq!(delivered, 2);
+    let got = received.lock().unwrap().clone();
+    assert_eq!(got.len(), 1);
+    assert_eq!(got[0]["subscription"], "lima");
+    assert_eq!(got[0]["events"][1]["values"]["after"]["city"], "Cusco");
+    let again = tokio::task::spawn_blocking({
+        let state = state.clone();
+        move || events::deliver(&state, &mut Default::default()).unwrap()
+    })
+    .await
+    .unwrap();
+    assert_eq!(again, 0, "its place is kept");
+
+    let (status, body) = call(
+        &app,
+        "POST",
+        "/v1/k/query",
+        Some(query("DROP EVENT SUBSCRIPTION moves")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, _) = call(
+        &app,
+        "POST",
+        "/v1/k/query",
+        Some(query("DROP EVENT SUBSCRIPTION moves IF EXISTS")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+}

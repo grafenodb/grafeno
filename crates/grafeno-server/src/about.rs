@@ -81,6 +81,9 @@ pub const CAPABILITIES: &[&str] = &[
     "changes",
     "changes.stream",
     "webhooks",
+    // Subscriptions whose events carry values, off unless [events]
+    // enabled (16.10).
+    "events.values",
     "ingest",
     // Moving data.
     "export",

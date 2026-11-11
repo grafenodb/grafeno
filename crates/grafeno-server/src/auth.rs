@@ -686,6 +686,10 @@ fn namespace_actions(method: &str, rest: &[&str]) -> &'static [Act] {
     if first.starts_with("export") {
         return &[Act::Export];
     }
+    // A subscription's events carry whole records as they change (16.10).
+    if first == "events" {
+        return &[Act::Read, Act::Events];
+    }
     if method == "GET" {
         return READ;
     }

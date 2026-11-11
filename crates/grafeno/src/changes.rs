@@ -72,6 +72,9 @@ pub struct Change {
     /// The key or session it wrote with (`key:name`, `session:id`), 14.5.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub via: Option<String>,
+    /// The values event subscriptions asked for (16.10); none otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub values: Option<crate::subscriptions::ChangeValues>,
 }
 
 /// What [`ReadTx::changes`] returns.
@@ -130,9 +133,20 @@ type Listener = Arc<dyn Fn(&[(String, u64)]) + Send + Sync>;
 pub(crate) struct Hub {
     retention: Mutex<Retention>,
     listeners: RwLock<Vec<Listener>>,
+    /// Event values for subscriptions (16.10), off by default.
+    events: std::sync::atomic::AtomicBool,
 }
 
 impl Hub {
+    pub(crate) fn events(&self) -> bool {
+        self.events.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    pub(crate) fn set_events(&self, enabled: bool) {
+        self.events
+            .store(enabled, std::sync::atomic::Ordering::Relaxed);
+    }
+
     pub(crate) fn retention(&self) -> Retention {
         *self.retention.lock().unwrap_or_else(|e| e.into_inner())
     }
@@ -163,6 +177,10 @@ pub(crate) struct Pending {
     /// `(id, is_edge)` to its entry (ids are unique; a namespace that
     /// differs gets an entry of its own, unfolded).
     index: HashMap<(u128, bool), usize>,
+    /// Records as they were before the transaction, for subscriptions.
+    befores: crate::subscriptions::Befores,
+    /// The values were added (at commit, or for the replicated entry).
+    pub(crate) filled: bool,
 }
 
 impl Pending {
@@ -177,7 +195,39 @@ impl Pending {
         Self {
             entries,
             index: HashMap::new(),
+            befores: Default::default(),
+            filled: true,
         }
+    }
+
+    /// Keeps what a record was before its first change in the transaction.
+    pub(crate) fn remember(
+        &mut self,
+        ns: &str,
+        id: u128,
+        is_edge: bool,
+        before: crate::subscriptions::Before,
+    ) {
+        self.befores
+            .entry((ns.to_owned(), id, is_edge))
+            .or_insert(before);
+    }
+
+    pub(crate) fn before(
+        &self,
+        ns: &str,
+        id: u128,
+        is_edge: bool,
+    ) -> Option<&crate::subscriptions::Before> {
+        self.befores.get(&(ns.to_owned(), id, is_edge))
+    }
+
+    pub(crate) fn set_values(
+        &mut self,
+        at: usize,
+        values: Option<crate::subscriptions::ChangeValues>,
+    ) {
+        self.entries[at].1.values = values;
     }
 
     /// The entry of this record in this namespace, if any.
@@ -255,6 +305,7 @@ impl WriteTx {
             parts: part.into_iter().collect(),
             by: self.actor.as_ref().map(|actor| actor.name.clone()),
             via: self.origin.as_ref().and_then(|origin| origin.via.clone()),
+            values: None,
         };
         self.pending_changes
             .add(ns, node.id.as_u128(), false, change);
@@ -280,6 +331,7 @@ impl WriteTx {
             },
             by: self.actor.as_ref().map(|actor| actor.name.clone()),
             via: self.origin.as_ref().and_then(|origin| origin.via.clone()),
+            values: None,
         };
         self.pending_changes
             .add(ns, edge.id.as_u128(), true, change);
@@ -304,6 +356,7 @@ impl WriteTx {
     /// what fell out of the window. Returns each namespace written with its
     /// last sequence number.
     pub(crate) fn write_changes(&mut self) -> Result<Vec<(String, u64)>> {
+        self.fill_values()?;
         let pending = std::mem::take(&mut self.pending_changes);
         if pending.entries.is_empty() {
             return Ok(Vec::new());
@@ -359,6 +412,16 @@ impl WriteTx {
     }
 }
 
+/// A page of the log as it is stored, values included.
+pub(crate) fn raw_page(
+    table: &impl ReadableTable<(&'static str, u64), &'static [u8]>,
+    ns: &str,
+    since: u64,
+    limit: usize,
+) -> Result<ChangePage> {
+    page(table, ns, since, limit)
+}
+
 fn page(
     table: &impl ReadableTable<(&'static str, u64), &'static [u8]>,
     ns: &str,
@@ -403,6 +466,10 @@ impl ReadTx {
     /// start of what is kept), oldest first.
     pub fn changes(&self, ns: &str, since: u64, limit: usize) -> Result<ChangePage> {
         let mut found = page(&self.changes, ns, since, limit)?;
+        // Values are for the subscriptions that asked (`events`).
+        for change in &mut found.changes {
+            change.values = None;
+        }
         let Some(view) = self.view() else {
             return Ok(found);
         };

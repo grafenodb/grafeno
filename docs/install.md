@@ -538,6 +538,10 @@ enabled = true
 max_entries = 1000000       # per namespace; 0 for no limit
 max_age_days = 7            # 0 for no limit
 
+[events]                    # change events with values (off by default)
+enabled = false             # true: CREATE EVENT SUBSCRIPTION works, and
+                            # commits record the values subscriptions ask for
+
 [auth]                      # accounts and sign-in
 session_minutes = 15        # an access token's life (sessions renew it)
 refresh_days = 30           # a session's life
