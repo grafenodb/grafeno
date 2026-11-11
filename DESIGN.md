@@ -49,8 +49,6 @@ grafeno/
 │   ├── grafeno-query     GQ: lexer, parser, executor                      [phase 5]
 │   └── grafeno-server    `grafeno` binary: HTTP API, MCP over stdio,      [phases 3-5]
 │                         shell, administration commands
-├── clients/
-│   └── typescript        `grafeno-client`, fetch-based HTTP client         [phase 3]
 ├── studio/               Grafeno Studio, the web interface                 [phase 6]
 └── packaging/            Windows installer, .deb/.rpm, systemd unit        [phase 6]
 ```
@@ -316,8 +314,8 @@ spinning disk, on ARM, or for days at a time.
 ### Guarantees and the tests that hold them
 
 `cargo test --workspace` runs about 300 Rust tests (unit and
-integration); the TypeScript client has 8 end-to-end tests against the
-real binary. The ones that carry each guarantee:
+integration); the TypeScript SDK (in grafeno-sdk) runs its end-to-end tests
+against the real binary in the engine's CI. The ones that carry each guarantee:
 
 | Guarantee | Tests | How |
 | --- | --- | --- |
@@ -345,18 +343,18 @@ real binary. The ones that carry each guarantee:
 | int8 searches keep their quality and compact entries read back exactly | `grafeno/tests/quantized.rs`, `src/store.rs` and `src/vector.rs` tests | recall@10 of 0.95 or more with exact scores; the copies through removal, replacement, compaction, backup and namespace drop; adjacency values round trip at every bound; quantized dot products within 0.02 |
 | A replica that applies the log holds the same data | `grafeno/tests/replication.rs`, `model.rs`, `grafeno-query/tests/replication.rs` | every kind of write replayed onto an empty database and compared (exports, counters, change log, constraints and their events, merges, state, principals); idempotence, gaps, catching up from a backup after truncation, group commits with failures; the model's random sequences replayed |
 | Raft never loses an acknowledged write and members agree | `grafeno-raft/tests/simulation.rs`, `grafeno-cluster/tests/cluster.rs`, `grafeno-server/tests/cluster.rs` | random schedules of drops, delays, duplicates, partitions, crashes, membership changes and snapshots checked for one leader per term, one entry per index, no lost acknowledged write and convergence; members in one process and three real processes through failover, restart, joining and leaving |
-| Reads and writes stay linearizable through failures | `grafeno-cluster/tests/linearizable.rs`, `grafeno-server/tests/faults.rs`, `grafeno-cluster/src/check.rs`, `clients/typescript/test/cluster.test.ts` | a register written and read by concurrent clients while members are cut off, restarted, compacted and killed, every history checked by a linearizability checker (which rejects the unsafe control); forwarding, read-your-writes and keyed writes across real processes |
+| Reads and writes stay linearizable through failures | `grafeno-cluster/tests/linearizable.rs`, `grafeno-server/tests/faults.rs`, `grafeno-cluster/src/check.rs`, the TypeScript SDK's `cluster.test.ts` | a register written and read by concurrent clients while members are cut off, restarted, compacted and killed, every history checked by a linearizability checker (which rejects the unsafe control); forwarding, read-your-writes and keyed writes across real processes |
 | A read split across members returns one server's rows | `grafeno-query/tests/common/mod.rs` (used by `conformance.rs`, `planner.rs`, `language.rs`, `queries.rs`, `traversal.rs`, `batch.rs`), `grafeno-server/tests/split.rs`, `aggregate.rs` tests | every read of those suites that can be split, whole against 2, 3 and 5 parts through JSON, row order included; exact sums independent of order; three processes, with a member down |
 | A namespace moves between groups without losing or doubling a write | `grafeno/tests/replication.rs` (copy, catch-up, fence), `grafeno-server/tests/groups.rs` | a namespace copied and caught up equals the source, change log numbers included; a fenced namespace refuses writes; three processes with two more groups, writes routed through any member, a move under three writers retrying busy answers, every acknowledged write found once on every member |
 | A cluster restarts, rejoins and upgrades without anomalies | `grafeno-cluster/tests/operations.rs`, `packaging/compose/drill.sh` | a new cluster from a follower's backup, a member joining from an older backup without a snapshot, a restart; the leader refusing an entry format a voter cannot read; on the compose, every runbook under load checked for linearizability |
 | Every security event is audited once, and the log survives | `grafeno/tests/audit.rs`, `grafeno-server/tests/audit.rs`, `cluster.rs`, `upgrade.rs` | changes of access in their transaction; sign-ins, lockouts, refusals over HTTP; replication, failover, reopening, backups |
 | Nothing hidden is returned or changed | `grafeno-query/tests/visibility.rs`, `grafeno-server/tests/leaks.rs` | 300 random graphs and rights for reads and for writes; the leak matrix over every surface of the server |
-| Access is managed in GQ, the API and the tools, by those who may | `grafeno-query/tests/conformance/scenarios.txt`, `grafeno-query/tests/access.rs`, `grafeno-server/tests/admin.rs`, `shell.rs`, `clients/typescript/test/accounts.test.ts` | every access statement and admin endpoint; refusals without `manage_accounts` or `manage_roles`; superusers only a superuser's; `EXPLAIN` naming what is missing; expiry; an open server keeping a superuser |
+| Access is managed in GQ, the API and the tools, by those who may | `grafeno-query/tests/conformance/scenarios.txt`, `grafeno-query/tests/access.rs`, `grafeno-server/tests/admin.rs`, `shell.rs`, the TypeScript SDK's `accounts.test.ts` | every access statement and admin endpoint; refusals without `manage_accounts` or `manage_roles`; superusers only a superuser's; `EXPLAIN` naming what is missing; expiry; an open server keeping a superuser |
 | Rights are the union of roles, and a denial wins | `grafeno/tests/rights.rs`, `grafeno-server/tests/roles.rs` | 2 000 random role graphs against a direct model; over HTTP, patterns with denials, nested roles, a custom editor, server privileges, `public`, scoped keys, cycles refused |
-| Accounts sign in, and keys and sessions do only what they may | `grafeno-server/tests/accounts.rs`, `access.rs`, `shell.rs`, `cluster.rs`, `clients/typescript/test/accounts.test.ts` | sign-in, refresh, expiry, revocation, lockouts, the password policy, disabled accounts, scoped, expired and rotated keys over HTTP, the shell and the client; in a cluster, keys and sessions on every member |
+| Accounts sign in, and keys and sessions do only what they may | `grafeno-server/tests/accounts.rs`, `access.rs`, `shell.rs`, `cluster.rs`, the TypeScript SDK's `accounts.test.ts` | sign-in, refresh, expiry, revocation, lockouts, the password policy, disabled accounts, scoped, expired and rotated keys over HTTP, the shell and the client; in a cluster, keys and sessions on every member |
 | Costly queries stop | `grafeno-query/tests/adversarial.rs` | 32 hostile queries within their limits; nesting just under the limit runs on a 2 MiB stack; `max_cost` refuses; procedure rows count against `max_memory` |
 | Nothing a client sends crashes the parser | `grafeno-query/tests/fuzz.rs` | proptest: random tokens, valid queries with random edits, arbitrary text, through the lexer, parser, planner, `EXPLAIN` and executor |
-| The API keeps its contract | `grafeno-server/tests/http.rs`, `mcp.rs`, `shell.rs`, `clients/typescript/test` | every endpoint and MCP tool, limits, conflicts (409 with details), metrics, the CLI shell, and the client against the real binary |
+| The API keeps its contract | `grafeno-server/tests/http.rs`, `mcp.rs`, `shell.rs`, the TypeScript SDK's tests | every endpoint and MCP tool, limits, conflicts (409 with details), metrics, the CLI shell, and the client against the real binary |
 
 ### Reproducing
 

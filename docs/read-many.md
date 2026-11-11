@@ -38,7 +38,7 @@ rotates their order for 25 rounds.
 
 ```bash
 cargo build --locked -p grafeno-server
-node clients/typescript/bench/read-many.mjs
+node ../grafeno-sdk/typescript/bench/read-many.mjs   # the SDK checked out next to the engine
 ```
 
 `GRAFENO_BIN` selects the executable; `GRAFENO_BENCH_ROUNDS` changes the number of
@@ -81,8 +81,8 @@ Studio now batches expansion neighborhoods through a separate operation,
 cargo test --locked -p grafeno --test read_many
 cargo test --locked -p grafeno-server --test http read_many
 cargo test --locked -p grafeno-server --test access
-npm run build --prefix clients/typescript
-npm test --prefix clients/typescript
+npm run build --prefix ../grafeno-sdk/typescript
+npm test --prefix ../grafeno-sdk/typescript
 ```
 
 Tests cover order, duplicates, missing records, isolation, limits and a snapshot
