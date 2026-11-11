@@ -93,14 +93,18 @@ fn verify(db: &Grafeno, version: u64) {
     }
     if version >= 5 {
         let indexes = read.indexes(NS).unwrap();
-        assert_eq!(indexes.len(), 1);
-        assert_eq!(indexes[0].entries, 40);
+        // Layout 17 files may hold an index on several properties (16.5).
+        assert_eq!(indexes.len(), if version >= 17 { 2 } else { 1 });
+        assert!(
+            indexes.iter().all(|index| index.entries == 40),
+            "v{version}"
+        );
     }
     if version >= 7 {
         // Principals became service accounts with a key each (layout 15).
         let accounts = read.accounts().unwrap();
         let expected = match version {
-            15 | 16 => 2,
+            15..=17 => 2,
             14 => 3,
             _ => 1,
         };
@@ -155,7 +159,12 @@ fn verify(db: &Grafeno, version: u64) {
     }
     assert!(read.merges(NS, None).unwrap().is_empty());
     // The audit log (layout 17) starts empty: the upgrade audits nothing.
-    assert!(read.audit(0, 10).unwrap().events.is_empty(), "v{version}");
+    // A layout 17 file has what its own Grafeno audited.
+    assert_eq!(
+        read.audit(0, 10).unwrap().events.is_empty(),
+        version < 17,
+        "v{version}"
+    );
     if version >= 11 {
         assert_eq!(read.constraints(NS).unwrap().len(), 1, "v{version}");
     }
@@ -171,7 +180,7 @@ fn verify(db: &Grafeno, version: u64) {
 
 #[test]
 fn every_past_layout_upgrades() {
-    for version in 1..=16 {
+    for version in 1..=17 {
         let path = fixture(version);
         assert_eq!(Grafeno::file_layout(&path).unwrap(), Some(version));
         {
@@ -198,6 +207,25 @@ fn every_past_layout_upgrades() {
         assert_eq!(read.changes(NS, 0, 10).unwrap().last, logged, "v{version}");
         assert!(read.check(NS).unwrap().is_ok());
         assert_eq!(read.search_text(NS, "upgrade", 5).unwrap().len(), 1);
+        drop(read);
+        // A full-text index (layout 18) on the upgraded data.
+        db.write(|tx| {
+            tx.create_index(
+                NS,
+                grafeno::IndexDef {
+                    name: "people".into(),
+                    fulltext: Some(grafeno::Fulltext::default()),
+                    ..grafeno::IndexDef::new("Person", "name")
+                },
+            )
+        })
+        .unwrap();
+        let read = db.begin_read().unwrap();
+        let found = read
+            .fulltext_search(NS, "people", "\"person 17\"", 5, false)
+            .unwrap();
+        assert_eq!(found.len(), 1, "v{version}");
+        assert!(read.check(NS).unwrap().is_ok());
         drop((read, db));
         assert_eq!(grafeno::upgrade_copies(&path), vec![copy.clone()]);
         std::fs::remove_file(&path).unwrap();

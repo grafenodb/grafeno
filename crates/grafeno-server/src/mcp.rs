@@ -1284,6 +1284,11 @@ struct QueryArgs {
     budget: Option<usize>,
     #[serde(default)]
     include_archived: bool,
+    /// A full-text index for the query, with its query language.
+    #[serde(default)]
+    index: Option<String>,
+    #[serde(default)]
+    mode: Option<grafeno::SearchMode>,
     #[serde(default)]
     namespace: Option<String>,
 }
@@ -1306,6 +1311,9 @@ impl QueryArgs {
             }),
             ranking: Some(Ranking::default()),
             include_archived: self.include_archived,
+            index: self.index.clone(),
+            mode: self.mode,
+            fusion: grafeno::Fusion::default(),
         })
     }
 }
@@ -1438,6 +1446,8 @@ fn tools() -> Value {
                     "labels": { "type": "array", "items": { "type": "string" }, "description": "Only nodes with one of these labels." },
                     "depth": { "type": "integer", "minimum": 0, "description": "Graph hops to expand from the best matches. Default: 1." },
                     "embedding": { "type": "array", "items": { "type": "number" }, "description": "Optional embedding of the query." },
+                    "index": { "type": "string", "description": "A full-text index to search the query in: then \"a phrase\", +required, -excluded, prefix*, fuzzy~1 and field:word work." },
+                    "mode": { "type": "string", "enum": ["text", "vector", "hybrid"], "description": "Use the words, the embedding, or both. Default: what is given." },
                     "include_archived": include_archived.clone(),
                     "namespace": namespace
                 },

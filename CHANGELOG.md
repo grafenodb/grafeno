@@ -9,7 +9,7 @@ the release workflow refuses a tag whose version has no section.
 What the engine speaks to clients is versioned apart from it: the HTTP
 API version (`GET /v1/about`, now 1) changes only when a change would
 break a client of the previous one, and the database files' layout
-version (now 17) is upgraded in place, with a copy kept first.
+version (now 18) is upgraded in place, with a copy kept first.
 
 ## Unreleased
 
@@ -17,6 +17,23 @@ version (now 17) is upgraded in place, with a copy kept first.
   Apache License 2.0, at the user's choice (`LICENSE-MIT`,
   `LICENSE-APACHE`). The packages, the Windows setup (a license page),
   the archives and the winget manifest carry it.
+- **Added**: full-text indexes over chosen properties of one or more
+  labels, with a weight per property and an analyzer (`simple`,
+  `standard`, `english`, `spanish`: accents, stop words, stemming):
+  `CREATE FULLTEXT INDEX … ON EACH [n.title, n.body] OPTIONS {…}`, and
+  `db.searchIndex(index, query)` with phrases, `+required`, `-excluded`,
+  `AND`, `OR`, `prefix*`, `fuzzy~1`, `"near words"~3`, `field:word`,
+  scores and fragments.
+- **Added**: search by text, vector or both as the caller says:
+  `db.search(text, {mode, embedding, index, fusion, k, text_weight})`,
+  `POST /v1/{ns}/search`, `index` and `fragments` on
+  `POST /v1/{ns}/search/text`, and `index`, `mode` and `fusion` on recall
+  and MCP `recall` (capabilities `search.fulltext`, `search.hybrid`). The
+  TypeScript client has `search()` and `searchText(query, {index,
+  fragments})`.
+- **Changed**: database files move to layout 18 (indexes of 16.5 and
+  full-text indexes, which an older Grafeno would misread, and
+  `fulltext_stats`); `SHOW INDEXES` has a `kind` column.
 - **Added**: indexes on several properties (`ON (p.last, p.first)`,
   used by a prefix of them), on edge properties (`FOR ()-[r:rated]-()`)
   and over several labels (`(n:A|B)`); constraints `IS NOT NULL`,

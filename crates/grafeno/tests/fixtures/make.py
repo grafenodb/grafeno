@@ -19,7 +19,7 @@ WORK = os.path.join(tempfile.gettempdir(), 'grafeno-fixtures')
 TARGET = os.path.join(WORK, 'target')
 OUT = os.path.join(REPO, 'crates', 'grafeno', 'tests', 'fixtures')
 
-COMMITS = [(1, 'f99ab08'), (2, '0622a34'), (3, '74a2cf8'), (4, '5fdcdc4'), (5, '07256b3'), (6, '50fda41'), (7, '1d262d4'), (8, '8e473f5'), (9, '25a14fb'), (10, 'c560ceb'), (11, 'ca015c2'), (12, 'fc66729'), (13, '2ddd51d'), (14, '8f920bc'), (15, '88d48dc'), (16, '0e3a886')]
+COMMITS = [(1, 'f99ab08'), (2, '0622a34'), (3, '74a2cf8'), (4, '5fdcdc4'), (5, '07256b3'), (6, '50fda41'), (7, '1d262d4'), (8, '8e473f5'), (9, '25a14fb'), (10, 'c560ceb'), (11, 'ca015c2'), (12, 'fc66729'), (13, '2ddd51d'), (14, '8f920bc'), (15, '88d48dc'), (16, '0e3a886'), (17, 'be9227b')]
 
 BASE = r'''
 // Writes the fixture of this layout version (see crates/grafeno/tests/fixtures).
@@ -134,6 +134,18 @@ EXTRAS = {
         tx.create_api_key(&grafeno::ApiKey { name: "ana-ro".into(), account: "ana".into(), secret_hash: "33".repeat(32), scope: Some(grafeno::KeyScope { namespaces: vec!["fixture".into()], read_only: true }), expires_at: None, description: None, created_at: at, rotated_at: None })?;
         tx.put_session(&grafeno::Session { id: "s1".into(), account: "ana".into(), token_hash: "44".repeat(32), expires_at: at, refresh_hash: "55".repeat(32), refresh_expires_at: at, created_at: at, refreshed_at: None, address: None })?;
         tx.create_constraint(ns, grafeno::Constraint::Functional { name: "Person_age_functional".into(), label: "Person".into(), key: "age".into() })?;''',
+    17: '''tx.set_importance(ns, people[0], 0.9)?;
+        tx.create_index(ns, grafeno::IndexDef::new("Person", "age"))?;
+        tx.create_namespace("empty", Some("kept empty"))?;
+        let at = Timestamp::from_micros(JAN_2022);
+        tx.create_account(&grafeno::Account { name: "reader".into(), kind: grafeno::AccountKind::Service, password_hash: None, grants: vec![grafeno::Grant { namespace: "fixture".into(), role: grafeno::Role::Read }], roles: Vec::new(), superuser: false, own_only: false, disabled: false, expires_at: None, attributes: Default::default(), description: None, created_at: at })?;
+        tx.create_api_key(&grafeno::ApiKey { name: "reader".into(), account: "reader".into(), secret_hash: "00".repeat(32), scope: None, expires_at: None, description: None, created_at: at, rotated_at: None })?;
+        tx.put_role(&grafeno::RoleDef { name: "analyst".into(), privileges: vec![grafeno::Privilege::deny(grafeno::Act::Read, grafeno::Object::Label { namespace: "fixture".into(), label: "Salary".into(), edges: false })], grants: Vec::new(), roles: Vec::new(), policies: vec![grafeno::Policy { namespace: "fixture".into(), label: None, applies: grafeno::Applies::Write, condition: grafeno::Condition::RecordedByCaller }], description: None, created_at: at })?;
+        tx.create_account(&grafeno::Account { name: "ana".into(), kind: grafeno::AccountKind::User, password_hash: Some("$argon2id$v=19$m=19456,t=2,p=1$c2FsdHNhbHQ$aGFzaGhhc2g".into()), grants: vec![grafeno::Grant { namespace: "fixture".into(), role: grafeno::Role::Write }], roles: vec!["analyst".into()], superuser: false, own_only: true, disabled: false, expires_at: None, attributes: [("team".to_owned(), serde_json::json!("red"))].into_iter().collect(), description: None, created_at: at })?;
+        tx.create_api_key(&grafeno::ApiKey { name: "ana-ro".into(), account: "ana".into(), secret_hash: "33".repeat(32), scope: Some(grafeno::KeyScope { namespaces: vec!["fixture".into()], read_only: true }), expires_at: None, description: None, created_at: at, rotated_at: None })?;
+        tx.put_session(&grafeno::Session { id: "s1".into(), account: "ana".into(), token_hash: "44".repeat(32), expires_at: at, refresh_hash: "55".repeat(32), refresh_expires_at: at, created_at: at, refreshed_at: None, address: None })?;
+        tx.create_constraint(ns, grafeno::Constraint::Functional { name: "Person_age_functional".into(), label: "Person".into(), key: "age".into() })?;
+        tx.create_index(ns, grafeno::IndexDef::composite("Person", &["name", "age"]))?;''',
 }
 
 

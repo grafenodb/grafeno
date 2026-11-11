@@ -281,6 +281,9 @@ presentan el proyecto y los primeros pasos.
   NAMESPACE` in GQ, checked on the namespace they name;
   `grafeno namespaces create | describe | drop`; `grafeno shell
   --stop-on-error`.
+- **Phase 16.6, full-text search:** full-text indexes over weighted
+  properties with analyzers, a query language and fragments; text, vector
+  or hybrid search with rank or weighted fusion (layout 18).
 - **Phase 16.5, advanced indexes and constraints:** indexes on several
   properties, on edges and over several labels, used by plans; not-null,
   type and key constraints on nodes and edges.

@@ -567,6 +567,10 @@ impl WriteTx {
             .map_err(storage)?
             .retain_in((ns, "", empty, 0u128).., |key, _| other(key.0))
             .map_err(storage)?;
+        tx.open_table(crate::fulltext::FULLTEXT_STATS)
+            .map_err(storage)?
+            .retain_in((ns, "").., |key, _| other(key.0))
+            .map_err(storage)?;
         // Memory states are records too: only those of missing nodes go.
         tx.open_table(MEMORY)
             .map_err(storage)?

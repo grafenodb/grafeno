@@ -205,6 +205,38 @@ pub struct RecallInput {
     /// Record an access to each returned node (for decay).
     #[serde(default)]
     pub touch: bool,
+    /// A full-text index for `text`, with its query language (16.6).
+    #[serde(default)]
+    pub index: Option<String>,
+    /// `text`, `vector` or `hybrid` (the default uses what is given).
+    #[serde(default)]
+    pub mode: Option<grafeno::SearchMode>,
+    /// `rank` (default, with `k`) or `weighted` (with `text_weight`).
+    #[serde(default)]
+    pub fusion: Option<String>,
+    #[serde(default)]
+    pub k: Option<f32>,
+    #[serde(default)]
+    pub text_weight: Option<f32>,
+}
+
+/// The fusion a request names.
+pub fn fusion_of(
+    name: Option<&str>,
+    k: Option<f32>,
+    text_weight: Option<f32>,
+) -> Result<grafeno::Fusion> {
+    match name {
+        None | Some("rank") => Ok(grafeno::Fusion::Rank {
+            k: k.unwrap_or(60.0),
+        }),
+        Some("weighted") => Ok(grafeno::Fusion::Weighted {
+            text: text_weight.unwrap_or(0.5),
+        }),
+        Some(other) => Err(Error::Invalid(format!(
+            "unknown fusion {other:?}: rank or weighted"
+        ))),
+    }
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -281,6 +313,9 @@ impl RecallInput {
             expand,
             ranking: self.ranking.resolve(),
             include_archived: self.include_archived,
+            index: self.index.clone(),
+            mode: self.mode,
+            fusion: fusion_of(self.fusion.as_deref(), self.k, self.text_weight)?,
         })
     }
 }

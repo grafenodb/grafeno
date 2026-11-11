@@ -329,6 +329,53 @@ export interface Subgraph {
 export interface Hit {
   node: Id;
   score: number;
+  /** Where a full-text index matched, when asked for. */
+  fragments?: Fragment[];
+}
+
+/** A piece of a property around the words a full-text search matched. */
+export interface Fragment {
+  field: string;
+  text: string;
+  /** The matched words, as `[start, end)` offsets in characters of `text`. */
+  matches: [number, number][];
+}
+
+export interface TextSearchOptions {
+  limit?: number;
+  /** A full-text index (its query language: "a phrase", +required, -excluded, prefix*, fuzzy~1, field:word). */
+  index?: string;
+  /** Fragments of what matched (with `index`). */
+  fragments?: boolean;
+}
+
+export type SearchMode = "text" | "vector" | "hybrid";
+
+/** What `search` looks for (engines with `search.hybrid`). */
+export interface SearchInput {
+  text?: string;
+  index?: string;
+  embedding?: number[];
+  /** `text` (default), `vector`, or `hybrid` (both, fused). */
+  mode?: SearchMode;
+  /** `rank` (default, with `k`, 60) or `weighted` (with `text_weight`, 0.5). */
+  fusion?: "rank" | "weighted";
+  k?: number;
+  text_weight?: number;
+  limit?: number;
+  /** Taken from each list before fusing. */
+  candidates?: number;
+  fragments?: boolean;
+}
+
+export interface SearchHit {
+  node: Id;
+  score: number;
+  text_rank?: number;
+  text_score?: number;
+  vector_rank?: number;
+  similarity?: number;
+  fragments?: Fragment[];
 }
 
 export interface Expansion {
@@ -353,6 +400,14 @@ export interface RecallInput {
   ranking?: boolean | Ranking;
   /** Record an access to each returned node. */
   touch?: boolean;
+  /** A full-text index for `text`, with its query language. */
+  index?: string;
+  /** Use the words, the embedding, or both (default: what is given). */
+  mode?: SearchMode;
+  /** How text and vector results are put together. */
+  fusion?: "rank" | "weighted";
+  k?: number;
+  text_weight?: number;
 }
 
 export interface Ranking {
@@ -1452,8 +1507,15 @@ export class Namespace {
 
   // Retrieval
 
-  searchText(query: string, limit = 10): Promise<Hit[]> {
-    return this.#call("POST", "/search/text", { query, limit });
+  /** Text search: the node text, or a full-text index with `index`. */
+  searchText(query: string, options: number | TextSearchOptions = 10): Promise<Hit[]> {
+    const { limit = 10, ...rest } = typeof options === "number" ? { limit: options } : options;
+    return this.#call("POST", "/search/text", { query, limit, ...rest });
+  }
+
+  /** Text, vector or hybrid search, as `input.mode` says. */
+  search(input: SearchInput): Promise<SearchHit[]> {
+    return this.#call("POST", "/search", input);
   }
 
   searchVector(embedding: number[], limit = 10, ef?: number): Promise<Hit[]> {

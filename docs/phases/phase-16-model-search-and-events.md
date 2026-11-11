@@ -2,7 +2,7 @@
 
 [All phases](README.md) · [← Phase 15: Engine and interface apart](phase-15-engine-and-interface-apart.md) · [Phase 17: Integrations →](phase-17-integrations.md)
 
-**Status:** in progress: 16.1 to 16.5 done.
+**Status:** in progress: 16.1 to 16.6 done.
 
 What the engine still lacks as a database people build on: a free
 license, null as a value, namespaces made from scripts, transactions that
@@ -21,7 +21,7 @@ Steps:
 - [16.3 Namespaces from scripts (done)](#163-namespaces-from-scripts-done)
 - [16.4 Explicit transactions (done)](#164-explicit-transactions-done)
 - [16.5 Advanced indexes and constraints (done)](#165-advanced-indexes-and-constraints-done)
-- [16.6 Full-text search (planned)](#166-full-text-search-planned)
+- [16.6 Full-text search (done)](#166-full-text-search-done)
 - [16.7 Better vector indexes (planned)](#167-better-vector-indexes-planned)
 - [16.8 More graph algorithms, for analysis and simulation (planned)](#168-more-graph-algorithms-for-analysis-and-simulation-planned)
 - [16.9 Recording how a query walks the graph (planned)](#169-recording-how-a-query-walks-the-graph-planned)
@@ -359,7 +359,7 @@ As built:
   results of each kind, reads against scans, keys with `MERGE`, labels
   added later, rules on edges, rebuild and `check`, syntax errors).
 
-## 16.6 Full-text search (planned)
+## 16.6 Full-text search (done)
 
 **Where it starts from.** Each node has at most one indexed text, ranked
 with BM25 (`db.search`, `GET /search`); recall fuses it with vector search
@@ -379,6 +379,52 @@ with BM25 (`db.search`, `GET /search`); recall fuses it with vector search
   recall.
 - Measured: quality on a labelled set (precision at 10) and speed against
   today's search.
+
+As built:
+
+- A full-text index is an `IndexDef` with `fulltext: {analyzer,
+  weights}` (`grafeno/src/fulltext.rs`), so it is declared, replicated
+  (`Op::Index`), exported, rebuilt, checked and dropped as any index. Its
+  entries share `index_entries`: one per term, field and node, the key
+  holding the term, the field, its length, the frequency and the first 64
+  positions. Documents and terms per field are in a new table,
+  `fulltext_stats`, kept as the entries are (so every member of a cluster
+  derives them). Layout 18 adds it, and marks files that may hold the
+  indexes of 16.5 or these, which a layout 17 Grafeno would misread
+  (fixture `layout-v17`, from 16.5's commit, and the upgrade test builds a
+  full-text index on every upgraded fixture).
+- Analyzers: words split on what is not a letter or a digit, lowercased,
+  accents removed, with their offsets in characters; `standard` drops
+  English and Spanish stop words (as the node text does), `english` and
+  `spanish` drop their own and stem with a light suffix stripper of
+  ours, `simple` keeps everything.
+- Queries: a lexer and a recursive parser (`OR` over `AND` over clauses
+  of `+`, `-`/`NOT` and plain terms); prefixes and fuzzy terms expand to
+  at most 64 index terms, skipping from term to term in the index;
+  scores are BM25 per field, weighted and summed; phrases check
+  positions, nearness a window.
+- `ReadTx::fulltext_search` (hits with fragments), `ReadTx::search` with
+  `SearchRequest {text, index, embedding, mode, fusion, limit,
+  candidates, fragments}` and `fuse` (rank or weighted). GQ: `CREATE
+  FULLTEXT INDEX … ON EACH [...] OPTIONS {analyzer, weights}`,
+  `db.searchIndex`, and `db.search(text, {…})`; `SHOW INDEXES` gained
+  `kind`. HTTP: `POST /v1/{ns}/search`, `index` and `fragments` on
+  `/search/text`, `index`, `mode`, `fusion`, `k`, `text_weight` on recall
+  and context; MCP `recall` takes `index` and `mode`; capabilities
+  `search.fulltext` and `search.hybrid`; the TypeScript client `search()`
+  and `searchText(query, {index, fragments})`.
+- Measured (`grafeno/examples/fulltext_bench.rs`, release build, laptop):
+  a synthetic labelled set of 20 000 documents in 400 topics, each of
+  eight made-up words from a shared pool of 800, words in random forms
+  (`x`, `xs`, `xing`), queries of two plain words of a topic. Precision at
+  10: the node text 0.36, the full-text index (English analyzer, title
+  weighing 3) with the plain words 0.43, with both words required (`+a
+  +b`) 0.83. Time per query: 0.06 ms for the node text, 0.33 ms for the
+  index (0.27 with both required, 0.48 with fragments). The set is
+  synthetic: it shows what stems, weights and required terms change, not
+  how a real corpus ranks.
+- Not done: analyzers for other languages, synonyms, and full-text
+  indexes on edges.
 
 ## 16.7 Better vector indexes (planned)
 

@@ -40,6 +40,10 @@ pub const CAPABILITIES: &[&str] = &[
     "null_values",
     "search.text",
     "search.vector",
+    // Full-text indexes with a query language and fragments; text, vector
+    // or hybrid search as the caller says (16.6).
+    "search.fulltext",
+    "search.hybrid",
     // Memory (phase 5) and recall.
     "recall",
     "context",

@@ -74,7 +74,8 @@ fn index_commands() {
             2000,
             false,
             "nodes",
-            false
+            false,
+            "value"
         ]])
     );
     run(
@@ -101,7 +102,8 @@ fn index_commands() {
                 5,
                 false,
                 "nodes",
-                false
+                false,
+                "value"
             ],
             [
                 "Person_age",
@@ -111,7 +113,8 @@ fn index_commands() {
                 2000,
                 false,
                 "nodes",
-                false
+                false,
+                "value"
             ],
             [
                 "Person_email_unique",
@@ -121,10 +124,11 @@ fn index_commands() {
                 2000,
                 false,
                 "nodes",
-                false
+                false,
+                "value"
             ],
             [
-                "names", "Person", "name", false, 2000, false, "nodes", false
+                "names", "Person", "name", false, 2000, false, "nodes", false, "value"
             ]
         ])
     );

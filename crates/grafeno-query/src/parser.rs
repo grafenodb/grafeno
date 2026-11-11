@@ -617,10 +617,13 @@ impl Parser<'_> {
                 if_exists,
             }));
         }
-        // CREATE FUZZY INDEX … ON (n.key)
+        // CREATE FUZZY INDEX … ON (n.key), CREATE FULLTEXT INDEX … ON EACH [n.a, n.b]
         let fuzzy =
             self.at_keyword("CREATE") && self.keyword_at(1, "FUZZY") && self.keyword_at(2, "INDEX");
-        let constraint = if fuzzy {
+        let fulltext = self.at_keyword("CREATE")
+            && self.keyword_at(1, "FULLTEXT")
+            && self.keyword_at(2, "INDEX");
+        let constraint = if fuzzy || fulltext {
             self.position += 3;
             false
         } else {
@@ -742,6 +745,91 @@ impl Parser<'_> {
             parser.expect(Token::RParen, "`)`")?;
             Ok(keys)
         };
+        if fulltext {
+            self.expect_keyword("ON")?;
+            self.eat_keyword("EACH");
+            let keys = if self.eat(&Token::LBracket) {
+                let mut keys = vec![property(self)?];
+                while self.eat(&Token::Comma) {
+                    keys.push(property(self)?);
+                }
+                self.expect(Token::RBracket, "`]`")?;
+                keys
+            } else {
+                properties(self, true)?
+            };
+            if edges {
+                return Err(self.error("a full-text index is on node properties"));
+            }
+            let mut def = index(labels, keys, false);
+            let mut options = grafeno::Fulltext::default();
+            if self.eat_keyword("OPTIONS") {
+                let start = self.start();
+                let expr = self.expr()?;
+                let Some(Value::Map(map)) = crate::plan::constant(&expr, None) else {
+                    return Err(QueryError::at(
+                        self.source,
+                        start,
+                        "OPTIONS is a map of literals: {analyzer: 'english', weights: {title: 2}}",
+                    ));
+                };
+                for (key, value) in map {
+                    match (key.as_str(), value) {
+                        ("analyzer", Value::Str(name)) => {
+                            options.analyzer =
+                                grafeno::Analyzer::from_name(&name).ok_or_else(|| {
+                                    QueryError::at(
+                                        self.source,
+                                        start,
+                                        format!(
+                                            "unknown analyzer {name:?}: simple, standard, english or spanish"
+                                        ),
+                                    )
+                                })?;
+                        }
+                        ("weights", Value::Map(weights)) => {
+                            let mut list = vec![1.0f32; def.keys().len()];
+                            for (field, weight) in weights {
+                                let at = def.keys().iter().position(|k| *k == field).ok_or_else(
+                                    || {
+                                        QueryError::at(
+                                            self.source,
+                                            start,
+                                            format!(
+                                                "a weight for {field}, which the index is not on"
+                                            ),
+                                        )
+                                    },
+                                )?;
+                                list[at] = match weight {
+                                    Value::Int(n) => n as f32,
+                                    Value::Float(f) => f as f32,
+                                    _ => {
+                                        return Err(QueryError::at(
+                                            self.source,
+                                            start,
+                                            "a weight is a number",
+                                        ));
+                                    }
+                                };
+                            }
+                            options.weights = list;
+                        }
+                        (other, _) => {
+                            return Err(QueryError::at(
+                                self.source,
+                                start,
+                                format!(
+                                    "unknown option {other}: a full-text index takes analyzer and weights"
+                                ),
+                            ));
+                        }
+                    }
+                }
+            }
+            def.fulltext = Some(options);
+            return Ok(Some(Schema::Create { def, if_not_exists }));
+        }
         if !constraint {
             self.expect_keyword("ON")?;
             let keys = properties(self, true)?;

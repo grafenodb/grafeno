@@ -40,6 +40,20 @@ after(async () => {
   await once(server, "exit");
 });
 
+test("full-text indexes and hybrid search", async () => {
+  const ns = new Grafeno({ url, token }).namespace("ft");
+  await ns.query(
+    "CREATE (:Note {title: 'Graph memory', body: 'Agents remember.'}), (:Note {title: 'Cooking', body: 'Rice.'})",
+  );
+  await ns.query("CREATE FULLTEXT INDEX notes FOR (n:Note) ON EACH [n.title, n.body]");
+  const hits = await ns.searchText("\"graph memory\"", { index: "notes", fragments: true });
+  assert.equal(hits.length, 1);
+  assert.equal(hits[0].fragments?.[0].field, "title");
+  const found = await ns.search({ text: "rice OR agents", index: "notes", limit: 5 });
+  assert.equal(found.length, 2);
+  assert.equal(found[0].text_rank, 1);
+});
+
 test("explicit transactions commit together or not at all", async () => {
   const ns = new Grafeno({ url, token }).namespace("tx");
   const count = async () => (await ns.query("MATCH (n:Note) RETURN count(n)")).rows[0][0];

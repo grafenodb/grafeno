@@ -45,7 +45,7 @@ pub(crate) const INDEX_ENTRIES: TableDefinition<IndexKey, ()> =
 
 /// A declared index: nodes with `label`, by their property `key`; or,
 /// since 16.5, by several properties, over several labels, or on edges.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct IndexDef {
     pub name: String,
     pub label: String,
@@ -72,6 +72,10 @@ pub struct IndexDef {
     /// value the index can hold (with `unique`: a key constraint).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub required: bool,
+    /// A full-text index (16.6) on the properties: their words, for
+    /// [`ReadTx::fulltext_search`], instead of their values.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fulltext: Option<crate::fulltext::Fulltext>,
 }
 
 impl IndexDef {
@@ -128,6 +132,8 @@ impl IndexDef {
         parts.extend(self.keys());
         if self.fuzzy {
             parts.push("fuzzy");
+        } else if self.fulltext.is_some() {
+            parts.push("fulltext");
         } else if self.unique && self.required {
             parts.push("key");
         } else if self.unique {
@@ -152,7 +158,15 @@ impl IndexDef {
 
     /// One property of nodes of one label: the index every version had.
     pub fn is_simple(&self) -> bool {
-        self.more_keys.is_empty() && self.more_labels.is_empty() && !self.edges
+        self.more_keys.is_empty()
+            && self.more_labels.is_empty()
+            && !self.edges
+            && self.fulltext.is_none()
+    }
+
+    /// Looked up by value (not fuzzy, not full-text): what plans use.
+    pub fn by_value(&self) -> bool {
+        !self.fuzzy && self.fulltext.is_none()
     }
 
     pub(crate) fn composite_keys(&self) -> bool {
@@ -177,6 +191,7 @@ impl IndexDef {
             && self.edges == other.edges
             && self.unique == other.unique
             && self.fuzzy == other.fuzzy
+            && self.fulltext == other.fulltext
     }
 
     /// What it is on, for messages: `:Person(email)`, `[:rated](stars)`.
@@ -237,7 +252,7 @@ pub struct FuzzyHit {
 const COMMON_GRAM: usize = 20_000;
 
 /// An index and how many nodes it holds.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct IndexInfo {
     #[serde(flatten)]
     pub def: IndexDef,
@@ -499,7 +514,11 @@ pub(crate) fn record_entries<'a, S: AsRef<str>>(
         .iter()
         .filter(|def| def.edges == edges && def.covers(labels))
     {
-        if def.fuzzy {
+        if let Some(fulltext) = &def.fulltext {
+            if let Some(doc) = crate::fulltext::doc_of(def, fulltext, props) {
+                out.extend(doc.entries.into_iter().map(|bytes| (def, bytes)));
+            }
+        } else if def.fuzzy {
             if let Some(value) = props.get(&def.key) {
                 out.extend(grams_of(value).iter().map(|gram| (def, gram_bytes(gram))));
             }
@@ -671,10 +690,16 @@ fn seek_ids(
     range: Option<&IndexRange>,
     limit: usize,
 ) -> Result<Vec<u128>> {
-    if def.fuzzy {
+    if def.fuzzy || def.fulltext.is_some() {
         return Err(Error::Invalid(format!(
-            "{} is a fuzzy index: search it with fuzzy_search",
-            def.name
+            "{} is a {} index: search it with {}",
+            def.name,
+            if def.fuzzy { "fuzzy" } else { "full-text" },
+            if def.fuzzy {
+                "fuzzy_search"
+            } else {
+                "fulltext_search"
+            }
         )));
     }
     match seek_bytes(def, prefix, range) {
@@ -981,6 +1006,23 @@ impl WriteTx {
                 "a fuzzy index is on one property of one node label, and not unique".into(),
             ));
         }
+        if let Some(fulltext) = &def.fulltext {
+            if def.unique || def.required || def.fuzzy || def.edges {
+                return Err(Error::Invalid(
+                    "a full-text index is on node properties, and neither unique nor fuzzy".into(),
+                ));
+            }
+            if fulltext.weights.len() > def.keys().len()
+                || fulltext
+                    .weights
+                    .iter()
+                    .any(|weight| !weight.is_finite() || *weight <= 0.0)
+            {
+                return Err(Error::Invalid(
+                    "a full-text index has a positive weight per property, at most".into(),
+                ));
+            }
+        }
         if def.required && !def.unique {
             return Err(Error::Invalid(
                 "a required index is a key: it is unique too".into(),
@@ -1009,6 +1051,7 @@ impl WriteTx {
         let records = self.records_of(ns, &def)?;
         let mut seen: HashMap<Vec<u8>, (u128, Props)> = HashMap::new();
         let mut entries = Vec::new();
+        let mut docs = Vec::new();
         let what = if def.edges { "edges" } else { "nodes" };
         for (id, props, live) in &records {
             if def.required
@@ -1022,6 +1065,13 @@ impl WriteTx {
                     &what[..what.len() - 1],
                     record_name(&def, *id),
                 )));
+            }
+            if let Some(fulltext) = &def.fulltext {
+                if let Some(doc) = crate::fulltext::doc_of(&def, fulltext, props) {
+                    entries.extend(doc.entries.iter().map(|bytes| (bytes.clone(), *id)));
+                    docs.push(doc);
+                }
+                continue;
             }
             if def.fuzzy {
                 if let Some(value) = props.get(&def.key) {
@@ -1055,6 +1105,9 @@ impl WriteTx {
                 .map_err(storage)?;
         }
         drop(table);
+        if def.fulltext.is_some() {
+            crate::fulltext::set_stats(&self.tx, ns, &def.name, &docs)?;
+        }
         self.tx
             .open_table(INDEXES)
             .map_err(storage)?
@@ -1084,6 +1137,7 @@ impl WriteTx {
                 key.0 != ns || key.1 != name
             })
             .map_err(storage)?;
+        crate::fulltext::drop_stats(&self.tx, ns, name)?;
         Ok(existed)
     }
 
@@ -1185,16 +1239,44 @@ impl WriteTx {
         let new_entries = new
             .map(|(labels, props)| record_entries(defs, edges, labels, props))
             .unwrap_or_default();
+        // A full-text index holds the words of its fields, and BM25 their
+        // counts: kept as the entries are.
+        if !edges {
+            for def in defs.iter().filter(|def| !def.edges) {
+                let Some(fulltext) = &def.fulltext else {
+                    continue;
+                };
+                let doc = |side: Option<(&[String], &Props)>| {
+                    side.filter(|(labels, _)| def.covers(labels))
+                        .and_then(|(_, props)| crate::fulltext::doc_of(def, fulltext, props))
+                };
+                crate::fulltext::update_stats(
+                    &self.tx,
+                    ns,
+                    &def.name,
+                    doc(old).as_ref(),
+                    doc(new).as_ref(),
+                )?;
+            }
+        }
+        let old_set: std::collections::HashSet<(&str, &[u8])> = old_entries
+            .iter()
+            .map(|(def, bytes)| (def.name.as_str(), bytes.as_slice()))
+            .collect();
+        let new_set: std::collections::HashSet<(&str, &[u8])> = new_entries
+            .iter()
+            .map(|(def, bytes)| (def.name.as_str(), bytes.as_slice()))
+            .collect();
         let mut table = self.tx.open_table(INDEX_ENTRIES).map_err(storage)?;
         for (def, bytes) in &old_entries {
-            if !new_entries.contains(&(def, bytes.clone())) {
+            if !new_set.contains(&(def.name.as_str(), bytes.as_slice())) {
                 table
                     .remove((ns, def.name.as_str(), bytes.as_slice(), id))
                     .map_err(storage)?;
             }
         }
         for (def, bytes) in &new_entries {
-            if old_entries.contains(&(def, bytes.clone())) {
+            if old_set.contains(&(def.name.as_str(), bytes.as_slice())) {
                 continue;
             }
             if def.unique && check {

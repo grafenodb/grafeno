@@ -88,7 +88,8 @@ short-lived agents.
 | `names`        | `(ns, normalized name, node_id)` | `()`                    |
 | `memory`       | `(ns, node_id)`               | `(importance, accesses, last_access)` |
 | `indexes`      | `(ns, index name)`            | index definition (JSON)    |
-| `index_entries` | `(ns, index, sortable value, node_id)` | `()`              |
+| `index_entries` | `(ns, index, sortable value, node_id)` | `()`: also a full-text index's terms (term, field, length, frequency, positions in the key) |
+| `fulltext_stats` | `(ns, index)`               | documents and terms per field of a full-text index (JSON), for BM25 |
 | `namespaces`   | `ns`                          | creation time, description (JSON) |
 | `principals`   | key name                      | secret hash, grants, owner, `own_only` (JSON) |
 | `merges`       | `(ns, merge_id)`              | merge record: who, when, both nodes before, edges moved and dropped |
@@ -97,7 +98,7 @@ short-lived agents.
 | `constraints`  | `(ns, name)`                  | a constraint on facts (one per source, target or pair) or a functional property (JSON) |
 | `state`        | `(ns, kind, key)`             | bytes kept by features on the engine (extraction's text hashes, review queue and decisions) |
 
-- The layout has a version (`SCHEMA_VERSION`, now 12) in `meta`. Opening an
+- The layout has a version (`SCHEMA_VERSION`, now 18) in `meta`. Opening an
   older file upgrades it in one transaction: version 1 gets its counters
   computed, version 2 gets the new adjacency and posting tables (built from
   the records) and loses the old ones, version 3 gets the names index,

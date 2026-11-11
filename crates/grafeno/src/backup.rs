@@ -221,6 +221,7 @@ impl ReadTx {
                 MEMORY.name(),
                 INDEXES.name(),
                 INDEX_ENTRIES.name(),
+                crate::fulltext::FULLTEXT_STATS.name(),
                 NAMESPACES.name(),
                 ACCOUNTS.name(),
                 API_KEYS.name(),
@@ -264,6 +265,7 @@ impl ReadTx {
             entries += copy(from, &tx, MEMORY)?;
             entries += copy(from, &tx, INDEXES)?;
             entries += copy(from, &tx, INDEX_ENTRIES)?;
+            entries += copy(from, &tx, crate::fulltext::FULLTEXT_STATS)?;
             entries += copy(from, &tx, NAMESPACES)?;
             entries += copy(from, &tx, ACCOUNTS)?;
             entries += copy(from, &tx, API_KEYS)?;

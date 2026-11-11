@@ -51,6 +51,11 @@ pub(crate) fn constant(expr: &Expr, params: Option<&Params>) -> Option<Value> {
             .map(|item| constant(item, params))
             .collect::<Option<Vec<_>>>()
             .map(Value::List),
+        Expr::Map(entries) => entries
+            .iter()
+            .map(|(key, item)| Some((key.clone(), constant(item, params)?)))
+            .collect::<Option<std::collections::BTreeMap<_, _>>>()
+            .map(Value::Map),
         Expr::Unary(UnOp::Neg, inner) => match constant(inner, params)? {
             Value::Int(i) => i.checked_neg().map(Value::Int),
             Value::Float(f) => Some(Value::Float(-f)),
@@ -436,7 +441,7 @@ fn source_for<'q>(
     for def in info
         .indexes
         .iter()
-        .filter(|def| !def.fuzzy && !def.edges && def.covers(&node.labels))
+        .filter(|def| def.by_value() && !def.edges && def.covers(&node.labels))
     {
         let var = node.var.as_deref();
         if let Some((prefix, key, seek)) =
@@ -493,7 +498,7 @@ fn edge_sources<'q>(
         };
         for def in info.indexes.iter().filter(|def| {
             def.edges
-                && !def.fuzzy
+                && def.by_value()
                 && rel
                     .labels
                     .iter()

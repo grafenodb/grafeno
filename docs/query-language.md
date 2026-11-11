@@ -193,7 +193,9 @@ CALL db.search('borrow checker', 5) YIELD node, score RETURN node.title, score;
 | `db.analyze()` | `kind`, `name`, `count`, `distinct`, `out_degree`, `in_degree`, `common` | rebuilds the planner's statistics now and lists them: per index its entries, distinct values and ten most common values (`[value, nodes]`); per edge label its edges and average degree each way |
 | `db.searchFuzzy(label, property, text, limit = 10, measure = 'dice')` | `node`, `score` | nodes whose property looks like the text, through its fuzzy index (see *Similar text and entity resolution*) |
 | `db.match(label, properties, limit = 10)` | `node`, `score`, `decision`, `fields` | nodes that may be the record described, by the label's match rule |
-| `db.search(text, limit = 10)` | `node`, `score` | full-text search (BM25), best first |
+| `db.search(text, limit = 10)` | `node`, `score` | the node text (BM25), best first |
+| `db.search(text, {limit, mode, embedding, index, fusion, k, text_weight, candidates})` | `node`, `score` | text, vector or hybrid search (see *Full-text search*) |
+| `db.searchIndex(index, query, limit = 10 \| {limit, fragments})` | `node`, `score`, `fragments` | a full-text index, with its query language and the fragments that matched |
 | `db.searchVector(embedding, limit = 10)` | `node`, `score` | nearest nodes by embedding |
 | `temporal.series(start, end, step)` | `at` | times from start to end every step (see *Time and durations*) |
 | `dbms.procedures()` | `name`, `arguments`, `columns`, `description` | this list |
@@ -533,6 +535,63 @@ ones decide it.
 | `toBoolean`, `toIntegerOrNull`, `toFloatOrNull`, `toStringOrNull`, `toBooleanOrNull`, `toIntegerList`, `toFloatList`, `toStringList`, `toBooleanList`, `nullIf(a, b)` | conversions; `…OrNull` gives null instead of an error |
 | `asin`, `acos`, `atan`, `atan2(y, x)`, `cot`, `degrees`, `radians`, `haversin`, `isNaN`, `rand()`, `randomUUID()`, `elementId(x)` | |
 | `text.levenshtein`, `text.damerau`, `text.jaroWinkler`, `text.similarity(a, b[, measure])`, … | text similarity (see *Similar text and entity resolution*) |
+
+## Full-text search
+
+Each node may have one text (`text` when it is written), searched word by
+word with BM25 (`db.search(text)`). A full-text index searches chosen
+string properties of a label instead, each with a weight, with an
+analyzer and a query language:
+
+```text
+CREATE FULLTEXT INDEX notes FOR (n:Note|Page) ON EACH [n.title, n.body]
+  OPTIONS {analyzer: 'english', weights: {title: 3}};
+CALL db.searchIndex('notes', '"graph memory" +agent -draft', 10) YIELD node, score, fragments;
+```
+
+- **Analyzers**: every one lowercases and removes accents; `standard`
+  (the default) also leaves out common English and Spanish words;
+  `english` and `spanish` leave out that language's common words and
+  reduce words to their stem (`graphs`, `graphing` → `graph`; `grafos`,
+  `grafo` → `graf`); `simple` keeps every word.
+- **Fields**: a property holds a string or a list of strings; a list's
+  items are far apart, so a phrase does not run from one into the next.
+  `weights` multiply a field's score (1 by default).
+- **Queries**: words (any may match, the more the better), `"a phrase"`
+  (in order, next to each other), `"words near"~3` (all within three
+  words, in any order), `+required`, `-excluded` (or `NOT`), `a AND b`,
+  `a OR b`, parentheses, `prefix*`, `fuzzy~1` (one edit away; two at
+  most), and `title:word` or `title:"a phrase"` for one field. A query of
+  only excluded terms is refused.
+- **Ranking**: BM25 per field (k1 1.2, b 0.75), weighted and summed; a
+  prefix or a fuzzy term counts its best expansion (a fuzzy one a fifth
+  less per edit). Phrases and nearness look at the first 64 positions of
+  a term in a field.
+- **Fragments**: `{field, text, matches}` per field that matched (at most
+  three, heaviest first): the whole value when short, otherwise the words
+  around the first match; `matches` are `[start, end)` offsets in
+  characters of `text`.
+- The index is kept in the same transaction as every write, rebuilt by
+  `rebuild`, checked by `check`, exported, replicated and dropped as any
+  index (`SHOW INDEXES` shows `kind` `fulltext`).
+
+**Text, vector or both.** `db.search(text, {…})` and `POST
+/v1/{ns}/search` take a `mode`:
+
+```text
+CALL db.search('graph memory', {index: 'notes'});                                   // text
+CALL db.search('', {mode: 'vector', embedding: $e});                               // vector
+CALL db.search('graph memory', {mode: 'hybrid', index: 'notes', embedding: $e});   // both, rank fusion
+CALL db.search('graph memory', {mode: 'hybrid', embedding: $e, fusion: 'weighted', text_weight: 0.7});
+```
+
+Hybrid search takes `candidates` (50) from each list and fuses them: by
+rank (`fusion: 'rank'`, the default: each list adds `1 / (k + rank)`,
+`k` 60), or by score (`fusion: 'weighted'`: each list's scores scaled to
+0..1, then `text × text_weight + vector × (1 − text_weight)`). Without
+`index` the text side is the node text. Recall (`POST /v1/{ns}/recall`,
+MCP `recall`) takes the same `index`, `mode`, `fusion`, `k` and
+`text_weight`.
 
 ## Constraints on facts
 
@@ -946,5 +1005,7 @@ the language's conformance scenarios.
 - `UNION` inside `CALL { … }`, `IN TRANSACTIONS`, and path variables in
   `CREATE` and `MERGE`.
 - A binary wire protocol: clients use the HTTP API or MCP.
-- Graph algorithms over several namespaces at once. Hybrid recall is in
-  the shell's `\recall` and `\context`, and in the HTTP API.
+- Graph algorithms over several namespaces at once. Recall with graph
+  expansion and memory ranking is in the shell's `\recall` and
+  `\context`, and in the HTTP API; hybrid search itself is
+  `db.search(text, {mode: 'hybrid', …})`.

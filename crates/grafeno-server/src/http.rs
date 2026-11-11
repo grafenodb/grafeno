@@ -397,6 +397,7 @@ pub fn router_with(state: AppState, options: &Options) -> Router {
         .route("/{ns}/path", post(path))
         .route("/{ns}/subgraph", post(subgraph))
         .route("/{ns}/neighborhoods", post(neighborhoods))
+        .route("/{ns}/search", post(search_handler))
         .route("/{ns}/search/text", post(search_text))
         .route("/{ns}/search/vector", post(search_vector))
         .route("/{ns}/recall", post(recall_handler))
@@ -1658,6 +1659,11 @@ struct TextSearchInput {
     query: String,
     #[serde(default = "ten")]
     limit: usize,
+    /// A full-text index (16.6): its query language, and fragments.
+    #[serde(default)]
+    index: Option<String>,
+    #[serde(default)]
+    fragments: bool,
 }
 
 fn ten() -> usize {
@@ -1668,11 +1674,74 @@ async fn search_text(
     State(state): State<AppState>,
     Path(ns): Path<String>,
     Body(input): Body<TextSearchInput>,
-) -> ApiResult<Json<Vec<grafeno::Hit>>> {
+) -> ApiResult<Json<Vec<grafeno::FulltextHit>>> {
     let hits = blocking(&state, move |db| {
-        db.begin_read()?.search_text(&ns, &input.query, input.limit)
+        let read = db.begin_read()?;
+        match &input.index {
+            Some(index) => {
+                read.fulltext_search(&ns, index, &input.query, input.limit, input.fragments)
+            }
+            None => Ok(read
+                .search_text(&ns, &input.query, input.limit)?
+                .into_iter()
+                .map(|hit| grafeno::FulltextHit {
+                    node: hit.node,
+                    score: hit.score,
+                    fragments: Vec::new(),
+                })
+                .collect()),
+        }
     })
     .await?;
+    Ok(Json(hits))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SearchInput {
+    #[serde(default)]
+    text: Option<String>,
+    #[serde(default)]
+    index: Option<String>,
+    #[serde(default)]
+    embedding: Option<Vec<f32>>,
+    #[serde(default)]
+    mode: grafeno::SearchMode,
+    #[serde(default)]
+    fusion: Option<String>,
+    #[serde(default)]
+    k: Option<f32>,
+    #[serde(default)]
+    text_weight: Option<f32>,
+    #[serde(default = "ten")]
+    limit: usize,
+    #[serde(default = "fifty")]
+    candidates: usize,
+    #[serde(default)]
+    fragments: bool,
+}
+
+fn fifty() -> usize {
+    50
+}
+
+/// Text, vector or hybrid search, as the request says (16.6).
+async fn search_handler(
+    State(state): State<AppState>,
+    Path(ns): Path<String>,
+    Body(input): Body<SearchInput>,
+) -> ApiResult<Json<Vec<grafeno::SearchHit>>> {
+    let request = grafeno::SearchRequest {
+        fusion: crate::api::fusion_of(input.fusion.as_deref(), input.k, input.text_weight)?,
+        text: input.text,
+        index: input.index,
+        embedding: input.embedding,
+        mode: input.mode,
+        limit: input.limit,
+        candidates: input.candidates,
+        fragments: input.fragments,
+    };
+    let hits = blocking(&state, move |db| db.begin_read()?.search(&ns, &request)).await?;
     Ok(Json(hits))
 }
 

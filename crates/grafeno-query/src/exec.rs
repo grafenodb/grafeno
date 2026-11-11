@@ -321,9 +321,10 @@ fn constraint_cells(constraint: &grafeno::Constraint) -> Vec<Value> {
 }
 
 /// The first six as before 16.5 (several labels joined by `|`, several
-/// properties by `, `), then what an index is on and whether it is a key.
-const INDEX_COLUMNS: [&str; 8] = [
-    "name", "label", "property", "unique", "entries", "fuzzy", "on", "key",
+/// properties by `, `), then what an index is on, whether it is a key, and
+/// its kind (`value`, `fuzzy` or `fulltext`).
+const INDEX_COLUMNS: [&str; 9] = [
+    "name", "label", "property", "unique", "entries", "fuzzy", "on", "key", "kind",
 ];
 
 fn index_row(def: &IndexDef, entries: u64) -> Vec<Value> {
@@ -336,6 +337,16 @@ fn index_row(def: &IndexDef, entries: u64) -> Vec<Value> {
         Value::Bool(def.fuzzy),
         on(def.edges),
         Value::Bool(def.required),
+        Value::Str(
+            if def.fuzzy {
+                "fuzzy"
+            } else if def.fulltext.is_some() {
+                "fulltext"
+            } else {
+                "value"
+            }
+            .into(),
+        ),
     ]
 }
 
@@ -2726,6 +2737,8 @@ fn explain(
                     "unique constraint"
                 } else if def.fuzzy {
                     "fuzzy index"
+                } else if def.fulltext.is_some() {
+                    "full-text index"
                 } else {
                     "index"
                 },

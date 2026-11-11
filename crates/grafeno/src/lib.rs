@@ -30,6 +30,7 @@ mod check;
 mod constraints;
 mod db;
 mod dump;
+mod fulltext;
 mod index;
 mod interchange;
 mod memory;
@@ -66,6 +67,9 @@ pub use db::{
     WriteTx, upgrade_copies, upgrade_copy_path,
 };
 pub use dump::{DumpStats, EXPORT_FORMAT, EXPORT_VERSION, ImportOptions, Record};
+pub use fulltext::{
+    Analyzer, Fragment, Fulltext, FulltextHit, Fusion, SearchHit, SearchMode, SearchRequest, fuse,
+};
 pub use grafeno_core::*;
 pub use index::{FuzzyHit, IndexDef, IndexInfo, IndexRange};
 pub use interchange::{IMPORT_ID, InterchangeOptions, InterchangeStats};

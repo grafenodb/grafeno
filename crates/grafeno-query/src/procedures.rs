@@ -87,9 +87,15 @@ pub(crate) const PROCEDURES: &[Procedure] = &[
     },
     Procedure {
         name: "db.search",
-        args: "text, limit = 10",
+        args: "text, limit = 10 | {limit, mode, embedding, index, fusion, k, text_weight, candidates}",
         columns: &["node", "score"],
-        description: "Full-text search (BM25), best first.",
+        description: "Search, best first: the node text by BM25 (or a full-text index with `index`), vectors (`mode: 'vector'` with an embedding), or both fused (`mode: 'hybrid'`, `fusion: 'rank'` with constant `k` or `'weighted'` with `text_weight`).",
+    },
+    Procedure {
+        name: "db.searchIndex",
+        args: "index, query, limit = 10 | {limit, fragments}",
+        columns: &["node", "score", "fragments"],
+        description: "Full-text search in a full-text index, best first: phrases, +required, -excluded, AND, OR, prefix*, fuzzy~1, \"near words\"~3, field:word; fragments are {field, text, matches} around what matched.",
     },
     Procedure {
         name: "db.searchVector",
@@ -141,6 +147,89 @@ fn limit_arg(args: &[Value], at: usize) -> Result<usize, QueryError> {
             other.to_json()
         ))),
     }
+}
+
+/// The search `db.search(text, {…})` asks for.
+fn search_request(
+    text: &str,
+    options: &BTreeMap<String, Value>,
+) -> Result<grafeno::SearchRequest, QueryError> {
+    let mut request = grafeno::SearchRequest {
+        text: Some(text.to_owned()),
+        ..grafeno::SearchRequest::default()
+    };
+    let number = |value: &Value, what: &str| -> Result<f64, QueryError> {
+        match value {
+            Value::Int(n) => Ok(*n as f64),
+            Value::Float(f) => Ok(*f),
+            _ => Err(QueryError::runtime(format!("{what} is a number"))),
+        }
+    };
+    let mut fusion = None;
+    let (mut k, mut text_weight) = (None, None);
+    for (key, value) in options {
+        if value.is_null() {
+            continue;
+        }
+        match key.as_str() {
+            "limit" => request.limit = limit_arg(std::slice::from_ref(value), 0)?,
+            "candidates" => request.candidates = limit_arg(std::slice::from_ref(value), 0)?,
+            "mode" => {
+                let Value::Str(name) = value else {
+                    return Err(QueryError::runtime("mode is text, vector or hybrid"));
+                };
+                request.mode = grafeno::SearchMode::from_name(name).ok_or_else(|| {
+                    QueryError::runtime(format!("unknown mode {name:?}: text, vector or hybrid"))
+                })?;
+            }
+            "index" => {
+                let Value::Str(name) = value else {
+                    return Err(QueryError::runtime(
+                        "index is the name of a full-text index",
+                    ));
+                };
+                request.index = Some(name.clone());
+            }
+            "embedding" => {
+                let Value::List(items) = value else {
+                    return Err(QueryError::runtime("embedding is a list of numbers"));
+                };
+                request.embedding = Some(
+                    items
+                        .iter()
+                        .map(|item| number(item, "an embedding's item").map(|f| f as f32))
+                        .collect::<Result<_, _>>()?,
+                );
+            }
+            "fusion" => {
+                let Value::Str(name) = value else {
+                    return Err(QueryError::runtime("fusion is rank or weighted"));
+                };
+                fusion = Some(name.to_ascii_lowercase());
+            }
+            "k" => k = Some(number(value, "k")? as f32),
+            "text_weight" => text_weight = Some(number(value, "text_weight")? as f32),
+            other => {
+                return Err(QueryError::runtime(format!(
+                    "unknown option {other} of db.search: limit, mode, embedding, index, fusion, k, text_weight, candidates"
+                )));
+            }
+        }
+    }
+    request.fusion = match fusion.as_deref() {
+        None | Some("rank") => grafeno::Fusion::Rank {
+            k: k.unwrap_or(60.0),
+        },
+        Some("weighted") => grafeno::Fusion::Weighted {
+            text: text_weight.unwrap_or(0.5),
+        },
+        Some(other) => {
+            return Err(QueryError::runtime(format!(
+                "unknown fusion {other:?}: rank or weighted"
+            )));
+        }
+    };
+    Ok(request)
 }
 
 /// Runs a procedure: one row per result, in the order of its columns.
@@ -289,6 +378,96 @@ pub(crate) fn call(
                 ]);
             }
             rows
+        }
+        "db.searchIndex" => {
+            let (Some(Value::Str(index)), Some(Value::Str(query))) = (args.first(), args.get(1))
+            else {
+                return Err(QueryError::runtime(
+                    "db.searchIndex() needs the index's name and the query",
+                ));
+            };
+            let (limit, fragments) = match args.get(2) {
+                Some(Value::Map(options)) => {
+                    let limit =
+                        limit_arg(&[options.get("limit").cloned().unwrap_or(Value::Null)], 0)?;
+                    let fragments = match options.get("fragments") {
+                        None | Some(Value::Null) => true,
+                        Some(Value::Bool(b)) => *b,
+                        Some(_) => {
+                            return Err(QueryError::runtime("fragments is true or false"));
+                        }
+                    };
+                    (limit, fragments)
+                }
+                _ => (limit_arg(args, 2)?, true),
+            };
+            let hits = read.fulltext_search(ns, index, query, limit, fragments)?;
+            let mut rows = Vec::new();
+            for hit in hits {
+                let Some(node) = ctx.node(hit.node)? else {
+                    continue;
+                };
+                let fragments = hit
+                    .fragments
+                    .into_iter()
+                    .map(|fragment| {
+                        Value::Map(BTreeMap::from([
+                            ("field".to_owned(), Value::Str(fragment.field)),
+                            ("text".to_owned(), Value::Str(fragment.text)),
+                            (
+                                "matches".to_owned(),
+                                Value::List(
+                                    fragment
+                                        .matches
+                                        .into_iter()
+                                        .map(|(start, end)| {
+                                            Value::List(vec![
+                                                Value::Int(start as i64),
+                                                Value::Int(end as i64),
+                                            ])
+                                        })
+                                        .collect(),
+                                ),
+                            ),
+                        ]))
+                    })
+                    .collect();
+                rows.push(vec![
+                    Value::Node(Arc::new(node)),
+                    Value::Float(f64::from(hit.score)),
+                    Value::List(fragments),
+                ]);
+            }
+            rows
+        }
+        "db.search" if matches!(args.get(1), Some(Value::Map(_))) => {
+            let Some(Value::Str(text)) = args.first() else {
+                return Err(QueryError::runtime("db.search() needs the text to search"));
+            };
+            let Some(Value::Map(options)) = args.get(1) else {
+                unreachable!("matched above");
+            };
+            let request = search_request(text, options)?;
+            let limit = request.limit;
+            let hits = ctx.visible_hits(limit, |ask| {
+                let request = grafeno::SearchRequest {
+                    limit: ask,
+                    ..request.clone()
+                };
+                Ok(read
+                    .search(ns, &request)?
+                    .into_iter()
+                    .map(|hit| grafeno::Hit {
+                        node: hit.node,
+                        score: hit.score,
+                    })
+                    .collect())
+            })?;
+            hits.into_iter()
+                .map(|(node, score)| {
+                    vec![Value::Node(Arc::new(node)), Value::Float(f64::from(score))]
+                })
+                .collect()
         }
         "db.search" | "db.searchVector" => {
             let limit = limit_arg(args, 1)?;

@@ -78,7 +78,8 @@ fn composite_indexes_are_used_by_a_prefix_of_their_properties() {
             2000,
             false,
             "nodes",
-            false
+            false,
+            "value"
         ]])
     );
     assert!(

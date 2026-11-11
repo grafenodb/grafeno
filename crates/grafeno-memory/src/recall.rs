@@ -1,10 +1,7 @@
 use std::collections::HashMap;
 
-use grafeno::{Direction, EdgeFilter, Node, NodeId, ReadTx, Result, Timestamp};
+use grafeno::{Direction, EdgeFilter, Fusion, Node, NodeId, ReadTx, Result, SearchMode, Timestamp};
 use serde::Serialize;
-
-/// Reciprocal rank fusion constant (Cormack, Clarke and Büttcher, 2009).
-const RRF_K: f32 = 60.0;
 
 /// How recall spreads relevance through the graph.
 #[derive(Clone, Debug)]
@@ -72,6 +69,15 @@ pub struct RecallQuery {
     pub ranking: Option<Ranking>,
     /// Also return archived memories (label [`ARCHIVED`]).
     pub include_archived: bool,
+    /// A full-text index for the text, with its query language (16.6);
+    /// without one, the node text, word by word.
+    pub index: Option<String>,
+    /// Which of the text and the embedding to use: both when `None`, as
+    /// given.
+    pub mode: Option<SearchMode>,
+    /// How the text and vector lists are put together: rank fusion with
+    /// k = 60 by default.
+    pub fusion: Fusion,
 }
 
 impl Default for RecallQuery {
@@ -85,6 +91,9 @@ impl Default for RecallQuery {
             expand: Some(Expansion::default()),
             ranking: Some(Ranking::default()),
             include_archived: false,
+            index: None,
+            mode: None,
+            fusion: Fusion::default(),
         }
     }
 }
@@ -151,47 +160,51 @@ pub struct Recalled {
     pub signals: Vec<Signal>,
 }
 
-/// Hybrid recall: BM25 and vector search fused with RRF, then graph expansion.
+/// Hybrid recall: text and vector search fused (by rank, or by weighted
+/// scores), then graph expansion.
 pub fn recall(read: &ReadTx, ns: &str, query: &RecallQuery) -> Result<Vec<Recalled>> {
     let mut scores: HashMap<NodeId, (f32, Vec<Signal>)> = HashMap::new();
-    let mut add = |node: NodeId, rank: usize, signal: Signal| {
-        let entry = scores.entry(node).or_default();
-        entry.0 += 1.0 / (RRF_K + rank as f32);
-        entry.1.push(signal);
-    };
-    if let Some(text) = &query.text {
-        for (index, hit) in read
-            .search_text(ns, text, query.candidates)?
-            .into_iter()
-            .enumerate()
-        {
-            let rank = index + 1;
-            add(
-                hit.node,
-                rank,
-                Signal::Text {
-                    rank,
-                    score: hit.score,
-                },
-            );
-        }
+    let use_text = query.mode != Some(SearchMode::Vector);
+    let use_vector = query.mode != Some(SearchMode::Text);
+    let mut text_hits: Vec<(NodeId, f32)> = Vec::new();
+    if let Some(text) = query.text.as_ref().filter(|_| use_text) {
+        text_hits = match &query.index {
+            Some(index) => read
+                .fulltext_search(ns, index, text, query.candidates, false)?
+                .into_iter()
+                .map(|hit| (hit.node, hit.score))
+                .collect(),
+            None => read
+                .search_text(ns, text, query.candidates)?
+                .into_iter()
+                .map(|hit| (hit.node, hit.score))
+                .collect(),
+        };
     }
-    if let Some(embedding) = &query.embedding {
-        for (index, hit) in read
+    let mut vector_hits: Vec<(NodeId, f32)> = Vec::new();
+    if let Some(embedding) = query.embedding.as_ref().filter(|_| use_vector) {
+        vector_hits = read
             .search_vector(ns, embedding, query.candidates)?
             .into_iter()
-            .enumerate()
-        {
-            let rank = index + 1;
-            add(
-                hit.node,
-                rank,
-                Signal::Vector {
-                    rank,
-                    similarity: hit.score,
-                },
-            );
-        }
+            .map(|hit| (hit.node, hit.score))
+            .collect();
+    }
+    for (index, (node, score)) in text_hits.iter().enumerate() {
+        scores.entry(*node).or_default().1.push(Signal::Text {
+            rank: index + 1,
+            score: *score,
+        });
+    }
+    for (index, (node, similarity)) in vector_hits.iter().enumerate() {
+        scores.entry(*node).or_default().1.push(Signal::Vector {
+            rank: index + 1,
+            similarity: *similarity,
+        });
+    }
+    // Both lists fused as asked, even when one is empty: a score means the
+    // same whether or not the other list found anything.
+    for (node, score) in grafeno::fuse(&text_hits, &vector_hits, SearchMode::Hybrid, query.fusion) {
+        scores.entry(node).or_default().0 = score;
     }
 
     if let Some(expansion) = &query.expand {

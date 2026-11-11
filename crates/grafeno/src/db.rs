@@ -60,7 +60,10 @@ use crate::{Hit, text, vector};
 ///     each principal becomes a service account and a key (14.1).
 /// 16. Adds `roles` (14.2), empty until one is defined.
 /// 17. Adds `audit` (14.5), the audit log, empty until something happens.
-pub const SCHEMA_VERSION: u64 = 17;
+/// 18. Allows indexes on several properties, on edges and over several
+///     labels (16.5) and full-text indexes (16.6), whose entries an older
+///     Grafeno would read as values, and adds `fulltext_stats`.
+pub const SCHEMA_VERSION: u64 = 18;
 
 /// The tables replaced in version 3, by name (their types no longer matter).
 const OLD_ADJ_OUT: TableDefinition<AdjKey, u128> = TableDefinition::new("adj_out");
@@ -351,6 +354,8 @@ impl Grafeno {
         tx.open_table(MEMORY).map_err(storage)?;
         tx.open_table(INDEXES).map_err(storage)?;
         tx.open_table(INDEX_ENTRIES).map_err(storage)?;
+        tx.open_table(crate::fulltext::FULLTEXT_STATS)
+            .map_err(storage)?;
         tx.open_table(NAMESPACES).map_err(storage)?;
         tx.open_table(ACCOUNTS).map_err(storage)?;
         tx.open_table(API_KEYS).map_err(storage)?;
@@ -482,6 +487,9 @@ impl Grafeno {
             memory: tx.open_table(MEMORY).map_err(storage)?,
             indexes: tx.open_table(INDEXES).map_err(storage)?,
             index_entries: tx.open_table(INDEX_ENTRIES).map_err(storage)?,
+            fulltext_stats: tx
+                .open_table(crate::fulltext::FULLTEXT_STATS)
+                .map_err(storage)?,
             registry: tx.open_table(NAMESPACES).map_err(storage)?,
             merges: tx.open_table(MERGES).map_err(storage)?,
             match_rules: tx.open_table(MATCH_RULES).map_err(storage)?,
@@ -869,6 +877,7 @@ pub struct ReadTx {
     pub(crate) memory: ReadOnlyTable<RecordKey, (f32, u32, i64)>,
     pub(crate) indexes: ReadOnlyTable<(&'static str, &'static str), &'static [u8]>,
     pub(crate) index_entries: ReadOnlyTable<IndexKey, ()>,
+    pub(crate) fulltext_stats: ReadOnlyTable<(&'static str, &'static str), &'static [u8]>,
     pub(crate) registry: ReadOnlyTable<&'static str, &'static [u8]>,
     pub(crate) merges: ReadOnlyTable<RecordKey, &'static [u8]>,
     pub(crate) match_rules: ReadOnlyTable<(&'static str, &'static str), &'static [u8]>,
