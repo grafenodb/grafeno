@@ -475,7 +475,10 @@ requests accept either that or an ISO 8601 string (`2024-05-01`,
   edges are left out.
 - **recall query**: `{text?, embedding?, limit?, labels?, candidates?,
   expand?, ranking?, include_archived?, touch?}`, where `expand` is `true`
-  (default), `false`, or `{depth, direction, filter, decay, seeds}`;
+  (default), `false`, or `{depth, direction, filter, decay, seeds, hubs,
+  fanout}`, where `hubs` (default 1, 0 to turn it off) damps nodes by
+  their number of edges and `fanout` (default 100, 0 for all) caps the
+  neighbors followed from each node;
   `ranking` is `true` (default: importance and recency weigh in), `false`, or
   `{importance_weight, recency_weight, half_life_days}`; archived memories
   are left out unless `include_archived`; `touch` records an access to each
@@ -566,6 +569,7 @@ engine lacks instead of failing. The capabilities:
 | `search.vector.indexes` | named vector indexes (similarity, `m`, `ef`), filtered and several-vector searches, `/similar`, background builds (16.7) |
 | `search.fulltext`, `search.hybrid` | full-text indexes with a query language and fragments; `POST /v1/{ns}/search` with a mode (16.6) |
 | `recall`, `context`, `memory` | hybrid recall, context for a prompt, importance and accesses |
+| `recall.hubs` | `hubs` and `fanout` in recall's `expand`: well-connected nodes damped, neighbors per node capped |
 | `transactions` | `BEGIN`, `COMMIT` and `ROLLBACK` across requests (16.4) |
 | `indexes.advanced` | indexes on several properties, on edges and over several labels; `NOT NULL`, type and key constraints (16.5) |
 | `query`, `query.explain`, `batches`, `traversal`, `algorithms` | GQ, `EXPLAIN`, batches, k-hop, paths, subgraphs and neighborhoods, graph algorithms |

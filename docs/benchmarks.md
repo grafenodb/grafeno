@@ -839,6 +839,33 @@ to a port nobody listens on), 1 023 ms with a 1 s timeout, and 530 ms with
 the 500 ms one kept. The control run, with reads served from a member's
 own state without ReadIndex, fails the check every time.
 
+## Hubs in recall (`crates/grafeno-memory/examples/hub_bench.rs`)
+
+20 000 notes of 12 words from a 3 000-word skewed vocabulary, each linked
+to 2 of 200 topics and all to one user node (a hub of 20 000 edges); 300
+queries of 2 words from random notes, recall of 10 with text alone, in
+memory, release build, 2026-11-12. `hubs` 0 and `fanout` 0 are the
+expansion before damping.
+
+| depth | hubs | fanout | user in top 10 | topics in top 10 (mean) | p50 ms | p99 ms |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1 | 0 | 0 | 100% | 0.2 | 0.2 | 0.3 |
+| 1 | 1 | 0 | 0% | 0.0 | 0.5 | 0.7 |
+| 1 | 1 | 100 | 0% | 0.0 | 0.4 | 0.9 |
+| 2 | 0 | 0 | 100% | 0.0 | 57.5 | 77.6 |
+| 2 | 1 | 0 | 0% | 0.0 | 97.7 | 117.8 |
+| 2 | 1 | 100 | 0% | 0.0 | 45.8 | 62.0 |
+
+Undamped, the user node is in every answer: it collects a share from all
+5 seeds. Damped, it is in none, and the results are the notes the words
+match. Damping counts each reached node's edges, up to 1 024 (a first
+version counted all of them and took depth 1 from 0.2 to 4.6 ms); at
+depth 2 the cap on neighbors per node (100, the default) makes recall
+faster than before, as the hub no longer hands a share to its 20 000
+notes. The multi-hop example (`examples/multi_hop.rs`, also a test) shows
+the other side: an answer three hops away still comes back, ranked above
+a near miss.
+
 ## Remaining limits
 
 - **Vector search reads each visited vector from redb** (about 0.4 µs per

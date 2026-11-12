@@ -12,9 +12,62 @@ const OVERVIEW_HEADER: &str = "## Overview\n";
 const MIN_TRUNCATED_TOKENS: usize = 24;
 const ELLIPSIS: &str = "…";
 
-/// A rough token count: about four characters per token in English prose.
+/// A token count that errs on the high side, for when no tokenizer is
+/// given. Four characters a token holds for English prose but runs short on
+/// code, structured data and other languages, so it counts by kind of
+/// character: a run of ASCII letters is a token per four letters (at least
+/// one a word), digits a token per three, every other character outside
+/// ASCII (accented letters, other scripts, emoji) a token each, and every
+/// punctuation mark or symbol a token. A run of whitespace costs a token
+/// when it holds a line break or more than one space (indentation), and
+/// nothing between words. The count only grows as text is added.
 pub fn estimate_tokens(text: &str) -> usize {
-    text.chars().count().div_ceil(4)
+    #[derive(Clone, Copy, PartialEq)]
+    enum Run {
+        Other,
+        Letters,
+        Digits,
+        Space,
+    }
+    fn close(run: Run, length: usize) -> usize {
+        match run {
+            Run::Letters => length.div_ceil(4),
+            Run::Digits => length.div_ceil(3),
+            Run::Other | Run::Space => 0,
+        }
+    }
+    let mut tokens = 0;
+    let mut run = Run::Other;
+    let mut length = 0;
+    // Whether the current run of whitespace already cost its token.
+    let mut space_counted = false;
+    for c in text.chars() {
+        let kind = if c.is_ascii_alphabetic() {
+            Run::Letters
+        } else if c.is_ascii_digit() {
+            Run::Digits
+        } else if c.is_whitespace() {
+            Run::Space
+        } else {
+            Run::Other
+        };
+        if kind != run {
+            tokens += close(run, length);
+            length = 0;
+            space_counted = false;
+        }
+        match kind {
+            Run::Other => tokens += 1,
+            Run::Space if !space_counted && (c == '\n' || length > 0) => {
+                tokens += 1;
+                space_counted = true;
+            }
+            _ => {}
+        }
+        length += 1;
+        run = kind;
+    }
+    tokens + close(run, length)
 }
 
 #[derive(Clone, Debug)]
@@ -135,9 +188,20 @@ pub fn context_for(
             if text.is_empty() || available < frame + MIN_TRUNCATED_TOKENS {
                 continue;
             }
-            text = truncate(&text, available - frame, count);
-            block = render_item(number, &heading, &node.labels, &text);
-            cost = count(&block);
+            // The frame and the text may cost a little more together than
+            // apart (whitespace where they meet): take the excess off the
+            // text and try again.
+            let whole = text;
+            let mut limit = available - frame;
+            loop {
+                text = truncate(&whole, limit, count);
+                block = render_item(number, &heading, &node.labels, &text);
+                cost = count(&block);
+                if cost <= available || limit < MIN_TRUNCATED_TOKENS {
+                    break;
+                }
+                limit = limit.saturating_sub(cost - available);
+            }
             if cost > available {
                 continue;
             }
@@ -379,4 +443,62 @@ fn truncate(text: &str, max_tokens: usize, count: fn(&str) -> usize) -> String {
     }
     let end = if low == 0 { 0 } else { ends[low - 1] };
     format!("{}{ELLIPSIS}", text[..end].trim_end())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::estimate_tokens;
+
+    /// The old estimate, four characters a token.
+    fn by_four(text: &str) -> usize {
+        text.chars().count().div_ceil(4)
+    }
+
+    #[test]
+    fn prose_costs_about_a_token_a_short_word() {
+        assert_eq!(estimate_tokens(""), 0);
+        assert_eq!(estimate_tokens("the cat sat on the mat"), 6);
+        let prose = "Ownership rules and the borrow checker";
+        assert_eq!(estimate_tokens(prose), 11);
+        assert!(estimate_tokens(prose) >= by_four(prose));
+    }
+
+    #[test]
+    fn code_data_and_other_languages_count_higher_than_four_characters() {
+        for text in [
+            "fn main() {\n    println!(\"{}\", x[0]);\n}",
+            r#"{"id": 42, "tags": ["a", "b"], "ok": true}"#,
+            "La decisión sobre la comunicación entre servicios",
+            "知识图谱",
+            "2026-11-12T10:30:00Z",
+        ] {
+            assert!(
+                estimate_tokens(text) > by_four(text),
+                "{text:?}: {} against {}",
+                estimate_tokens(text),
+                by_four(text)
+            );
+        }
+        assert_eq!(estimate_tokens("知识图谱"), 4);
+    }
+
+    #[test]
+    fn whitespace_costs_only_line_breaks_and_indentation() {
+        assert_eq!(estimate_tokens("one two"), 2);
+        assert_eq!(estimate_tokens("one\ntwo"), 3);
+        assert_eq!(estimate_tokens("one\n        two"), 3);
+        assert_eq!(estimate_tokens("one  two"), 3);
+    }
+
+    #[test]
+    fn the_count_only_grows_as_text_is_added() {
+        // Truncation searches for the longest prefix that fits.
+        let text = "Ana's team: {\"budget\": 1200}\n    décision → 知识 ok";
+        let mut last = 0;
+        for (at, c) in text.char_indices() {
+            let count = estimate_tokens(&text[..at + c.len_utf8()]);
+            assert!(count >= last, "{:?}", &text[..at + c.len_utf8()]);
+            last = count;
+        }
+    }
 }

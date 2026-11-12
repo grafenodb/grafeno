@@ -86,6 +86,48 @@ RETURN p.name, o.name, r.@valid_from;
 GQ also includes aggregates, indexes and algorithms for paths, centrality,
 communities and similarity. See the [GQ reference](docs/query-language.md).
 
+## An answer only the graph finds
+
+Ana belongs to the Platform team, the team works on Atlas, and Atlas
+decided on event-driven messaging. The decision's text names neither Ana
+nor her team, so a search for the question alone cannot find it. Recall
+starts from what the search finds and follows the facts:
+
+```text
+Ana ─member_of→ Platform team ─works_on→ Atlas ─decided→ Decision 42
+```
+
+```bash
+cargo run -p grafeno-memory --example multi_hop
+```
+
+```text
+What did Ana's team decide about service communication?
+
+Text search alone:
+1. Ana            0.0254  text #1
+2. Mobile team    0.0250  text #2
+3. Platform team  0.0246  text #3
+
+With the graph (three hops):
+1. Ana            0.0325  text #1, 2 hops from Mobile team, 1 hop from Platform team
+2. Platform team  0.0319  text #3, 1 hop from Ana, 2 hops from Mobile team
+3. Mobile team    0.0261  text #2, 2 hops from Ana, 2 hops from Platform team
+4. Acme           0.0111  1 hop from Ana, 1 hop from Mobile team, 1 hop from Platform team
+5. Atlas          0.0085  2 hops from Ana, 3 hops from Mobile team, 1 hop from Platform team
+6. Pocket         0.0077  3 hops from Ana, 1 hop from Mobile team, 3 hops from Platform team
+7. Decision 42    0.0032  3 hops from Ana, 2 hops from Platform team
+8. Decision 17    0.0028  2 hops from Mobile team
+```
+
+Each result says why it came back. Decision 42 ranks above the Mobile
+team's decision because Ana leads to it too. Everyone in the example is
+also part of Acme, which has 200 more people: recall damps a node by how
+many edges it has (`hubs`), so a node linked to everything does not rank
+as relevant to everything. Without that damping, Acme's people fill the
+results and both decisions drop out. The example is also a test
+([tests/multi_hop.rs](crates/grafeno-memory/tests/multi_hop.rs)).
+
 ## Integrate applications and agents
 
 | Access mode | Entry point |

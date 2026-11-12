@@ -87,6 +87,49 @@ RETURN p.name, o.name, r.@valid_from;
 GQ también incluye agregaciones, índices y algoritmos de caminos, centralidad,
 comunidades y similitud. Consulta la [referencia de GQ](docs/query-language.md).
 
+## Una respuesta que solo el grafo encuentra
+
+Ana pertenece al equipo Platform, el equipo trabaja en Atlas, y Atlas
+decidió usar mensajería por eventos. El texto de la decisión no nombra ni a
+Ana ni a su equipo, así que buscar solo la pregunta no la encuentra. El
+recall parte de lo que encuentra la búsqueda y sigue los hechos:
+
+```text
+Ana ─member_of→ Platform team ─works_on→ Atlas ─decided→ Decision 42
+```
+
+```bash
+cargo run -p grafeno-memory --example multi_hop
+```
+
+```text
+What did Ana's team decide about service communication?
+
+Text search alone:
+1. Ana            0.0254  text #1
+2. Mobile team    0.0250  text #2
+3. Platform team  0.0246  text #3
+
+With the graph (three hops):
+1. Ana            0.0325  text #1, 2 hops from Mobile team, 1 hop from Platform team
+2. Platform team  0.0319  text #3, 1 hop from Ana, 2 hops from Mobile team
+3. Mobile team    0.0261  text #2, 2 hops from Ana, 2 hops from Platform team
+4. Acme           0.0111  1 hop from Ana, 1 hop from Mobile team, 1 hop from Platform team
+5. Atlas          0.0085  2 hops from Ana, 3 hops from Mobile team, 1 hop from Platform team
+6. Pocket         0.0077  3 hops from Ana, 1 hop from Mobile team, 3 hops from Platform team
+7. Decision 42    0.0032  3 hops from Ana, 2 hops from Platform team
+8. Decision 17    0.0028  2 hops from Mobile team
+```
+
+Cada resultado dice por qué volvió. Decision 42 queda por encima de la
+decisión del equipo Mobile porque Ana también lleva a ella. Todos en el
+ejemplo forman parte de Acme, que tiene 200 personas más: el recall atenúa
+un nodo según cuántas aristas tiene (`hubs`), así un nodo conectado con
+todo no cuenta como relevante para todo. Sin esa atenuación, la gente de
+Acme llena los resultados y las dos decisiones quedan fuera. El ejemplo
+también es una prueba
+([tests/multi_hop.rs](crates/grafeno-memory/tests/multi_hop.rs)).
+
 ## Integrar aplicaciones y agentes
 
 | Forma de acceso | Punto de entrada |

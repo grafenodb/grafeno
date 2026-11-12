@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use grafeno::{Direction, EdgeFilter, Fusion, Node, NodeId, ReadTx, Result, SearchMode, Timestamp};
 use serde::Serialize;
@@ -14,6 +14,18 @@ pub struct Expansion {
     pub decay: f32,
     /// How many of the best direct matches are expanded.
     pub seeds: usize,
+    /// How much well-connected nodes are damped, from 0 (not at all) up.
+    /// The share passed along an edge is divided by
+    /// `sqrt((1 + hubs × ln d₁) × (1 + hubs × ln d₂))`, where d₁ and d₂ are
+    /// the edges of its two ends (counted up to 1 024): a node with one
+    /// edge passes and receives the whole share, one with 1 000 edges about
+    /// a third at `hubs` 1. A node linked to everything (the user, the
+    /// current project, a common tag) then no longer ranks as relevant to
+    /// everything.
+    pub hubs: f32,
+    /// Neighbors followed from each node at most (0: all): those the
+    /// search found first, best first, then the newest.
+    pub fanout: usize,
 }
 
 impl Default for Expansion {
@@ -24,6 +36,8 @@ impl Default for Expansion {
             filter: EdgeFilter::any(),
             decay: 0.5,
             seeds: 5,
+            hubs: 1.0,
+            fanout: 100,
         }
     }
 }
@@ -220,22 +234,22 @@ pub fn recall(read: &ReadTx, ns: &str, query: &RecallQuery) -> Result<Vec<Recall
     }
 
     if let Some(expansion) = &query.expand {
-        let mut seeds: Vec<(NodeId, f32)> = scores
+        let direct: HashMap<NodeId, f32> = scores
             .iter()
             .map(|(id, (score, _))| (*id, *score))
             .collect();
+        let mut seeds: Vec<(NodeId, f32)> =
+            direct.iter().map(|(id, score)| (*id, *score)).collect();
         sort_by_score(&mut seeds);
         seeds.truncate(expansion.seeds);
+        let mut degrees = HashMap::new();
+        // What a node receives from several seeds adds up: being near
+        // several matches is a reason to rank it, and damping keeps a hub
+        // near all of them from collecting more than its share.
         for (seed, seed_score) in seeds {
-            for (node, hops) in read.k_hop(
-                ns,
-                seed,
-                expansion.depth,
-                expansion.direction,
-                &expansion.filter,
-            )? {
+            for (node, hops, share) in spread(read, ns, seed, expansion, &direct, &mut degrees)? {
                 let entry = scores.entry(node).or_default();
-                entry.0 += seed_score * expansion.decay.powi(hops as i32);
+                entry.0 += seed_score * share;
                 entry.1.push(Signal::Graph { seed, hops });
             }
         }
@@ -297,6 +311,82 @@ pub fn recall(read: &ReadTx, ns: &str, query: &RecallQuery) -> Result<Vec<Recall
     out.sort_by(|a, b| b.score.total_cmp(&a.score).then(a.node.id.cmp(&b.node.id)));
     out.truncate(query.limit);
     Ok(out)
+}
+
+/// The nodes within `expansion.depth` hops of `seed`, in BFS order, each
+/// with its distance and the share of the seed's score it receives (along
+/// the first path found): `decay` per hop, damped at both ends of each edge
+/// by their number of edges (see [`Expansion::hubs`]).
+fn spread(
+    read: &ReadTx,
+    ns: &str,
+    seed: NodeId,
+    expansion: &Expansion,
+    direct: &HashMap<NodeId, f32>,
+    degrees: &mut HashMap<NodeId, usize>,
+) -> Result<Vec<(NodeId, usize, f32)>> {
+    // Negative (or NaN) would amplify hubs: read as 0.
+    let hubs = expansion.hubs.max(0.0);
+    let damping = |degree: usize| 1.0 + hubs * (degree.max(1) as f32).ln();
+    let mut reached = HashMap::from([(seed, (0usize, 1.0f32))]);
+    let mut queue = VecDeque::from([seed]);
+    let mut out = Vec::new();
+    while let Some(current) = queue.pop_front() {
+        let (hops, share) = reached[&current];
+        if hops >= expansion.depth {
+            continue;
+        }
+        let entries = read.neighbor_ids(ns, current, expansion.direction, &expansion.filter)?;
+        degrees.insert(current, entries.len().min(DEGREE_CAP));
+        let mut seen = HashSet::new();
+        let mut next: Vec<NodeId> = Vec::new();
+        for (_, other) in entries {
+            if !reached.contains_key(&other) && seen.insert(other) {
+                next.push(other);
+            }
+        }
+        if expansion.fanout > 0 && next.len() > expansion.fanout {
+            next.sort_by(|a, b| {
+                let score = |id| direct.get(id).copied().unwrap_or(f32::NEG_INFINITY);
+                score(b).total_cmp(&score(a)).then(b.cmp(a))
+            });
+            next.truncate(expansion.fanout);
+        }
+        let from = damping(degrees[&current]);
+        for node in next {
+            let to = if hubs > 0.0 {
+                damping(degree(read, ns, node, expansion, degrees)?)
+            } else {
+                1.0
+            };
+            let passed = share * expansion.decay / (from * to).sqrt();
+            reached.insert(node, (hops + 1, passed));
+            out.push((node, hops + 1, passed));
+            queue.push_back(node);
+        }
+    }
+    Ok(out)
+}
+
+/// Damping counts a node's edges up to this many: past it, a node is a hub
+/// either way, and counting the rest would read all of them.
+const DEGREE_CAP: usize = 1_024;
+
+/// The edges of `node` that expansion follows (up to [`DEGREE_CAP`]),
+/// counted once per recall.
+fn degree(
+    read: &ReadTx,
+    ns: &str,
+    node: NodeId,
+    expansion: &Expansion,
+    degrees: &mut HashMap<NodeId, usize>,
+) -> Result<usize> {
+    if let Some(degree) = degrees.get(&node) {
+        return Ok(*degree);
+    }
+    let degree = read.degree(ns, node, expansion.direction, &expansion.filter, DEGREE_CAP)?;
+    degrees.insert(node, degree);
+    Ok(degree)
 }
 
 /// Best first; ties broken by id so results are deterministic.

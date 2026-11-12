@@ -272,6 +272,41 @@ pub(crate) fn adjacency(
     Ok(out)
 }
 
+/// Visits the edges of `node` in an adjacency table (with `label`, only
+/// edges with that label) until `visit` returns false.
+pub(crate) fn adjacency_each(
+    table: &impl ReadableTable<AdjKey, Adj>,
+    ns: &str,
+    node: NodeId,
+    label: Option<&str>,
+    mut visit: impl FnMut(&Adjacent) -> bool,
+) -> Result<()> {
+    let node = node.as_u128();
+    for item in table
+        .range((ns, node, label.unwrap_or(""), 0u128)..)
+        .map_err(storage)?
+    {
+        let (key, value) = item.map_err(storage)?;
+        let (key_ns, key_node, key_label, edge) = key.value();
+        if key_ns != ns || key_node != node || label.is_some_and(|label| label != key_label) {
+            break;
+        }
+        let (other, recorded_at, expired_at, valid_from, valid_to) = value.value();
+        let entry = Adjacent {
+            edge: EdgeId::from_u128(edge),
+            other: NodeId::from_u128(other),
+            recorded_at,
+            expired_at,
+            valid_from,
+            valid_to,
+        };
+        if !visit(&entry) {
+            break;
+        }
+    }
+    Ok(())
+}
+
 pub(crate) fn nodes_with_label(
     table: &impl ReadableTable<LabelKey, ()>,
     ns: &str,

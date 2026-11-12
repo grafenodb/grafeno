@@ -486,7 +486,10 @@ Los ids son UUID. Los tiempos en las respuestas son microsegundos desde la
   las aristas retractadas se omiten.
 - **consulta de recall**: `{text?, embedding?, limit?, labels?, candidates?,
   expand?, ranking?, include_archived?, touch?}`, donde `expand` es `true`
-  (por defecto), `false`, o `{depth, direction, filter, decay, seeds}`;
+  (por defecto), `false`, o `{depth, direction, filter, decay, seeds, hubs,
+  fanout}`, donde `hubs` (1 por defecto, 0 lo desactiva) atenúa los nodos
+  según su número de aristas y `fanout` (100 por defecto, 0 para todos)
+  limita los vecinos que se siguen desde cada nodo;
   `ranking` es `true` (por defecto: la importancia y la recencia cuentan),
   `false`, o `{importance_weight, recency_weight, half_life_days}`; los
   recuerdos archivados se omiten salvo con `include_archived`; `touch`
@@ -582,6 +585,7 @@ lo que le falta a un motor más antiguo en lugar de fallar. Las capacidades:
 | `search.vector.indexes` | índices vectoriales con nombre (similitud, `m`, `ef`), búsquedas filtradas y de varios vectores, `/similar`, construcciones en segundo plano (16.7) |
 | `search.fulltext`, `search.hybrid` | índices de texto completo con un lenguaje de consulta y fragmentos; `POST /v1/{ns}/search` con un modo (16.6) |
 | `recall`, `context`, `memory` | recall híbrido, contexto para un prompt, importancia y accesos |
+| `recall.hubs` | `hubs` y `fanout` en el `expand` del recall: nodos muy conectados atenuados, vecinos por nodo limitados |
 | `transactions` | `BEGIN`, `COMMIT` y `ROLLBACK` a lo largo de varias peticiones (16.4) |
 | `indexes.advanced` | índices sobre varias propiedades, sobre aristas y sobre varias etiquetas; restricciones `NOT NULL`, de tipo y de clave (16.5) |
 | `query`, `query.explain`, `batches`, `traversal`, `algorithms` | GQ, `EXPLAIN`, lotes, k-hop, caminos, subgrafos y vecindarios, algoritmos de grafos |

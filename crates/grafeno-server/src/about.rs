@@ -51,6 +51,8 @@ pub const CAPABILITIES: &[&str] = &[
     "recall",
     "context",
     "memory",
+    // `hubs` and `fanout` in recall's graph expansion.
+    "recall.hubs",
     // Queries (phases 7 and 12): GQ, EXPLAIN, batches.
     "query",
     "query.explain",

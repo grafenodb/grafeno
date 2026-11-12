@@ -7,7 +7,7 @@ use grafeno_core::{Edge, EdgeId, Error, Node, NodeId, Result, Timestamp};
 use redb::ReadableTable;
 use serde::{Deserialize, Serialize};
 
-use crate::store::{ADJ_IN, ADJ_OUT, Adj, AdjKey, Adjacent, adjacency, storage};
+use crate::store::{ADJ_IN, ADJ_OUT, Adj, AdjKey, Adjacent, adjacency, adjacency_each, storage};
 use crate::{ReadTx, WriteTx};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -193,6 +193,62 @@ impl ReadTx {
             }
         }
         Ok(visible)
+    }
+
+    /// How many edges of `node` pass `filter`, counting up to `at_most`
+    /// (at most `at_most` entries are read, however many it has). With
+    /// [`Direction::Both`], a self-loop counts twice. Under a view that
+    /// decides record by record, the edges it lets the caller see.
+    pub fn degree(
+        &self,
+        ns: &str,
+        node: NodeId,
+        direction: Direction,
+        filter: &EdgeFilter,
+        at_most: usize,
+    ) -> Result<usize> {
+        if let Some(view) = filter.view().or(self.view.as_deref()) {
+            if !view.reads(ns) {
+                return Ok(0);
+            }
+            if view.per_record(ns) {
+                return Ok(self
+                    .adjacent(ns, node, direction, filter)?
+                    .len()
+                    .min(at_most));
+            }
+        }
+        let mut count = 0;
+        let mut tables: Vec<&redb::ReadOnlyTable<AdjKey, Adj>> = Vec::new();
+        if matches!(direction, Direction::Out | Direction::Both) {
+            tables.push(&self.out);
+        }
+        if matches!(direction, Direction::In | Direction::Both) {
+            tables.push(&self.inn);
+        }
+        let labels: Vec<Option<&str>> = if filter.labels.is_empty() {
+            vec![None]
+        } else {
+            filter
+                .labels
+                .iter()
+                .map(|label| Some(label.as_str()))
+                .collect()
+        };
+        for table in tables {
+            for label in &labels {
+                if count >= at_most {
+                    return Ok(at_most);
+                }
+                adjacency_each(table, ns, node, *label, |entry| {
+                    if filter.accepts_entry(entry) {
+                        count += 1;
+                    }
+                    count < at_most
+                })?;
+            }
+        }
+        Ok(count.min(at_most))
     }
 
     /// Nodes `1..=depth` hops away from `start`, with their distance, in BFS order.

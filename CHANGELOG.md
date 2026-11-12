@@ -11,6 +11,26 @@ API version (`GET /v1/about`, now 1) changes only when a change would
 break a client of the previous one, and the database files' layout
 version (now 18) is upgraded in place, with a copy kept first.
 
+## Unreleased
+
+- **Changed**: recall's graph expansion damps well-connected nodes. The
+  share a seed's score passes along an edge is divided by
+  `sqrt((1 + ln d₁)(1 + ln d₂))`, d₁ and d₂ being the edges of its ends,
+  so a node linked to everything (the user, the current project, a common
+  tag) no longer collects score from every match and ranks as relevant to
+  everything. Each node passes to 100 neighbors at most, those the search
+  found first. `expand` takes `hubs` (1; 0 for the earlier behavior) and
+  `fanout` (100; 0 for all); capability `recall.hubs`. Results with a
+  graph signal score lower than before, and hubs and their neighbors rank
+  lower (#11).
+- **Added**: an example and a test of an answer only the graph finds
+  (`cargo run -p grafeno-memory --example multi_hop`), in the README (#14).
+- **Changed**: without a tokenizer, `context_for` (and `/context`, MCP's
+  `context`) counts tokens by kind of character instead of four
+  characters a token, which ran short on code, structured data and text
+  outside English; contexts hold a little less and stay within budgets
+  (#16).
+
 ## 0.2.1 (2026-11-11)
 
 The same database layout (18), HTTP API (version 1) and log entry format

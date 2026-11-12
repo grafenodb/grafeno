@@ -423,3 +423,39 @@ fn delete_edges_from_replaces_derived_links() {
         1
     );
 }
+
+#[test]
+fn degree_counts_the_edges_a_filter_keeps_up_to_a_cap() {
+    let db = Grafeno::in_memory().unwrap();
+    let hub = note(&db, "hub");
+    let others: Vec<NodeId> = (0..10).map(|i| note(&db, &format!("n{i}"))).collect();
+    for other in &others[..6] {
+        link(&db, hub, *other);
+    }
+    for other in &others[6..] {
+        link(&db, *other, hub);
+    }
+    let retracted = db
+        .write(|tx| tx.create_edge(NS, NewEdge::new(hub, "cites", others[0])))
+        .unwrap();
+    db.write(|tx| tx.retract_edge(NS, retracted)).unwrap();
+
+    let read = db.begin_read().unwrap();
+    let any = EdgeFilter::any();
+    let degree =
+        |direction, filter: &EdgeFilter, cap| read.degree(NS, hub, direction, filter, cap).unwrap();
+    assert_eq!(degree(Direction::Out, &any, 100), 6);
+    assert_eq!(degree(Direction::In, &any, 100), 4);
+    assert_eq!(degree(Direction::Both, &any, 100), 10);
+    assert_eq!(degree(Direction::Both, &any, 7), 7);
+    assert_eq!(
+        degree(Direction::Out, &EdgeFilter::any().label("cites"), 100),
+        0
+    );
+    assert_eq!(
+        degree(Direction::Both, &any, 100),
+        read.neighbor_ids(NS, hub, Direction::Both, &any)
+            .unwrap()
+            .len()
+    );
+}

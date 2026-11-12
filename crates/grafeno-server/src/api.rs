@@ -151,6 +151,12 @@ pub struct ExpandInput {
     pub decay: f32,
     #[serde(default = "default_seeds")]
     pub seeds: usize,
+    /// How much well-connected nodes are damped (0: not at all).
+    #[serde(default = "default_hubs")]
+    pub hubs: f32,
+    /// Neighbors followed from each node at most (0: all).
+    #[serde(default = "default_fanout")]
+    pub fanout: usize,
 }
 
 fn default_depth() -> usize {
@@ -163,6 +169,14 @@ fn default_decay() -> f32 {
 
 fn default_seeds() -> usize {
     5
+}
+
+fn default_hubs() -> f32 {
+    Expansion::default().hubs
+}
+
+fn default_fanout() -> usize {
+    Expansion::default().fanout
 }
 
 /// `true` (the default) expands with default options, `false` disables it.
@@ -299,12 +313,19 @@ impl RecallInput {
         let expand = match &self.expand {
             ExpandSetting::Enabled(false) => None,
             ExpandSetting::Enabled(true) => Some(Expansion::default()),
+            ExpandSetting::Options(options)
+                if !(options.hubs >= 0.0 && options.hubs.is_finite()) =>
+            {
+                return Err(Error::Invalid("`expand.hubs` must be 0 or more".into()));
+            }
             ExpandSetting::Options(options) => Some(Expansion {
                 depth: options.depth,
                 direction: options.direction,
                 filter: options.filter.resolve()?,
                 decay: options.decay,
                 seeds: options.seeds,
+                hubs: options.hubs,
+                fanout: options.fanout,
             }),
         };
         Ok(RecallQuery {
