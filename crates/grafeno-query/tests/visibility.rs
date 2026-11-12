@@ -389,6 +389,51 @@ fn ints(rows: &[Vec<Value>]) -> Vec<i64> {
         .collect()
 }
 
+/// Found by the property test: an account that may write here but read
+/// nothing got the stored counts from the catalog procedures.
+#[test]
+fn a_caller_who_reads_nothing_counts_nothing() {
+    let db = Grafeno::in_memory().unwrap();
+    db.write(|tx| {
+        for _ in 0..3 {
+            tx.create_node(NS, grafeno::NewNode::new("A").prop("x", 1))?;
+        }
+        Ok(())
+    })
+    .unwrap();
+    let spec = RightsSpec {
+        namespace_read: false,
+        label_grants: 0,
+        label_denials: 0,
+        edge_grants: 0,
+        edge_denials: 0,
+        secret_hidden: 0,
+        policy: 0,
+        red: false,
+        writes: 0b110,
+    };
+    let (account, rights) = rights_for(&spec);
+    let view = Arc::new(View::new(rights, Some(&account)));
+    for query in [
+        "CALL db.labels() YIELD label RETURN label",
+        "CALL db.edgeLabels() YIELD label RETURN label",
+        "CALL db.propertyKeys() YIELD key RETURN key",
+    ] {
+        assert_eq!(
+            reads(&db, &view, query).unwrap(),
+            Vec::<Vec<Value>>::new(),
+            "{query}"
+        );
+    }
+    let stats = reads(
+        &db,
+        &view,
+        "CALL db.stats() YIELD nodes, edges RETURN nodes, edges",
+    )
+    .unwrap();
+    assert_eq!(stats, vec![vec![Value::Int(0), Value::Int(0)]]);
+}
+
 proptest! {
     #![proptest_config(ProptestConfig { cases: 300, ..ProptestConfig::default() })]
 

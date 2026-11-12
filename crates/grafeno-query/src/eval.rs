@@ -93,7 +93,7 @@ impl Context<'_> {
     }
 
     /// Whether nothing of this namespace may be read.
-    fn blind(&self) -> bool {
+    pub(crate) fn blind(&self) -> bool {
         self.view.is_some_and(|view| !view.reads(self.ns))
     }
 

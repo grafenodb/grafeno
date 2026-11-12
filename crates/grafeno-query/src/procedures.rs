@@ -358,8 +358,9 @@ pub(crate) fn call(
     let read = ctx.read;
     let ns = ctx.ns;
     // Under a view decided record by record (14.4), what the catalog
-    // procedures count comes from the visible records.
-    if ctx.per_record().is_some()
+    // procedures count comes from the visible records; so it does for a
+    // caller who may read nothing here (the stored counts count it all).
+    if (ctx.per_record().is_some() || ctx.blind())
         && let Some(rows) = visible_catalog(ctx, procedure.name)?
     {
         return Ok(rows);

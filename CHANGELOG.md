@@ -23,6 +23,11 @@ as 0.2.0, so 0.2.0 and 0.2.1 members can share a cluster.
   newest append is now sent (it holds the leader's whole view of that
   member), so a follower catches up at once. Seen as a namespace moved
   under load whose last writes were missing on one member.
+- **Fixed**: in the library, a caller whose view reads nothing of a
+  namespace (rights to write there, none to read) got the stored counts
+  from `db.labels()`, `db.edgeLabels()`, `db.propertyKeys()` and
+  `db.stats()`; they now count what it sees: nothing. The server refused
+  such a caller's queries already.
 - **Changed**: the TypeScript client left this repository. It is now the
   TypeScript SDK in [grafenodb/grafeno-sdk](https://github.com/grafenodb/grafeno-sdk),
   published to npm as `@grafenodb/client`, with its own versions; the
