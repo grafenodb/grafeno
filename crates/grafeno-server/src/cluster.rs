@@ -26,7 +26,7 @@ use axum::extract::{DefaultBodyLimit, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::routing::{get, post};
 use grafeno_cluster::{Node, NodeOptions, Storage, Transport};
-use grafeno_raft::{Envelope, NodeId};
+use grafeno_raft::{Envelope, Message, NodeId};
 use serde::{Deserialize, Serialize};
 
 const SECRET_HEADER: &str = "x-grafeno-cluster";
@@ -122,21 +122,28 @@ impl HttpTransport {
                         .http_status_as_error(false)
                         .build()
                         .into();
-                    while let Ok((envelope, snapshot)) = receiver.recv() {
-                        let Ok(json) = serde_json::to_vec(&envelope) else {
-                            continue;
-                        };
-                        let mut body = Vec::with_capacity(4 + json.len());
-                        body.extend_from_slice(&(json.len() as u32).to_le_bytes());
-                        body.extend_from_slice(&json);
-                        if let Some(snapshot) = snapshot {
-                            body.extend_from_slice(&snapshot);
+                    while let Ok(first) = receiver.recv() {
+                        // Everything waiting by now, the stale appends left out.
+                        let mut waiting = vec![first];
+                        while let Ok(more) = receiver.try_recv() {
+                            waiting.push(more);
                         }
-                        let _ = agent
-                            .post(&url)
-                            .header(SECRET_HEADER, &secret)
-                            .header(MEMBER_HEADER, &me)
-                            .send(&body[..]);
+                        for (envelope, snapshot) in coalesce(waiting) {
+                            let Ok(json) = serde_json::to_vec(&envelope) else {
+                                continue;
+                            };
+                            let mut body = Vec::with_capacity(4 + json.len());
+                            body.extend_from_slice(&(json.len() as u32).to_le_bytes());
+                            body.extend_from_slice(&json);
+                            if let Some(snapshot) = snapshot {
+                                body.extend_from_slice(&snapshot);
+                            }
+                            let _ = agent
+                                .post(&url)
+                                .header(SECRET_HEADER, &secret)
+                                .header(MEMBER_HEADER, &me)
+                                .send(&body[..]);
+                        }
                     }
                 })
                 .expect("a sender thread starts");
@@ -144,6 +151,26 @@ impl HttpTransport {
         }
         Self { peers }
     }
+}
+
+/// Of the messages waiting for a peer, only the newest append is sent: an
+/// append carries the leader's whole view of that peer (the entries from
+/// where it stands to the end of the log, the commit index, the read
+/// round), so the newest makes the others stale, and Raft makes up for a
+/// message that never arrives. The other messages go as they are, in
+/// order. Without this, a follower that fell behind under load got a queue
+/// of appends each repeating the same entries, and learned of new ones
+/// only after sending through all of them: seconds behind, and further
+/// behind the more it lagged.
+fn coalesce(waiting: Vec<Outgoing>) -> Vec<Outgoing> {
+    let is_append = |(envelope, _): &Outgoing| matches!(envelope.message, Message::Append { .. });
+    let newest = waiting.iter().rposition(is_append);
+    waiting
+        .into_iter()
+        .enumerate()
+        .filter(|(at, message)| !is_append(message) || Some(*at) == newest)
+        .map(|(_, message)| message)
+        .collect()
 }
 
 impl Transport for HttpTransport {
@@ -823,4 +850,68 @@ pub fn read_part(
     )?;
     serde_json::to_value(partial)
         .map_err(|e| crate::http::ApiError::from(grafeno::Error::Serialization(e.to_string())))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn append(commit: u64) -> Outgoing {
+        let message = Message::Append {
+            term: 1,
+            prev_index: 0,
+            prev_term: 0,
+            entries: Vec::new(),
+            commit,
+            read: 0,
+        };
+        (
+            Envelope {
+                from: 1,
+                to: 2,
+                message,
+            },
+            None,
+        )
+    }
+
+    fn vote_reply() -> Outgoing {
+        let message = Message::VoteReply {
+            term: 1,
+            granted: true,
+            pre_vote: false,
+        };
+        (
+            Envelope {
+                from: 1,
+                to: 2,
+                message,
+            },
+            None,
+        )
+    }
+
+    fn commits(sent: &[Outgoing]) -> Vec<Option<u64>> {
+        sent.iter()
+            .map(|(envelope, _)| match envelope.message {
+                Message::Append { commit, .. } => Some(commit),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn only_the_newest_append_goes() {
+        let sent = coalesce(vec![
+            append(1),
+            vote_reply(),
+            append(2),
+            append(3),
+            vote_reply(),
+        ]);
+        // The votes stay, in order; of the appends, the newest.
+        assert_eq!(commits(&sent), [None, Some(3), None]);
+        assert_eq!(commits(&coalesce(vec![append(7)])), [Some(7)]);
+        assert_eq!(commits(&coalesce(vec![vote_reply()])), [None]);
+    }
 }

@@ -13,10 +13,16 @@ version (now 18) is upgraded in place, with a copy kept first.
 
 ## 0.2.1 (2026-11-11)
 
-The engine is the same as 0.2.0's: the same database layout (18), HTTP API
-(version 1) and log entry format, so 0.2.0 and 0.2.1 members can share a
-cluster. What changed is the repository: the TypeScript client left it.
+The same database layout (18), HTTP API (version 1) and log entry format
+as 0.2.0, so 0.2.0 and 0.2.1 members can share a cluster.
 
+- **Fixed**: in a cluster, a follower that fell behind while clients wrote
+  a lot could stay seconds behind, and further behind the more it lagged:
+  every message of the leader to it waited in one queue, each repeating
+  the entries it lacked. Of the messages waiting for a member, only the
+  newest append is now sent (it holds the leader's whole view of that
+  member), so a follower catches up at once. Seen as a namespace moved
+  under load whose last writes were missing on one member.
 - **Changed**: the TypeScript client left this repository. It is now the
   TypeScript SDK in [grafenodb/grafeno-sdk](https://github.com/grafenodb/grafeno-sdk),
   published to npm as `@grafenodb/client`, with its own versions; the

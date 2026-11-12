@@ -102,6 +102,27 @@ fn call(
     }
 }
 
+/// `call` again while the cluster settles (a member that knows no leader
+/// yet, or answers before its groups are ready), for 10 s at most. Only
+/// for calls that are safe to repeat: with an idempotency key, or
+/// idempotent themselves.
+fn call_settled(
+    port: u16,
+    method: &str,
+    path: &str,
+    body: Option<Value>,
+    key: Option<&str>,
+) -> (u16, Value) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let (code, answer) = call(port, method, path, body.clone(), key);
+        if !matches!(code, 0 | 404 | 421 | 503) || Instant::now() >= deadline {
+            return (code, answer);
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
 fn query(port: u16, ns: &str, text: &str) -> (u16, Value) {
     call(
         port,
@@ -163,7 +184,7 @@ fn namespaces_live_on_groups_and_move_under_load() {
 
     // Place namespaces on groups, through any member.
     for (ns, group, through) in [("alpha", 1, 0), ("gamma", 2, 1), ("moving", 1, 2)] {
-        let (code, body) = call(
+        let (code, body) = call_settled(
             apis[through],
             "POST",
             "/v1/cluster/placement",
@@ -177,7 +198,13 @@ fn namespaces_live_on_groups_and_move_under_load() {
     // Writes to each, through different members; reads anywhere.
     for (i, ns) in ["alpha", "beta", "gamma"].iter().enumerate() {
         for k in 0..4 {
-            let (code, body) = query(apis[(i + k) % 3], ns, &format!("CREATE (:Note {{k: {k}}})"));
+            let (code, body) = call_settled(
+                apis[(i + k) % 3],
+                "POST",
+                &format!("/v1/{ns}/query"),
+                Some(json!({ "query": format!("CREATE (:Note {{k: {k}}})") })),
+                Some(&format!("setup-{ns}-{k}")),
+            );
             assert_eq!(code, 200, "{ns}: {body}");
         }
     }

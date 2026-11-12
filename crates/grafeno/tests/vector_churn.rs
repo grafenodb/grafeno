@@ -82,7 +82,9 @@ fn search_quality_survives_deletes_reinserts_and_churn() {
     .unwrap();
     let read = db.begin_read().unwrap();
     // Search is approximate: nearly every reinserted vector comes first
-    // for itself (before 10.3, dozens did not come back at all).
+    // for itself (before 10.3, dozens did not come back at all). Levels
+    // come from random ids, so the count varies: in 40 runs it missed 0
+    // vectors 37 times, 1 twice and 3 once, and a CI run missed 5.
     let missed = gone
         .iter()
         .zip(&saved)
@@ -90,7 +92,7 @@ fn search_quality_survives_deletes_reinserts_and_churn() {
         .filter(|(id, v)| read.search_vector(NS, v, 1).unwrap()[0].node != **id)
         .count();
     assert!(
-        missed <= 2,
+        missed <= 8,
         "{missed} of 200 reinserted vectors not found first"
     );
     drop(read);
