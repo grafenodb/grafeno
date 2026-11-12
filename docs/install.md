@@ -1,5 +1,7 @@
 # Installing Grafeno
 
+[Español](instalacion.md) | **English**
+
 This guide installs **the engine**: the `grafeno` program, as a service
 that starts with the system. It has no graphical interface, as a database
 server has none: work with it from its console (`grafeno shell`), its HTTP

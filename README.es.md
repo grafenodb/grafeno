@@ -7,7 +7,7 @@
 <p align="center">
   <a href="README.md">English</a> · <strong>Español</strong><br>
   <a href="#instalar-el-motor">Empezar</a> ·
-  <a href="docs/install.md">Instalación</a> ·
+  <a href="docs/instalacion.md">Instalación</a> ·
   <a href="docs/query-language.md">Consultas GQ</a> ·
   <a href="CONTRIBUTING.es.md">Contribuir</a>
 </p>
@@ -40,7 +40,7 @@ integra como biblioteca Rust.
 Windows (un instalador `.exe` con el servicio, o winget), Linux en x86_64 y
 aarch64 (repositorios APT y DNF firmados, `.deb`, `.rpm` y un instalador de
 una línea con `curl` que también sirve para AlmaLinux, Rocky y RHEL) y un
-`.tar.gz`: consulta la [guía de instalación](docs/install.md). El motor se
+`.tar.gz`: consulta la [guía de instalación](docs/instalacion.md). El motor se
 ejecuta como servicio en `127.0.0.1:7810`; su configuración está en
 `grafeno.toml`. `grafeno setup` agrega instancias (varias bases de datos en
 una máquina, cada una con su servicio), y `grafeno doctor` las revisa. Las versiones del motor se
@@ -109,7 +109,7 @@ grafeno serve --memory
 ```
 
 Escucha por defecto en `127.0.0.1:7810`. Los datos de `--memory` se pierden al cerrar el proceso. Para una configuración
-persistente y autenticada, sigue la [guía del servidor](docs/install.md#settings).
+persistente y autenticada, sigue la [guía del servidor](docs/instalacion.md#configuración).
 
 ## Cómo está organizado
 
