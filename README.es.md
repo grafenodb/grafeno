@@ -91,7 +91,7 @@ comunidades y similitud. Consulta la [referencia de GQ](docs/query-language.md).
 
 | Forma de acceso | Punto de entrada |
 | --- | --- |
-| Servicio HTTP, servidor MCP y consola | [Servidor Grafeno](crates/grafeno-server/README.md) |
+| Servicio HTTP, servidor MCP y consola | [Servidor Grafeno](crates/grafeno-server/README.es.md) |
 | Una interfaz gráfica | Grafeno Studio, instalado aparte, mediante la API HTTP |
 | Aplicaciones JavaScript y TypeScript | [`@grafenodb/client`](https://github.com/grafenodb/grafeno-sdk/tree/main/typescript), el SDK de TypeScript (`npm install @grafenodb/client`) |
 | Biblioteca Rust embebida | [`grafeno`](crates/grafeno/src/lib.rs) y [`grafeno-memory`](crates/grafeno-memory/src/lib.rs) |

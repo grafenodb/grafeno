@@ -1,5 +1,7 @@
 # grafeno-server
 
+[Español](README.es.md) | **English**
+
 The `grafeno` binary serves and manages a Grafeno database (installers:
 [docs/install.md](../../docs/install.md)):
 
