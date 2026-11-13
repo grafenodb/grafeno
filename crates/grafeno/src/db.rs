@@ -1008,7 +1008,9 @@ impl ReadTx {
         loop {
             let hits = fetch(ask)?;
             let exhausted = hits.len() < ask;
-            let mut out = Vec::with_capacity(limit);
+            // As many as were found at most: the limit is the caller's, and
+            // may be anything (a 10^12 once asked for that much memory).
+            let mut out = Vec::with_capacity(limit.min(hits.len()));
             for hit in hits {
                 if self.sees(ns, hit.node)? {
                     out.push(hit);
@@ -1020,7 +1022,7 @@ impl ReadTx {
             if exhausted || ask >= 1 << 20 {
                 return Ok(out);
             }
-            ask *= 4;
+            ask = ask.saturating_mul(4);
         }
     }
 
@@ -1276,7 +1278,7 @@ impl ReadTx {
 
     /// Approximate nearest neighbors by cosine similarity, best first.
     pub fn search_vector(&self, ns: &str, query: &[f32], limit: usize) -> Result<Vec<Hit>> {
-        self.search_vector_with(ns, query, limit, (limit * 4).max(64))
+        self.search_vector_with(ns, query, limit, limit.saturating_mul(4).max(64))
     }
 
     /// Like [`ReadTx::search_vector`], with the size `ef` of the candidate
@@ -1290,7 +1292,11 @@ impl ReadTx {
     ) -> Result<Vec<Hit>> {
         // Each round widens the walk with what it asks for.
         self.visible_hits(ns, limit, |ask| {
-            let widened = if ask > limit { ef.max(ask * 4) } else { ef };
+            let widened = if ask > limit {
+                ef.max(ask.saturating_mul(4))
+            } else {
+                ef
+            };
             self.raw_search_vector(ns, query, ask, widened)
         })
     }

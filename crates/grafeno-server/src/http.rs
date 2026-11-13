@@ -3327,6 +3327,8 @@ async fn subscription_events(
 
 /// Lines of NDJSON per transaction while ingesting.
 const INGEST_BATCH: usize = 500;
+/// The longest line ingestion holds.
+const INGEST_LINE: usize = 4 * 1024 * 1024;
 
 /// Streaming ingestion: NDJSON, one node or edge per line, read as it
 /// arrives and written in batches in the writer's bulk lane. A line's
@@ -3390,6 +3392,20 @@ async fn ingest(
             }
         }
         pending.drain(..start);
+        // A line is held whole until it ends: one that never does would
+        // take all the memory there is (the body limit does not see this
+        // stream). Lines before it are already written, as with a bad one.
+        if pending.len() > INGEST_LINE {
+            return Err(ApiError::with_status(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "too_large",
+                format!(
+                    "line {} is longer than {} MiB: send a node or a fact per line, and large texts in parts",
+                    number + lines.len(),
+                    INGEST_LINE >> 20
+                ),
+            ));
+        }
     }
     if !lines.is_empty() {
         report.add(flush(lines, number).await?);

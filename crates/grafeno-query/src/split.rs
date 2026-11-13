@@ -29,7 +29,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use grafeno::{EdgeFilter, IndexDef, PlannerStats, ReadTx};
+use grafeno::{IndexDef, PlannerStats, ReadTx};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value as Json, json};
 
@@ -258,7 +258,8 @@ pub fn execute_part(
         return Err(QueryError::runtime("this query's start cannot be split"));
     }
     let (items, columns) = projection_items(projection, &flow.vars)?;
-    let edges = EdgeFilter::any();
+    // The time of the latest MATCH, as on one server.
+    let edges = runner.time.clone();
     let ctx = runner.ctx(&edges);
     let data = if let Some(spec) = Spec::new(&items) {
         let groups = match folded {
@@ -347,7 +348,7 @@ pub fn merge_parts(
     }
     let info = info_from_wire(&plan.info)?;
     let runner = Runner::with_info(read, ns, params, limits, info);
-    let edges = EdgeFilter::any();
+    let edges = runner.time_of(&statement.parts[0].clauses)?;
     let ctx = runner.ctx(&edges);
     let (items, columns) = projection_items(projection, &vars)?;
     let bad = || QueryError::runtime("a part of a split query is malformed");

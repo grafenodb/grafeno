@@ -584,3 +584,69 @@ fn constraints_in_gq() {
     .unwrap_err();
     assert!(error.message.contains("one label"), "{}", error.message);
 }
+
+/// Found by an outside review: `COUNT { pattern }` counted facts at any
+/// time though its MATCH asked for one; a far year wrapped the clock; and
+/// an edit distance of two long texts took a gigabyte.
+#[test]
+fn expressions_follow_the_time_of_their_match() {
+    let db = company();
+    // Ana worked at Acme from 2020 to 2023, at Initech from 2023.
+    let at = |when: &str| {
+        rows(
+            &db,
+            &format!(
+                "MATCH (a:Person {{name: 'Ana'}}) VALID AT '{when}' \
+                 RETURN COUNT {{ (a)-[:works_at]->() }}, \
+                        EXISTS {{ (a)-[:works_at]->(:Company {{name: 'Acme'}}) }}"
+            ),
+        )
+    };
+    assert_eq!(at("2021-06-01"), json!([[1, true]]));
+    assert_eq!(at("2025-06-01"), json!([[1, false]]));
+    assert_eq!(at("2019-06-01"), json!([[0, false]]));
+    // With no time named, every fact counts, as before.
+    assert_eq!(
+        rows(
+            &db,
+            "MATCH (a:Person {name: 'Ana'}) RETURN COUNT { (a)-[:works_at]->() }"
+        ),
+        json!([[2]])
+    );
+    // A WITH carries the time on; a later MATCH sets its own.
+    assert_eq!(
+        rows(
+            &db,
+            "MATCH (a:Person {name: 'Ana'}) VALID AT '2021-06-01' WITH a \
+             RETURN COUNT { (a)-[:works_at]->() }"
+        ),
+        json!([[1]])
+    );
+    assert_eq!(
+        rows(
+            &db,
+            "MATCH (a:Person {name: 'Ana'}) VALID AT '2021-06-01' \
+             MATCH (c:Company {name: 'Acme'}) RETURN COUNT { (a)-[:works_at]->() }"
+        ),
+        json!([[2]])
+    );
+
+    let far = fail(&db, "MATCH (a) VALID AT '999999-01-01' RETURN 1");
+    assert!(far.contains("999999"), "{far}");
+
+    let long = "a".repeat(10_001);
+    let other = "b".repeat(10_001);
+    let refused = fail(&db, &format!("RETURN text.damerau('{long}', '{other}')"));
+    assert!(refused.contains("text.damerau"), "{refused}");
+    assert_eq!(
+        rows(
+            &db,
+            &format!(
+                "RETURN text.damerau('{}', '{}')",
+                "a".repeat(2_000),
+                "b".repeat(2_000)
+            )
+        ),
+        json!([[2000]])
+    );
+}

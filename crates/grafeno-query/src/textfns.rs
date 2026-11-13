@@ -7,6 +7,10 @@ use grafeno::textsim::{self, Measure};
 use crate::QueryError;
 use crate::value::Value;
 
+/// The most cells an edit distance may fill: two texts of 10 000
+/// characters.
+const MAX_EDIT_CELLS: u64 = 100_020_001;
+
 fn error(message: impl Into<String>) -> QueryError {
     QueryError::runtime(message)
 }
@@ -67,6 +71,17 @@ fn run(name: &str, args: &[Value], min: usize, max: usize) -> Result<Value, Quer
     }
     let a = text(name, &args[0])?;
     let b = || text(name, &args[1]);
+    // Edit distances fill a table of one text's length by the other's: past
+    // this many cells, one call would run for seconds outside every limit a
+    // query has.
+    if matches!(name, "text.levenshtein" | "text.damerau" | "text.lcs") {
+        let cells = (a.chars().count() as u64 + 1) * (b()?.chars().count() as u64 + 1);
+        if cells > MAX_EDIT_CELLS {
+            return Err(error(format!(
+                "{name}() compares texts of at most {MAX_EDIT_CELLS} characters multiplied together: these are longer"
+            )));
+        }
+    }
     Ok(match name {
         "text.normalize" => Value::Str(grafeno::normalize_name(a)),
         "text.soundex" => Value::Str(textsim::soundex(a)),

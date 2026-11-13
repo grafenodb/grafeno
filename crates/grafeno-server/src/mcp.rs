@@ -115,17 +115,78 @@ pub fn run(db: Grafeno, namespace: String, access: McpAccess) -> io::Result<()> 
             .unwrap_or_default()
     );
     let mut stdout = io::stdout().lock();
-    for line in io::stdin().lock().lines() {
-        let line = line?;
-        if line.trim().is_empty() {
-            continue;
-        }
-        if let Some(response) = server.handle_line(&line) {
+    let mut stdin = io::stdin().lock();
+    while let Some(message) = read_message(&mut stdin, MAX_MESSAGE)? {
+        let response = match message {
+            Message::Line(line) if line.trim().is_empty() => continue,
+            Message::Line(line) => server.handle_line(&line),
+            Message::TooLong(length) => Some(error_response(
+                Value::Null,
+                -32600,
+                &format!(
+                    "a message of more than {} MiB ({length} bytes read) was skipped",
+                    MAX_MESSAGE >> 20
+                ),
+            )),
+        };
+        if let Some(response) = response {
             writeln!(stdout, "{response}")?;
             stdout.flush()?;
         }
     }
     Ok(())
+}
+
+/// The longest message (one line of JSON) the server reads. A longer one is
+/// skipped to its end, without holding it, and answered with an error.
+pub const MAX_MESSAGE: usize = 16 * 1024 * 1024;
+
+/// A line of input, or how long one too long for the limit was.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Message {
+    Line(String),
+    TooLong(usize),
+}
+
+/// The next line of `input`, holding at most `max` bytes of it; `None` at
+/// the end of the input.
+pub fn read_message<R: BufRead>(input: &mut R, max: usize) -> io::Result<Option<Message>> {
+    let mut line = Vec::new();
+    let read = io::Read::take(&mut *input, max as u64 + 1).read_until(b'\n', &mut line)?;
+    if read == 0 {
+        return Ok(None);
+    }
+    if line.len() <= max || line.ends_with(b"\n") {
+        while line.last().is_some_and(|b| matches!(b, b'\n' | b'\r')) {
+            line.pop();
+        }
+        return Ok(Some(Message::Line(
+            String::from_utf8_lossy(&line).into_owned(),
+        )));
+    }
+    // Too long: what is left of the line is read and dropped, a buffer at
+    // a time.
+    let mut length = line.len();
+    drop(line);
+    loop {
+        let buffer = input.fill_buf()?;
+        if buffer.is_empty() {
+            break;
+        }
+        match buffer.iter().position(|b| *b == b'\n') {
+            Some(at) => {
+                length += at + 1;
+                input.consume(at + 1);
+                break;
+            }
+            None => {
+                let all = buffer.len();
+                length += all;
+                input.consume(all);
+            }
+        }
+    }
+    Ok(Some(Message::TooLong(length)))
 }
 
 type ToolResult = Result<ToolOutput, String>;

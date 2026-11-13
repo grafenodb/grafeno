@@ -53,10 +53,19 @@ impl Timestamp {
             return Err(invalid());
         };
         let (year, month, day) = (number(year)?, number(month)?, number(day)?);
-        if !(1..=12).contains(&month) || day < 1 || day > days_in_month(year, month) {
+        // Microseconds since 1970 hold about 292 000 years either way: a
+        // later year is refused, not wrapped around (or, in a debug build,
+        // a panic).
+        if year > MAX_YEAR
+            || !(1..=12).contains(&month)
+            || day < 1
+            || day > days_in_month(year, month)
+        {
             return Err(invalid());
         }
-        let mut micros = days_from_civil(year, month, day) * 86_400_000_000;
+        let mut micros = days_from_civil(year, month, day)
+            .checked_mul(86_400_000_000)
+            .ok_or_else(invalid)?;
 
         if let Some(time) = time {
             let (clock, offset) = if let Some(clock) = time.strip_suffix(['Z', 'z']) {
@@ -84,11 +93,13 @@ impl Timestamp {
             if fields.next().is_some() || hours > 23 || minutes > 59 || seconds > 59 {
                 return Err(invalid());
             }
-            micros += ((hours * 60 + minutes) * 60 + seconds) * 1_000_000 - offset;
+            micros = micros
+                .checked_add(((hours * 60 + minutes) * 60 + seconds) * 1_000_000 - offset)
+                .ok_or_else(invalid)?;
             if let Some(fraction) = fraction {
                 number(fraction)?;
                 let digits: String = fraction.chars().chain("000000".chars()).take(6).collect();
-                micros += number(&digits)?;
+                micros = micros.checked_add(number(&digits)?).ok_or_else(invalid)?;
             }
         }
         Ok(Self(micros))
@@ -142,6 +153,9 @@ impl Timestamp {
 }
 
 /// Days since 1970-01-01 (Howard Hinnant's `days_from_civil`).
+/// The latest year a date may have.
+pub const MAX_YEAR: i64 = 200_000;
+
 fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
     let year = if month <= 2 { year - 1 } else { year };
     let era = year.div_euclid(400);
@@ -186,6 +200,13 @@ mod tests {
             Timestamp::parse(text).unwrap()
         }
         assert_eq!(parse("1970-01-01"), Timestamp::from_secs(0));
+        // Found by an outside review: a far year overflowed the microseconds
+        // (wrapped around in release, a panic in debug).
+        for far in ["999999-01-01", "200001-01-01", "9223372036854775807-01-01"] {
+            assert!(Timestamp::parse(far).is_err(), "{far}");
+        }
+        let latest = Timestamp::parse("200000-12-31T23:59:59.999999Z").unwrap();
+        assert!(latest > parse("9999-12-31"));
         assert_eq!(parse("2026-11-03"), Timestamp::from_secs(1_793_664_000));
         assert_eq!(
             parse("2026-11-03T01:02:03Z"),

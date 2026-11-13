@@ -1825,3 +1825,60 @@ async fn a_palace_is_read_as_ordinary_nodes_and_edges() {
         json!([["Work", "Storage", "Decisions", "One writer"]])
     );
 }
+
+/// Found by an outside review: an ingested line held 40 MiB, past every
+/// body limit, and a vector search with a limit of 10^12 reserved for that
+/// many results.
+#[tokio::test]
+async fn ingest_lines_and_search_limits_are_bounded() {
+    let app = app(None);
+    // A line too long is refused; the lines before it are written.
+    let mut body = String::from("{\"labels\": [\"Before\"]}\n");
+    body.push_str(&format!(
+        "{{\"labels\": [\"Long\"], \"props\": {{\"text\": \"{}\"}}}}",
+        "x".repeat(5 * 1024 * 1024)
+    ));
+    let request = Request::builder()
+        .method("POST")
+        .uri("/v1/g/ingest")
+        .header(header::CONTENT_TYPE, "application/x-ndjson")
+        .body(Body::from(body))
+        .unwrap();
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let answer: Value = serde_json::from_slice(&bytes).unwrap();
+    assert!(answer.to_string().contains("line 2"), "{answer}");
+    // A line of a normal size goes in as before.
+    let request = Request::builder()
+        .method("POST")
+        .uri("/v1/g/ingest")
+        .body(Body::from(format!(
+            "{{\"labels\": [\"Fine\"], \"props\": {{\"text\": \"{}\"}}}}\n",
+            "y".repeat(1024 * 1024)
+        )))
+        .unwrap();
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    // A vector search with a limit of 10^12, over vectors that exist.
+    for i in 0..5 {
+        let (status, _) = call(
+            &app,
+            "POST",
+            "/v1/g/nodes",
+            Some(json!({ "labels": ["V"], "embedding": [1.0, i as f32, 0.5] })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED);
+    }
+    let (status, found) = call(
+        &app,
+        "POST",
+        "/v1/g/search/vector",
+        Some(json!({ "embedding": [1.0, 2.0, 0.5], "limit": 1_000_000_000_000u64 })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{found}");
+    assert_eq!(found.as_array().map(Vec::len), Some(5), "{found}");
+}

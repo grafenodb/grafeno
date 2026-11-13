@@ -998,6 +998,11 @@ struct Runner<'a> {
     view: Option<std::sync::Arc<grafeno::View>>,
     /// Whether the caller may read the audit log (14.5).
     may_audit: bool,
+    /// The time of the latest MATCH (its `VALID AT` and `KNOWN AT`), which
+    /// the patterns inside expressions after it (`COUNT { … }`, `EXISTS
+    /// { … }`, a pattern in `WHERE` or `RETURN`) follow as well. Any time
+    /// when the latest MATCH named none, or a time per row.
+    time: EdgeFilter,
 }
 
 /// The rows flowing between clauses and the variables they bind, in order.
@@ -1045,6 +1050,7 @@ impl<'a> Runner<'a> {
             folded: None,
             reads_seen: 0,
             slice: None,
+            time: EdgeFilter::any(),
             view: limits.view.clone(),
             may_audit: limits
                 .access
@@ -1078,6 +1084,7 @@ impl<'a> Runner<'a> {
             folded: None,
             reads_seen: 0,
             slice: None,
+            time: EdgeFilter::any(),
             view: limits.view.clone(),
             may_audit: limits
                 .access
@@ -1200,7 +1207,7 @@ impl<'a> Runner<'a> {
             });
             if let Clause::Return(projection) = clause {
                 let folded = self.folded.take();
-                let edges = EdgeFilter::any();
+                let edges = self.time.clone();
                 let ctx = self.ctx(&edges);
                 let (columns, rows) =
                     project_folded(&ctx, flow.rows, projection, &flow.vars, folded)?;
@@ -1213,7 +1220,7 @@ impl<'a> Runner<'a> {
                 let mut groups = Groups::default();
                 flow = self.apply_folding(clause, flow, None, Some((&spec, &mut groups)))?;
                 let rows = groups.rows as usize;
-                let edges = EdgeFilter::any();
+                let edges = self.time.clone();
                 let ctx = self.ctx(&edges);
                 self.folded = Some(groups.finish(&spec, &ctx)?);
                 bound.extend(flow.vars.iter().cloned());
@@ -1372,6 +1379,8 @@ impl<'a> Runner<'a> {
                 } else {
                     self.time_filter(valid_at.as_ref(), known_at.as_ref(), &Row::new())?
                 };
+                // What comes after this MATCH reads the graph at its time.
+                self.time = shared.clone();
                 let conditions: Vec<&Expr> = filter.as_ref().map(conjuncts).unwrap_or_default();
                 // Cheapest start first; the variables are the same in every row.
                 let params = self.params;
@@ -1449,7 +1458,7 @@ impl<'a> Runner<'a> {
                 flow.bind(&new_vars);
             }
             Clause::Unwind { list, var } => {
-                let edges = EdgeFilter::any();
+                let edges = self.time.clone();
                 let ctx = self.ctx(&edges);
                 let mut out = Vec::new();
                 for row in flow.rows {
@@ -1474,7 +1483,7 @@ impl<'a> Runner<'a> {
             }
             Clause::With(projection) => {
                 let folded = self.folded.take();
-                let edges = EdgeFilter::any();
+                let edges = self.time.clone();
                 let ctx = self.ctx(&edges);
                 let (columns, values) =
                     project_folded(&ctx, flow.rows, projection, &flow.vars, folded)?;
@@ -1628,7 +1637,7 @@ impl<'a> Runner<'a> {
                         self.stats.properties_set += 1;
                     }
                 }
-                let edges = EdgeFilter::any();
+                let edges = self.time.clone();
                 let ctx = self.ctx(&edges);
                 if let Some(filter) = &call.filter {
                     out = keep(&ctx, out, filter)?;
@@ -1639,7 +1648,7 @@ impl<'a> Runner<'a> {
             Clause::Foreach { var, list, body } => {
                 for row in &flow.rows {
                     let items = {
-                        let edges = EdgeFilter::any();
+                        let edges = self.time.clone();
                         let ctx = self.ctx(&edges);
                         match eval(&ctx, list, Scope::Row(row))? {
                             Value::List(items) => items,
@@ -1744,7 +1753,7 @@ impl<'a> Runner<'a> {
                     let mut returned = None;
                     for clause in &query.clauses {
                         if let Clause::Return(projection) = clause {
-                            let edges = EdgeFilter::any();
+                            let edges = self.time.clone();
                             let ctx = self.ctx(&edges);
                             returned = Some(project(
                                 &ctx,
@@ -1801,6 +1810,29 @@ impl<'a> Runner<'a> {
         Ok(filter)
     }
 
+    /// The time the latest MATCH of `clauses` reads the graph at, as
+    /// [`Runner::time`] would hold it after running them: what the merge of
+    /// a split query evaluates its expressions at.
+    fn time_of(&self, clauses: &[Clause]) -> Result<EdgeFilter, QueryError> {
+        let latest = clauses.iter().rev().find_map(|clause| match clause {
+            Clause::Match {
+                valid_at, known_at, ..
+            } => Some((valid_at, known_at)),
+            _ => None,
+        });
+        match latest {
+            Some((valid_at, known_at))
+                if ![valid_at, known_at]
+                    .into_iter()
+                    .flatten()
+                    .any(mentions_variables) =>
+            {
+                self.time_filter(valid_at.as_ref(), known_at.as_ref(), &Row::new())
+            }
+            _ => Ok(EdgeFilter::any()),
+        }
+    }
+
     fn tx(&mut self) -> &mut WriteTx {
         self.tx
             .as_deref_mut()
@@ -1808,7 +1840,7 @@ impl<'a> Runner<'a> {
     }
 
     fn eval(&self, row: &Row, expr: &Expr) -> Result<Value, QueryError> {
-        let edges = EdgeFilter::any();
+        let edges = self.time.clone();
         eval(&self.ctx(&edges), expr, Scope::Row(row))
     }
 }

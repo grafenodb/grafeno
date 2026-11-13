@@ -44,26 +44,30 @@ pub fn damerau_within(a: &str, b: &str, max: usize) -> Option<usize> {
     if a.len().abs_diff(b.len()) > max {
         return None;
     }
-    let mut rows = vec![vec![0usize; b.len() + 1]; a.len() + 1];
-    for (i, row) in rows.iter_mut().enumerate() {
-        row[0] = i;
-    }
-    for (j, cell) in rows[0].iter_mut().enumerate() {
-        *cell = j;
-    }
+    // Three rows of the table, not all of it: a swap looks back two rows
+    // and no further. The whole table took memory in the square of the
+    // texts' length (a gigabyte for two texts of 12 000 characters), which
+    // no query limit saw.
+    let width = b.len() + 1;
+    let mut before: Vec<usize> = vec![0; width];
+    let mut previous: Vec<usize> = (0..width).collect();
+    let mut current: Vec<usize> = vec![0; width];
     for i in 1..=a.len() {
+        current[0] = i;
         for j in 1..=b.len() {
             let cost = usize::from(a[i - 1] != b[j - 1]);
-            let mut best = (rows[i - 1][j] + 1)
-                .min(rows[i][j - 1] + 1)
-                .min(rows[i - 1][j - 1] + cost);
+            let mut best = (previous[j] + 1)
+                .min(current[j - 1] + 1)
+                .min(previous[j - 1] + cost);
             if i > 1 && j > 1 && a[i - 1] == b[j - 2] && a[i - 2] == b[j - 1] {
-                best = best.min(rows[i - 2][j - 2] + 1);
+                best = best.min(before[j - 2] + 1);
             }
-            rows[i][j] = best;
+            current[j] = best;
         }
+        std::mem::swap(&mut before, &mut previous);
+        std::mem::swap(&mut previous, &mut current);
     }
-    let distance = rows[a.len()][b.len()];
+    let distance = previous[b.len()];
     (distance <= max).then_some(distance)
 }
 
@@ -459,6 +463,68 @@ impl Measure {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The whole table, as it was computed before: the reference.
+    fn damerau_table(a: &str, b: &str) -> usize {
+        let (a, b): (Vec<char>, Vec<char>) = (a.chars().collect(), b.chars().collect());
+        let mut rows = vec![vec![0usize; b.len() + 1]; a.len() + 1];
+        for (i, row) in rows.iter_mut().enumerate() {
+            row[0] = i;
+        }
+        for (j, cell) in rows[0].iter_mut().enumerate() {
+            *cell = j;
+        }
+        for i in 1..=a.len() {
+            for j in 1..=b.len() {
+                let cost = usize::from(a[i - 1] != b[j - 1]);
+                let mut best = (rows[i - 1][j] + 1)
+                    .min(rows[i][j - 1] + 1)
+                    .min(rows[i - 1][j - 1] + cost);
+                if i > 1 && j > 1 && a[i - 1] == b[j - 2] && a[i - 2] == b[j - 1] {
+                    best = best.min(rows[i - 2][j - 2] + 1);
+                }
+                rows[i][j] = best;
+            }
+        }
+        rows[a.len()][b.len()]
+    }
+
+    #[test]
+    fn damerau_in_three_rows_matches_the_whole_table() {
+        let mut seed = 0x9e37_79b9_7f4a_7c15u64;
+        let mut next = || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        for _ in 0..2_000 {
+            let mut word = |n: u64| -> String {
+                (0..next() % n)
+                    .map(|_| ['a', 'b', 'c', 'á', 'd'][(next() % 5) as usize])
+                    .collect()
+            };
+            let (a, b) = (word(12), word(12));
+            assert_eq!(
+                damerau_levenshtein(&a, &b),
+                damerau_table(&a, &b),
+                "{a:?} {b:?}"
+            );
+        }
+        for (a, b) in [
+            ("", ""),
+            ("ab", "ba"),
+            ("abc", ""),
+            ("", "xyz"),
+            ("ca", "abc"),
+        ] {
+            assert_eq!(
+                damerau_levenshtein(a, b),
+                damerau_table(a, b),
+                "{a:?} {b:?}"
+            );
+        }
+    }
 
     fn close(a: f64, b: f64) -> bool {
         (a - b).abs() < 1e-3

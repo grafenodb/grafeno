@@ -1609,3 +1609,47 @@ fn a_technical_description_becomes_entities_relations_and_places() {
     );
     assert_eq!(refused["isError"], true, "{refused}");
 }
+
+/// Found by an outside review: the server read a line of input whole,
+/// however long. A line past the limit is skipped, without being held,
+/// and the next one is read as usual.
+#[test]
+fn a_message_past_the_limit_is_skipped() {
+    use grafeno_server::mcp::{Message, read_message};
+    let mut input = std::io::Cursor::new(
+        format!("{{\"a\":1}}\r\n{}\n{{\"b\":2}}\n\nlast", "x".repeat(100)).into_bytes(),
+    );
+    let reader = &mut std::io::BufReader::with_capacity(16, &mut input);
+    assert_eq!(
+        read_message(reader, 50).unwrap(),
+        Some(Message::Line("{\"a\":1}".into()))
+    );
+    assert_eq!(
+        read_message(reader, 50).unwrap(),
+        Some(Message::TooLong(101))
+    );
+    assert_eq!(
+        read_message(reader, 50).unwrap(),
+        Some(Message::Line("{\"b\":2}".into()))
+    );
+    assert_eq!(
+        read_message(reader, 50).unwrap(),
+        Some(Message::Line(String::new()))
+    );
+    assert_eq!(
+        read_message(reader, 50).unwrap(),
+        Some(Message::Line("last".into()))
+    );
+    assert_eq!(read_message(reader, 50).unwrap(), None);
+    // A line of exactly the limit is read; one byte more is not.
+    let mut exact =
+        std::io::Cursor::new(format!("{}\n{}", "y".repeat(50), "z".repeat(51)).into_bytes());
+    assert_eq!(
+        read_message(&mut exact, 50).unwrap(),
+        Some(Message::Line("y".repeat(50)))
+    );
+    assert_eq!(
+        read_message(&mut exact, 50).unwrap(),
+        Some(Message::TooLong(51))
+    );
+}
