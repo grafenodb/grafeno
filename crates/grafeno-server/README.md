@@ -652,7 +652,7 @@ another group's file. See [docs/cluster-runbooks.md](../../docs/cluster-runbooks
 | `remember` | Stores a memory (text, optional name, labels, importance and links). A known `name` updates that entity instead. |
 | `recall`   | Hybrid search; returns ids, names, snippets, why each result matched and, apart, what supports it or puts it in doubt (`justification`). `skip` gives the next part. Records accesses. |
 | `context`  | Relevant memories and facts as compact text within a token budget, after the community summaries that match; related memories packed together, the token count said to be an estimate. `skip` gives the next part. |
-| `relate`   | Records a fact (edge) between two nodes, with optional valid dates, `origin`, `certainty` and `method`; says which facts it contradicted under a constraint (and ended). The same current fact is recorded once; `caused_by` needs `sources`. |
+| `relate`   | Records a fact (edge) between two nodes, with optional valid dates, `origin`, `certainty` and `method`; says which facts it contradicted under a constraint (and ended). The same current fact is recorded once; `caused_by` needs `sources`; `reason` says why (for `supersedes`, why the newer replaced the older). |
 | `update`   | Replaces a node's text, renames it, merges properties (a `null` is stored), removes properties by name (`remove_props`), changes labels or importance. |
 | `forget`   | Invalidates (default), retracts or deletes a fact; deletes a node; deletes a palace, room or locus with what is under it, never a memory. `dry_run` says what would go. |
 | `get_node` | A node with its text, properties and connecting facts, and its provenance (sources, who and how, what supports it, what merges brought in). |
@@ -673,7 +673,7 @@ another group's file. See [docs/cluster-runbooks.md](../../docs/cluster-runbooks
 | `resume`   | A task's latest checkpoint, how many came before, and what was written since; with no match, the tasks that have checkpoints. |
 | `ingest`   | Stores a long text as a whole and its chunks: a document cut at headings and paragraphs, a conversation between turns, code at its definitions; then extracts what they mention. The same `source` again replaces it. |
 | `contradictions` | Facts that contradicted earlier ones under a constraint, and what was done (the earlier one ended, the new one refused, or both flagged). |
-| `timeline` | How a node changed, oldest first: its facts beginning and ending, earlier property values, merges, contradictions. |
+| `timeline` | How a node changed, oldest first: its facts beginning and ending, earlier property values, merges, contradictions. For a memory replaced through `supersedes`, its `history` with each change's reason; with `compare`, the facts that ended, began or changed between two times. |
 | `feedback` | `useful` raises a memory's importance; `verified` records a check, with the `source` that supports it, and keeps what it was before; `obsolete` archives a memory or ends a fact; `wrong` archives a memory or retracts a fact. The verdict stays on the memory. |
 | `palace_create` / `palace_create_room` | Makes a palace, or a room in one with its loci (places inside it); returns the one there is when it exists. |
 | `palace_anchor` | Puts an existing memory at a locus of a room, without copying or changing it; with `remove`, takes the anchor away. |

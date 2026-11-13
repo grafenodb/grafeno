@@ -69,11 +69,19 @@ pub struct Item {
     pub why: String,
 }
 
-/// A clash recorded under a constraint.
+/// A clash: recorded under a constraint, or by an agent with a
+/// `contradicts` relation.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Clash {
+    /// `change` when the newer took the older's place (the constraint
+    /// ended or shortened the older: the state changed, nothing is wrong);
+    /// `contradiction` when both stand and say opposite things (flagged
+    /// under a constraint, or recorded with `contradicts`).
+    pub kind: &'static str,
+    /// The constraint's name; `contradicts` for one an agent recorded.
     pub constraint: String,
-    /// `invalidated`, `shortened`, `replaced` or `flagged`.
+    /// `invalidated`, `shortened`, `replaced` or `flagged` under a
+    /// constraint; `recorded` for a `contradicts` relation.
     pub action: String,
     /// Whether the constraint settled it (an older fact ended or gave
     /// way); a flagged clash keeps both facts and waits for someone.
@@ -474,6 +482,7 @@ pub fn reflect(
             unsettled.push(new_edge.id.to_string());
         }
         conflicts.push(Clash {
+            kind: if settled { "change" } else { "contradiction" },
             constraint: event.constraint,
             action,
             settled,
@@ -489,6 +498,45 @@ pub fn reflect(
                 text: sentence(read, ns, &old_edge)?,
                 why: "the fact it clashed with".into(),
             },
+        });
+    }
+    // Contradictions an agent recorded between two memories or facts.
+    for fact in &facts {
+        if fact.label != knowledge::CONTRADICTS || fact.valid_to.is_some_and(|to| to <= options.now)
+        {
+            continue;
+        }
+        let item = |id: NodeId| -> Result<Item> {
+            Ok(match read.node(ns, id)? {
+                Some(node) => Item {
+                    id: id.to_string(),
+                    kind: "memory",
+                    text: describe(read, ns, &node)?,
+                    why: String::new(),
+                },
+                None => Item {
+                    id: id.to_string(),
+                    kind: "memory",
+                    text: id.to_string(),
+                    why: String::new(),
+                },
+            })
+        };
+        let mut new_fact = item(fact.from)?;
+        new_fact.why = format!(
+            "recorded {} as contradicting the other",
+            fact.recorded_at.date()
+        );
+        let mut old_fact = item(fact.to)?;
+        old_fact.why = "what it contradicts".into();
+        unsettled.push(fact.id.to_string());
+        conflicts.push(Clash {
+            kind: "contradiction",
+            constraint: knowledge::CONTRADICTS.into(),
+            action: "recorded".into(),
+            settled: false,
+            new_fact,
+            old_fact,
         });
     }
     // Unsettled first.
@@ -540,6 +588,7 @@ pub fn reflect(
         ns,
         &crate::SupersededOptions {
             limit: usize::MAX,
+            among: memories.iter().map(|memory| memory.id).collect(),
             ..Default::default()
         },
     )? {
@@ -696,7 +745,11 @@ pub fn reflect(
             .into(),
     );
     reflection.limits.notes.push(
-        "Conflicts are those recorded under constraints; facts that clash with no constraint to say so are not found."
+        "Conflicts are those recorded under constraints or with a `contradicts` relation; facts that clash with neither are not found. Facts from different sources or contexts are not taken for contradictions unless recorded as such."
+            .into(),
+    );
+    reflection.limits.notes.push(
+        "A change is a newer fact taking an older one's place under a constraint: the state changed, and the older one is its history, not an error."
             .into(),
     );
     let mut totals = BTreeMap::new();

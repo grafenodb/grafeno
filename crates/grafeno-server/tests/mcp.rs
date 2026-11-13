@@ -2184,3 +2184,89 @@ fn knowledge_keeps_identity_relations_and_evidence() {
     assert_eq!(kinds["Hypothesis"], 1, "{kinds}");
     assert_eq!(kinds["Episode"], 1, "{kinds}");
 }
+
+#[test]
+fn a_decision_changed_three_times_keeps_its_reasons() {
+    let server = server();
+    let decision =
+        |text: &str| remembered(&server, json!({ "text": text, "labels": ["Decision"] }));
+    let first = decision("Store invoices in one file per month");
+    let second = decision("Store invoices in the ledger database");
+    let third = decision("Store invoices in the ledger database, one table per year");
+    let measure = remembered(
+        &server,
+        json!({ "text": "Queries over one table took 4 s at 30 million rows", "labels": ["Evidence"] }),
+    );
+    let replace = |newer: &str, older: &str, reason: &str, sources: Value| {
+        let result = call(
+            &server,
+            "relate",
+            json!({ "from": newer, "label": "supersedes", "to": older,
+                    "reason": reason, "sources": sources }),
+        );
+        structured(&result)["id"].as_str().unwrap().to_owned()
+    };
+    replace(
+        &second,
+        &first,
+        "monthly files could not be searched",
+        json!([]),
+    );
+    replace(&third, &second, "one table grew too slow", json!([measure]));
+
+    // From the first version: the current one, and every change's reason.
+    let line = call(&server, "timeline", json!({ "id": first }));
+    let history = structured(&line)["history"].clone();
+    assert_eq!(history["current"], third.as_str(), "{history}");
+    let versions = history["versions"].as_array().unwrap();
+    let ids: Vec<&str> = versions.iter().map(|v| v["id"].as_str().unwrap()).collect();
+    assert_eq!(ids, [first.as_str(), second.as_str(), third.as_str()]);
+    assert!(versions[0].get("reason").is_none());
+    assert_eq!(versions[1]["reason"], "monthly files could not be searched");
+    assert_eq!(versions[2]["reason"], "one table grew too slow");
+    assert_eq!(versions[2]["evidence"], json!([measure]));
+
+    // A memory nothing replaced has no history.
+    let alone = call(&server, "timeline", json!({ "id": measure }));
+    assert!(structured(&alone).get("history").is_none());
+
+    // Two states of a service: the store changed.
+    let service = remembered(
+        &server,
+        json!({ "text": "Billing service", "name": "billing" }),
+    );
+    let files = remembered(&server, json!({ "text": "Monthly files", "name": "files" }));
+    let ledger = remembered(
+        &server,
+        json!({ "text": "Ledger database", "name": "ledger" }),
+    );
+    for (to, from, until) in [
+        (&files, "2025-01-01", Some("2026-03-01")),
+        (&ledger, "2026-03-01", None),
+    ] {
+        let mut arguments = json!({ "from": service, "label": "stores_in", "to": to,
+                                    "valid_from": from });
+        if let Some(until) = until {
+            arguments["valid_to"] = json!(until);
+        }
+        structured(&call(&server, "relate", arguments));
+    }
+    let compared = call(
+        &server,
+        "timeline",
+        json!({ "id": service, "compare": "2025-06-01", "at": "2026-06-01" }),
+    );
+    let comparison = structured(&compared)["comparison"].clone();
+    let change = &comparison["changed"][0];
+    assert_eq!(change["before"][0]["to"], files.as_str(), "{comparison}");
+    assert_eq!(change["after"][0]["to"], ledger.as_str());
+    assert_eq!(comparison["ended"], json!([]));
+
+    // `at` alone is refused: it says what to compare with.
+    let refused = call(
+        &server,
+        "timeline",
+        json!({ "id": service, "at": "2026-06-01" }),
+    );
+    assert!(failure(&refused).contains("compare"));
+}

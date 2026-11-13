@@ -31,6 +31,7 @@ pub mod communities;
 mod context;
 pub mod documents;
 pub mod extract;
+pub mod history;
 pub mod knowledge;
 mod maintenance;
 pub mod palace;
@@ -54,6 +55,7 @@ pub use context::{
 pub use documents::{
     CHUNK, DEFAULT_CHUNK_CHARS, Ingested, Kind, NewDocument, Piece, cut, ingest_document,
 };
+pub use history::{Change, Comparison, History, StateFact, Version, compare, history};
 pub use knowledge::{
     ANSWERS, Assessment, CERTAINTY, DuplicateFacts, Justification, KINDS, ORIGIN, Origin, QUESTION,
     RELATIONS, Record, duplicate_facts, justify, verify,

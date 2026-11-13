@@ -690,6 +690,8 @@ impl McpServer {
             #[serde(default)]
             method: Option<String>,
             #[serde(default)]
+            reason: Option<String>,
+            #[serde(default)]
             namespace: Option<String>,
         }
         let args: Args = parse_args(arguments)?;
@@ -703,6 +705,10 @@ impl McpServer {
             parse_id(&args.to).map_err(describe)?,
         );
         edge.props = args.props;
+        if let Some(reason) = args.reason.filter(|reason| !reason.trim().is_empty()) {
+            edge.props
+                .insert(grafeno_memory::history::REASON.into(), json!(reason));
+        }
         edge.props.extend(known);
         edge.sources = parse_ids(&args.sources)?;
         edge.valid_from = args
@@ -2066,6 +2072,11 @@ impl McpServer {
             id: String,
             #[serde(default)]
             limit: Option<usize>,
+            /// Compare the facts true then with those true at `at`.
+            #[serde(default)]
+            compare: Option<TimeInput>,
+            #[serde(default)]
+            at: Option<TimeInput>,
             #[serde(default)]
             namespace: Option<String>,
         }
@@ -2073,6 +2084,15 @@ impl McpServer {
         let ns = self.ns(&args.namespace);
         let id = parse_id(&args.id).map_err(describe)?;
         let read = self.db.begin_read().map_err(describe)?;
+        let at = args
+            .at
+            .as_ref()
+            .map(TimeInput::resolve)
+            .transpose()
+            .map_err(describe)?;
+        if args.compare.is_none() && at.is_some() {
+            return Err("`at` goes with `compare`: the time to compare with".into());
+        }
         let moments =
             grafeno_memory::timeline(&read, ns, id, args.limit.unwrap_or(100)).map_err(describe)?;
         let moments: Vec<Value> = moments
@@ -2087,11 +2107,29 @@ impl McpServer {
                 })
             })
             .collect();
-        Ok(ToolOutput::Json(json!({
+        let mut output = json!({
             "id": id,
             "name": name_of(&read, ns, id),
             "timeline": moments,
-        })))
+        });
+        // A memory replaced, or replacing another: its line of versions.
+        let line = grafeno_memory::history(&read, ns, id).map_err(describe)?;
+        if line.versions.len() > 1 {
+            output["history"] = serde_json::to_value(&line).unwrap_or_default();
+        }
+        if let Some(then) = &args.compare {
+            let then = then.resolve().map_err(describe)?;
+            let comparison = grafeno_memory::compare(
+                &read,
+                ns,
+                &[id],
+                then,
+                at.unwrap_or_else(grafeno::Timestamp::now),
+            )
+            .map_err(describe)?;
+            output["comparison"] = serde_json::to_value(&comparison).unwrap_or_default();
+        }
+        Ok(ToolOutput::Json(output))
     }
 
     fn feedback(&self, arguments: Value) -> ToolResult {
@@ -2986,6 +3024,7 @@ fn tools() -> Value {
                     "certainty": certainty.clone(),
                     "origin": origin.clone(),
                     "method": { "type": "string", "description": "How it was obtained: agent (your own reading), rule, stated, imported, or a word of your own." },
+                    "reason": { "type": "string", "description": "Why, in a sentence: for `supersedes`, why the newer memory replaced the older. `timeline` shows it in the history." },
                     "namespace": namespace
                 },
                 "required": ["from", "label", "to"]
@@ -3381,12 +3420,19 @@ fn tools() -> Value {
             "title": "Timeline",
             "description": "How a node changed over time, oldest first: when it was recorded, when \
                 each of its facts began and ended, the values its properties had before, the \
-                merges it took part in and the contradictions its facts ran into.",
+                merges it took part in and the contradictions its facts ran into. For a memory \
+                replaced through `supersedes` (a decision changed several times, say), also its \
+                `history`: every version, oldest first, with the reason and evidence recorded \
+                for each change. With `compare`, the facts true then against those true now (or \
+                at `at`): which ended, which began, and which changed (the same relation, another \
+                end).",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "id": id("The node: a project, a decision, a person."),
                     "limit": { "type": "integer", "minimum": 1, "description": "The latest moments kept. Default: 100." },
+                    "compare": date.clone(),
+                    "at": date.clone(),
                     "namespace": namespace
                 },
                 "required": ["id"]

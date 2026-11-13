@@ -672,7 +672,7 @@ herramientas:
 | `remember` | Guarda un recuerdo (texto, nombre opcional, etiquetas, importancia y enlaces). Un `name` conocido actualiza esa entidad. |
 | `recall`   | Búsqueda híbrida; devuelve ids, nombres, fragmentos, por qué coincidió cada resultado y, aparte, qué lo respalda o lo pone en duda (`justification`). `skip` da la parte siguiente. Registra accesos. |
 | `context`  | Recuerdos y hechos relevantes como texto compacto dentro de un presupuesto de tokens, después de los resúmenes de comunidades que coinciden; los recuerdos relacionados van juntos y la cuenta de tokens se declara estimada. `skip` da la parte siguiente. |
-| `relate`   | Registra un hecho (arista) entre dos nodos, con fechas de validez, `origin`, `certainty` y `method` opcionales; dice qué hechos contradijo bajo una restricción (y terminó). El mismo hecho vigente se registra una vez; `caused_by` necesita `sources`. |
+| `relate`   | Registra un hecho (arista) entre dos nodos, con fechas de validez, `origin`, `certainty` y `method` opcionales; dice qué hechos contradijo bajo una restricción (y terminó). El mismo hecho vigente se registra una vez; `caused_by` necesita `sources`; `reason` dice por qué (en `supersedes`, por qué el nuevo reemplazó al anterior). |
 | `update`   | Reemplaza el texto de un nodo, lo renombra, combina propiedades (un `null` se guarda), quita propiedades por nombre (`remove_props`), cambia etiquetas o importancia. |
 | `forget`   | Invalida (por defecto), retracta o elimina un hecho; elimina un nodo; elimina un palacio, sala o locus con lo que hay debajo, nunca un recuerdo. `dry_run` dice qué se iría. |
 | `get_node` | Un nodo con su texto, propiedades y hechos que lo conectan, y su procedencia (fuentes, quién y cómo, qué lo respalda, qué trajeron las fusiones). |
@@ -693,7 +693,7 @@ herramientas:
 | `resume`   | El último checkpoint de una tarea, cuántos hubo antes y lo escrito desde entonces; sin coincidencias, las tareas que tienen checkpoints. |
 | `ingest`   | Guarda un texto largo como un todo y sus fragmentos: un documento cortado por encabezados y párrafos, una conversación entre turnos, código por sus definiciones; luego extrae lo que mencionan. La misma `source` de nuevo lo reemplaza. |
 | `contradictions` | Hechos que contradijeron a otros anteriores bajo una restricción, y lo que se hizo (el anterior terminó, el nuevo se rechazó, o ambos quedaron marcados). |
-| `timeline` | Cómo cambió un nodo, del más antiguo al más reciente: sus hechos comenzando y terminando, valores anteriores de sus propiedades, fusiones, contradicciones. |
+| `timeline` | Cómo cambió un nodo, del más antiguo al más reciente: sus hechos comenzando y terminando, valores anteriores de sus propiedades, fusiones, contradicciones.. Para un recuerdo reemplazado mediante `supersedes`, su `history` con el motivo de cada cambio; con `compare`, los hechos que terminaron, empezaron o cambiaron entre dos momentos. |
 | `feedback` | `useful` sube la importancia de un recuerdo; `verified` registra una comprobación, con la `source` que la respalda, y guarda lo que era antes; `obsolete` archiva un recuerdo o termina un hecho; `wrong` archiva un recuerdo o retracta un hecho. El veredicto queda en el recuerdo. |
 | `palace_create` / `palace_create_room` | Crea un palacio, o una sala en uno con sus loci (lugares dentro de ella); devuelve el que ya hay cuando existe. |
 | `palace_anchor` | Pone un recuerdo que ya existe en un locus de una sala, sin copiarlo ni cambiarlo; con `remove`, quita el ancla. |

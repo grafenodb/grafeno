@@ -137,6 +137,50 @@ In Rust: `WalkQuery::relation`, `valid_at` and `skip`;
 `Reached::found_by` and `justification`; `grafeno_memory::justify`;
 `ContextOptions::group` and `skip`; `Context::tokens_estimated`.
 
+## Knowledge over time
+
+Added in phase 10 of the [roadmap](ROADMAP.md). Facts already had valid
+times (when they held) and record times (when they were written), and
+`VALID AT` and `KNOWN AT` read the graph as it was. Three things were
+missing:
+
+- **A decision's history.** A decision that changes is a new memory that
+  `supersedes` the one before, recorded with `relate` and a `reason`
+  (and `sources`, for the evidence):
+
+  ```json
+  {"name": "relate", "arguments": {
+    "from": "<the new decision>", "label": "supersedes", "to": "<the old one>",
+    "reason": "one table grew too slow", "sources": ["<the measurement>"]}}
+  ```
+
+  `timeline` on any version answers `history`: every version, oldest
+  first, the last being the current one, each with the reason and the
+  evidence recorded for its change. When two newer memories both replace
+  one, the newest is followed and the other is listed under `branches`,
+  for an agent to settle. Nothing is deleted: older versions stay, and
+  stay readable.
+- **Two states compared.** `timeline` with `compare` (a date, and `at`,
+  now by default) lists the node's facts that **ended**, that **began**,
+  and that **changed**: the same relation from the same end, to another
+  node (a service that stored its data in files and stores it in a
+  database). Facts true at both times are counted (`kept`). Facts taken
+  back as mistakes never held and are not counted.
+- **A change against a contradiction.** `palace_reflect` says of each
+  conflict whether it is a `change` (under a constraint, the newer fact
+  ended or shortened the older: the state changed, and the older is its
+  history) or a `contradiction` (both stand: flagged under a constraint,
+  or recorded by an agent with `contradicts`). Facts from different
+  sources or contexts are not taken for contradictions unless recorded as
+  such.
+
+The history of a node's properties is kept only under a history
+constraint, declared per label and key; without one, `update` replaces a
+value and the earlier one is in the change log, not in `timeline`.
+
+In Rust: `grafeno_memory::history`, `compare`, `history::REASON`;
+`Clash::kind`.
+
 ## An agent's reading in one call
 
 `add_mentions` took the entities an agent found in a memory. It now takes
@@ -251,5 +295,6 @@ In Rust: `grafeno_memory::verify`.
 | File | What it covers |
 | --- | --- |
 | `crates/grafeno-memory/tests/knowledge.rs` | Values checked and read back; an agent's reading with entities, relations, sources and certainty; skipped and refused relations; a relation under a constraint; verifying, with its source and what it was; a file closed and opened again. |
+| `crates/grafeno-memory/tests/over_time.rs` | Phase 10: a decision changed three times, its history from any version with each reason and its evidence; two states compared, a change told from an end and a beginning; a change of state told from a contradiction. |
 | `crates/grafeno-memory/tests/explainable.rs` | Phase 9: four memories joined by a walk, each saying how it was found; relation and time filters; justification apart from the explanation; `skip`; related memories packed together. |
 | `crates/grafeno-server/tests/mcp.rs` (`a_technical_description_becomes_entities_relations_and_places`) | The acceptance of the phase: a technical description ingested, the agent's reading in one call, facts with how they are known, a fact verified against the document, a memory of a kind, the context, the entities in a room and found by a walk, and bad input refused. |

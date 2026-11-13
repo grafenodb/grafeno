@@ -401,7 +401,7 @@ answers:
 | --- | --- |
 | `known` | The memories and facts found, counted by kind (Fact, Decision, Experience, Task, Question) and by how they are known (stated, observed, inferred, verified, not stated); the verified ones named. |
 | `uncertain` | What was inferred with no source, and what has a certainty under 0.5. |
-| `conflicts` | Clashes recorded under constraints that involve them, the unsettled ones first: a flagged clash keeps both facts and waits for someone. |
+| `conflicts` | Clashes recorded under constraints that involve them, or recorded by an agent with `contradicts`, the unsettled ones first. Each is a `change` (the constraint ended or shortened the older fact: the state changed) or a `contradiction` (a flagged clash, or a `contradicts`: both stand and wait for someone). |
 | `stale` | Facts no longer true, memories archived or marked obsolete, memories long unused, and older memories a newer one may overtake. |
 | `gaps` | Open questions, things mentioned and never described, places in a room with nothing at them, and steps left in the room's or node's checkpoint. |
 | `next` | What to check, each step with the call that does it and the records it is about. |
@@ -416,8 +416,9 @@ to it with `answers` (`relate` from the answer to the question).
 
 What a reflection does not do: decide that something is true or false,
 look anything up, or change anything. Origin and certainty are what agents
-stated; conflicts are those recorded under constraints, so two facts that
-clash with no constraint to say so are not found; a topic is matched by
+stated; conflicts are those recorded under constraints or with
+`contradicts`, so two facts that clash with neither to say so are not
+found, and facts from different sources are not taken for contradictions; a topic is matched by
 its words, whole, so a memory that says it in other words is not found.
 
 ## Known limits

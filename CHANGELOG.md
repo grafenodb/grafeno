@@ -13,6 +13,16 @@ version (now 18) is upgraded in place, with a copy kept first.
 
 ## Unreleased
 
+- **Added**: knowledge over time (phase 10). `timeline` answers the
+  `history` of a memory replaced through `supersedes` (a decision changed
+  several times): every version, the current one last, with the reason
+  (`relate`'s new `reason`) and evidence of each change. With `compare`,
+  it lists the facts that ended, began or changed between two times.
+  `palace_reflect` tells a change of state (a newer fact took an older
+  one's place under a constraint) from a contradiction (both stand,
+  flagged or recorded with `contradicts`, which it now lists too).
+- **Fixed**: `palace_reflect` looked for overtaken memories over the
+  whole namespace; it looks among the scope's own.
 - **Added**: explainable retrieval (phase 9). `palace_walk` follows only
   some relations (`relations`) or the facts true at a time (`valid_at`),
   and each memory says how it was found (`found_by`) and, apart, what

@@ -114,7 +114,15 @@ alone (what relations reach now inherits relevance).
 | Incremental retrieval | PENDIENTE | A `skip` on walks and contexts, to ask for the next part. |
 | A measure of retrieval quality | PENDIENTE | A fixed graph and labeled questions needing three or more memories joined; recall@k and the paths found, beside latency and tokens, in `docs/benchmarks.md`. |
 
-## Phase 10: knowledge over time
+## Phase 10: knowledge over time (done)
+
+Built as planned below; what it does is in
+[cognitive-memory.md](cognitive-memory.md#knowledge-over-time). Tests:
+`crates/grafeno-memory/tests/over_time.rs` (the acceptance) and
+`a_decision_changed_three_times_keeps_its_reasons` in
+`crates/grafeno-server/tests/mcp.rs`. The fix the audit asked for first
+is done too: `palace_reflect` looks for overtaken memories among the
+scope's own, not the whole namespace.
 
 | Capability | Class | Plan |
 | --- | --- | --- |

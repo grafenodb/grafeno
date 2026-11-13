@@ -588,6 +588,9 @@ pub struct SupersededOptions {
     /// Memories about one entity compared at most (the newest).
     pub per_entity: usize,
     pub limit: usize,
+    /// Only pairs whose older memory is one of these (any when empty): the
+    /// entities looked at are theirs, not the whole namespace's.
+    pub among: Vec<NodeId>,
 }
 
 impl Default for SupersededOptions {
@@ -608,6 +611,7 @@ impl Default for SupersededOptions {
             min_overlap: 0.4,
             per_entity: 50,
             limit: 20,
+            among: Vec::new(),
         }
     }
 }
@@ -649,27 +653,63 @@ pub fn superseded(read: &ReadTx, ns: &str, options: &SupersededOptions) -> Resul
     let mut about: HashMap<NodeId, Vec<Node>> = HashMap::new();
     let mut entities: HashMap<NodeId, Node> = HashMap::new();
     let mut seen = HashSet::new();
-    for label in &options.memory_labels {
-        for node in read.nodes_page(ns, Some(label), None, usize::MAX)? {
-            if !is_memory(&node) || !seen.insert(node.id) {
-                continue;
+    let is_entity = |node: &Node| {
+        !is_memory(node)
+            && !node.has_label(ARCHIVED)
+            && !crate::palace::is_structure(node)
+            && !node.has_label(crate::communities::COMMUNITY)
+    };
+    if options.among.is_empty() {
+        for label in &options.memory_labels {
+            for node in read.nodes_page(ns, Some(label), None, usize::MAX)? {
+                if !is_memory(&node) || !seen.insert(node.id) {
+                    continue;
+                }
+                for (_, other) in
+                    read.neighbor_ids(ns, node.id, Direction::Both, &EdgeFilter::any())?
+                {
+                    let Some(entity) = read.node(ns, other)? else {
+                        continue;
+                    };
+                    if !is_entity(&entity) {
+                        continue;
+                    }
+                    about.entry(entity.id).or_default().push(node.clone());
+                    entities.entry(entity.id).or_insert(entity);
+                }
             }
-            for (_, other) in read.neighbor_ids(ns, node.id, Direction::Both, &EdgeFilter::any())? {
+        }
+    } else {
+        // The entities of the memories asked about, and every memory about
+        // those entities: a newer one may be outside the set.
+        for id in &options.among {
+            for (_, other) in read.neighbor_ids(ns, *id, Direction::Both, &EdgeFilter::any())? {
+                if entities.contains_key(&other) {
+                    continue;
+                }
                 let Some(entity) = read.node(ns, other)? else {
                     continue;
                 };
-                if is_memory(&entity)
-                    || entity.has_label(ARCHIVED)
-                    || crate::palace::is_structure(&entity)
-                    || entity.has_label(crate::communities::COMMUNITY)
-                {
+                if !is_entity(&entity) {
                     continue;
                 }
-                about.entry(entity.id).or_default().push(node.clone());
-                entities.entry(entity.id).or_insert(entity);
+                let mut memories = Vec::new();
+                for (_, memory) in
+                    read.neighbor_ids(ns, other, Direction::Both, &EdgeFilter::any())?
+                {
+                    if let Some(node) = read.node(ns, memory)?
+                        && is_memory(&node)
+                        && !memories.iter().any(|known: &Node| known.id == node.id)
+                    {
+                        memories.push(node);
+                    }
+                }
+                about.insert(entity.id, memories);
+                entities.insert(entity.id, entity);
             }
         }
     }
+    let wanted: HashSet<NodeId> = options.among.iter().copied().collect();
     let mut texts: HashMap<NodeId, HashSet<String>> = HashMap::new();
     let mut pairs: HashMap<(NodeId, NodeId), Superseded> = HashMap::new();
     for (entity, mut memories) in about {
@@ -682,7 +722,9 @@ pub fn superseded(read: &ReadTx, ns: &str, options: &SupersededOptions) -> Resul
         }
         for (i, newer) in memories.iter().enumerate() {
             for older in &memories[i + 1..] {
-                if older.created_at >= newer.created_at {
+                if older.created_at >= newer.created_at
+                    || (!wanted.is_empty() && !wanted.contains(&older.id))
+                {
                     continue;
                 }
                 let (a, b) = (&texts[&newer.id], &texts[&older.id]);
