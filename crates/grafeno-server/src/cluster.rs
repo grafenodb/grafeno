@@ -218,6 +218,9 @@ async fn receive_group(
 /// connection is closed.
 const REFUSED_BODY: usize = 64 * 1024;
 
+/// Secrets of the example settings, which a member warns about.
+const PLACEHOLDER_SECRETS: [&str; 1] = ["change-this-shared-secret"];
+
 /// Whether a request carries this cluster's secret.
 fn from_member(headers: &HeaderMap, secret: &str) -> bool {
     let given = headers
@@ -349,6 +352,12 @@ pub async fn listen_groups(
             std::io::ErrorKind::InvalidInput,
             "[cluster] secret is empty: every member needs the same secret, and an empty one would let anyone in",
         ));
+    }
+    if PLACEHOLDER_SECRETS.contains(&config.secret.as_str()) {
+        eprintln!(
+            "warning: [cluster] secret is the placeholder of the example settings ({:?}): anyone who has read them can speak for a member. Change it on every member.",
+            config.secret
+        );
     }
     let state = Listener {
         node,
