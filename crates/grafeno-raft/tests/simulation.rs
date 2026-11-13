@@ -631,3 +631,55 @@ fn messages_round_trip_as_json() {
     let text = serde_json::to_string(&message).unwrap();
     assert_eq!(serde_json::from_str::<Message>(&text).unwrap(), message);
 }
+
+/// Found by an outside review: an `Append` whose entry sat at the
+/// snapshot's index (0 on a new member) made the follower cut its log at
+/// `usize::MAX`, and the panic stopped its Raft thread. Malformed appends,
+/// and appends that would replace committed entries, are now dropped.
+#[test]
+fn malformed_appends_change_nothing() {
+    let append = |prev_index, prev_term, entries: Vec<(u64, u64)>, commit| Envelope {
+        from: 99,
+        to: 1,
+        message: Message::Append {
+            term: 50,
+            prev_index,
+            prev_term,
+            entries: entries
+                .into_iter()
+                .map(|(index, term)| Entry {
+                    term,
+                    index,
+                    payload: Payload::Data(b"x".to_vec()),
+                })
+                .collect(),
+            commit,
+            read: 0,
+        },
+    };
+    let mut raft = Raft::new(1, [1, 2, 3], Options::default());
+    // The message of the review: an entry at index 0, after index 0.
+    raft.step(append(0, 0, vec![(0, 50)], 1));
+    assert_eq!(raft.last_index(), 0);
+    assert_eq!(raft.commit(), 0);
+    // Entries out of order, with a gap, or that go back.
+    raft.step(append(0, 0, vec![(2, 50)], 0));
+    raft.step(append(0, 0, vec![(1, 50), (3, 50)], 0));
+    raft.step(append(0, 0, vec![(1, 50), (1, 50)], 0));
+    raft.step(append(u64::MAX, 0, vec![(0, 50)], 0));
+    assert_eq!(raft.last_index(), 0);
+
+    // A real append is taken, and committed entries are never replaced.
+    raft.step(append(0, 0, vec![(1, 50), (2, 50)], 2));
+    assert_eq!(raft.last_index(), 2);
+    assert_eq!(raft.commit(), 2);
+    let _ = raft.ready();
+    raft.step(append(1, 50, vec![(2, 51)], 2));
+    assert_eq!(raft.last_index(), 2);
+    let ready = raft.ready();
+    assert!(ready.committed.is_empty());
+    // Past the commit, a conflict replaces what follows, as Raft says.
+    raft.step(append(2, 50, vec![(3, 50), (4, 50)], 2));
+    raft.step(append(2, 50, vec![(3, 52)], 2));
+    assert_eq!(raft.last_index(), 3);
+}

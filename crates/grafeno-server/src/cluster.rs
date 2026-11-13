@@ -183,9 +183,12 @@ impl Transport for HttpTransport {
     }
 }
 
-/// Compares secrets in time that does not depend on where they differ.
-fn same_secret(given: &[u8], expected: &[u8]) -> bool {
-    given.len() == expected.len()
+/// Compares secrets in time that does not depend on where they differ. An
+/// empty secret matches nothing: a missing header reads as empty, and a
+/// member with no secret would otherwise take any request.
+pub(crate) fn same_secret(given: &[u8], expected: &[u8]) -> bool {
+    !expected.is_empty()
+        && given.len() == expected.len()
         && given
             .iter()
             .zip(expected)
@@ -203,23 +206,41 @@ struct Listener {
 async fn receive_group(
     State(state): State<Listener>,
     axum::extract::Path(group): axum::extract::Path<u64>,
-    headers: HeaderMap,
-    body: Bytes,
+    request: axum::extract::Request,
 ) -> StatusCode {
     match state.nodes.get(&group).cloned() {
-        Some(node) => receive(State(Listener { node, ..state }), headers, body).await,
+        Some(node) => receive(State(Listener { node, ..state }), request).await,
         None => StatusCode::NOT_FOUND,
     }
 }
 
-async fn receive(State(state): State<Listener>, headers: HeaderMap, body: Bytes) -> StatusCode {
+/// What a refused request to the members' port may still send before its
+/// connection is closed.
+const REFUSED_BODY: usize = 64 * 1024;
+
+/// Whether a request carries this cluster's secret.
+fn from_member(headers: &HeaderMap, secret: &str) -> bool {
     let given = headers
         .get(SECRET_HEADER)
         .map(|value| value.as_bytes())
         .unwrap_or_default();
-    if !same_secret(given, state.secret.as_bytes()) {
+    same_secret(given, secret.as_bytes())
+}
+
+async fn receive(State(state): State<Listener>, request: axum::extract::Request) -> StatusCode {
+    // The secret is checked before the body is read: a request without it
+    // is refused before its bytes take memory.
+    let (parts, body) = request.into_parts();
+    let headers = parts.headers;
+    if !from_member(&headers, &state.secret) {
+        // A little of it is read, so that a small request gets its answer
+        // instead of a closed connection; a large one is cut there.
+        let _ = axum::body::to_bytes(body, REFUSED_BODY).await;
         return StatusCode::UNAUTHORIZED;
     }
+    let Ok(body) = axum::body::to_bytes(body, usize::MAX).await else {
+        return StatusCode::BAD_REQUEST;
+    };
     let Some(length) = body.get(..4) else {
         return StatusCode::BAD_REQUEST;
     };
@@ -248,8 +269,15 @@ async fn receive(State(state): State<Listener>, headers: HeaderMap, body: Bytes)
     StatusCode::NO_CONTENT
 }
 
-async fn status(State(state): State<Listener>) -> axum::Json<grafeno_cluster::Status> {
-    axum::Json(state.node.status())
+async fn status(
+    State(state): State<Listener>,
+    headers: HeaderMap,
+) -> Result<axum::Json<grafeno_cluster::Status>, StatusCode> {
+    // What the member is and whom it votes for is the cluster's business.
+    if !from_member(&headers, &state.secret) {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+    Ok(axum::Json(state.node.status()))
 }
 
 /// Starts this member: its Raft state next to the database file (`.raft`),
@@ -316,6 +344,12 @@ pub async fn listen_groups(
     nodes: HashMap<u64, Arc<Node>>,
     config: &ClusterConfig,
 ) -> std::io::Result<()> {
+    if config.secret.trim().is_empty() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "[cluster] secret is empty: every member needs the same secret, and an empty one would let anyone in",
+        ));
+    }
     let state = Listener {
         node,
         nodes: Arc::new(nodes),
@@ -420,6 +454,7 @@ fn forward(
     uri: &axum::http::Uri,
     headers: &HeaderMap,
     body: Bytes,
+    secret: Option<&str>,
 ) -> axum::response::Response {
     send_on(
         api,
@@ -428,7 +463,18 @@ fn forward(
         headers,
         body,
         (FORWARDED, from.to_string()),
+        secret,
     )
+}
+
+/// Headers only members set, each other with the cluster secret: never
+/// passed on from a client.
+const MEMBER_HEADERS: [&str; 3] = [SECRET_HEADER, FORWARDED, crate::groups::GROUP_HOP];
+
+/// Whether a request on the API came from another member: it carries the
+/// cluster secret. A client's `x-grafeno-forwarded` alone changes nothing.
+pub fn member_request(headers: &HeaderMap, secret: Option<&str>) -> bool {
+    secret.is_some_and(|secret| from_member(headers, secret))
 }
 
 /// Sends a request on to another member's API, marked with `mark`, and
@@ -440,6 +486,7 @@ pub fn send_on(
     headers: &HeaderMap,
     body: Bytes,
     mark: (&str, String),
+    secret: Option<&str>,
 ) -> axum::response::Response {
     let url = format!(
         "http://{api}{}",
@@ -456,12 +503,15 @@ pub fn send_on(
         let kept = matches!(
             name,
             "authorization" | "content-type" | "accept" | "idempotency-key" | "last-event-id"
-        ) || name.starts_with("x-grafeno-");
+        ) || (name.starts_with("x-grafeno-") && !MEMBER_HEADERS.contains(&name));
         if kept {
             builder = builder.header(name, value.as_bytes());
         }
     }
     builder = builder.header(mark.0, mark.1);
+    if let Some(secret) = secret {
+        builder = builder.header(SECRET_HEADER, secret);
+    }
     let Ok(request) = builder.body(body.to_vec()) else {
         return refuse(
             axum::http::StatusCode::BAD_GATEWAY,
@@ -519,7 +569,10 @@ pub async fn route(
         return next.run(request).await;
     };
     let headers = request.headers().clone();
-    let forwarded = headers.contains_key(FORWARDED);
+    let secret = state.writer.secret().map(str::to_owned);
+    // Forwarded by another member, which says so with the cluster secret;
+    // a client cannot mark its own request as one, to skip the leader.
+    let forwarded = headers.contains_key(FORWARDED) && member_request(&headers, secret.as_deref());
     let consistency = headers
         .get(CONSISTENCY)
         .and_then(|v| v.to_str().ok())
@@ -564,16 +617,19 @@ pub async fn route(
     let leader_api = |node: &Node| node.status().leader.and_then(|id| state.writer.api_of(id));
     let forward_now = |api: String, bytes: Bytes| {
         let (method, uri, headers, id) = (method.clone(), uri.clone(), headers.clone(), node.id());
+        let secret = secret.clone();
         async move {
-            tokio::task::spawn_blocking(move || forward(&api, id, &method, &uri, &headers, bytes))
-                .await
-                .unwrap_or_else(|_| {
-                    refuse(
-                        StatusCode::BAD_GATEWAY,
-                        "forward_failed",
-                        "the forward failed",
-                    )
-                })
+            tokio::task::spawn_blocking(move || {
+                forward(&api, id, &method, &uri, &headers, bytes, secret.as_deref())
+            })
+            .await
+            .unwrap_or_else(|_| {
+                refuse(
+                    StatusCode::BAD_GATEWAY,
+                    "forward_failed",
+                    "the forward failed",
+                )
+            })
         }
     };
     let status = node.status();
@@ -715,6 +771,7 @@ fn remote_part(
     request: &PartRequest,
     authorization: Option<&str>,
     timeout: Duration,
+    secret: Option<&str>,
 ) -> Option<grafeno_query::Partial> {
     let agent: ureq::Agent = ureq::Agent::config_builder()
         .http_status_as_error(false)
@@ -724,6 +781,9 @@ fn remote_part(
         .into();
     let url = format!("http://{api}/v1/{}/query/part", encode_segment(ns));
     let mut call = agent.post(&url).header(FORWARDED, "1");
+    if let Some(secret) = secret {
+        call = call.header(SECRET_HEADER, secret);
+    }
     if let Some(authorization) = authorization {
         call = call.header("authorization", authorization);
     }
@@ -788,7 +848,10 @@ pub fn read(
                 (*id != me).then(|| {
                     let request = request(part);
                     let authorization = split.authorization.as_deref();
-                    scope.spawn(move || remote_part(api, ns, &request, authorization, timeout))
+                    let secret = writer.secret();
+                    scope.spawn(move || {
+                        remote_part(api, ns, &request, authorization, timeout, secret)
+                    })
                 })
             })
             .collect();

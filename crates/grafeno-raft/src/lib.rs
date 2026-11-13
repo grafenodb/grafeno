@@ -989,6 +989,17 @@ impl Raft {
             let term = self.term;
             self.become_follower(term, Some(from));
         }
+        // A leader's entries follow `prev_index` one by one. Any other
+        // message is not one a leader sends, and is dropped before it
+        // changes anything (it once took the log apart from the wrong
+        // place and stopped this member's Raft thread).
+        if entries
+            .iter()
+            .enumerate()
+            .any(|(i, entry)| Some(entry.index) != prev_index.checked_add(1 + i as u64))
+        {
+            return;
+        }
         self.leader = Some(from);
         self.elapsed = 0;
         let (term, read) = (self.term, self.reply_read);
@@ -1047,7 +1058,12 @@ impl Raft {
             match self.term_at(entry.index) {
                 Some(existing) if existing == entry.term => continue,
                 Some(_) => {
-                    // A conflict: what follows is replaced (never committed).
+                    // A conflict: what follows is replaced. A committed
+                    // entry never is: a message that says otherwise is not
+                    // a leader's, and is dropped.
+                    if entry.index <= self.commit.max(self.snapshot.index) {
+                        return;
+                    }
                     let keep = (entry.index - self.snapshot.index - 1) as usize;
                     changed_config |= self.log[keep..]
                         .iter()

@@ -126,7 +126,7 @@ pub async fn receive(
     let Some(secret) = state.writer.secret() else {
         return StatusCode::NOT_FOUND.into_response();
     };
-    if !crate::http::constant_time_eq(given, secret.as_bytes()) {
+    if !crate::cluster::same_secret(given, secret.as_bytes()) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
     let event = NewAuditEvent::from(wire);

@@ -208,6 +208,7 @@ pub async fn dispatch(State(state): State<AppState>, request: Request, next: Nex
         .get::<axum::extract::OriginalUri>()
         .map_or_else(|| parts.uri.clone(), |original| original.0.clone());
     let me = registry.me;
+    let secret = state.writer.secret().map(str::to_owned);
     tokio::task::spawn_blocking(move || {
         crate::cluster::send_on(
             &api,
@@ -216,6 +217,7 @@ pub async fn dispatch(State(state): State<AppState>, request: Request, next: Nex
             &parts.headers,
             bytes,
             (GROUP_HOP, me.to_string()),
+            secret.as_deref(),
         )
     })
     .await
