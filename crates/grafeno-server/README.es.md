@@ -681,12 +681,18 @@ herramientas:
 | `extract`  | Lee los recuerdos nuevos y modificados y enlaza lo que mencionan (nombres, correos, URLs, usuarios, hashtags, fechas, montos, nombres nuevos recurrentes). |
 | `add_mentions` | Las entidades que menciona un recuerdo, según la propia lectura del agente: enlazadas, creadas o en cola. |
 | `review` / `resolve_review` | Lo que la extracción no pudo decidir, y resolverlo (enlazar, crear, descartar). |
-| `maintain` | Lista los posibles duplicados, los recuerdos débiles y los grupos listos para consolidar. |
+| `maintain` | El tamaño del namespace, el desgaste de sus grafos vectoriales y las contradicciones registradas (con `check: true`, también una revisión de integridad); los posibles duplicados, los recuerdos débiles y los grupos listos para consolidar. |
 | `consolidate` | Guarda un resumen de varios recuerdos y los archiva.                        |
 | `overview` | Para preguntas amplias: los resúmenes de comunidades que coinciden con un tema, o los principales; con `id`, las partes y miembros de una comunidad. |
 | `summarize_communities` | Encuentra las comunidades (y comunidades de comunidades) y escribe o actualiza sus resúmenes. |
 | `set_summary` | Reemplaza el texto de un resumen de comunidad por el del propio agente (o lo deshace). |
 | `changes`  | Lo escrito desde un número de secuencia: nodos y hechos creados, actualizados y eliminados. |
+| `checkpoint` | Guarda en qué quedó una tarea (resumen, hecho, pendiente, decisiones, archivos, el nodo del que trata), después del checkpoint anterior de la tarea. |
+| `resume`   | El último checkpoint de una tarea, cuántos hubo antes y lo escrito desde entonces; sin coincidencias, las tareas que tienen checkpoints. |
+| `ingest`   | Guarda un texto largo como un todo y sus fragmentos: un documento cortado por encabezados y párrafos, una conversación entre turnos, código por sus definiciones; luego extrae lo que mencionan. La misma `source` de nuevo lo reemplaza. |
+| `contradictions` | Hechos que contradijeron a otros anteriores bajo una restricción, y lo que se hizo (el anterior terminó, el nuevo se rechazó, o ambos quedaron marcados). |
+| `timeline` | Cómo cambió un nodo, del más antiguo al más reciente: sus hechos comenzando y terminando, valores anteriores de sus propiedades, fusiones, contradicciones. |
+| `feedback` | `useful` sube la importancia de un recuerdo; `obsolete` archiva un recuerdo o termina un hecho; `wrong` archiva un recuerdo o retracta un hecho. El veredicto queda en el recuerdo. |
 
 Cada herramienta acepta un `namespace` opcional, que por defecto es
 `--namespace`.

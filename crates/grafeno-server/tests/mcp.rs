@@ -88,7 +88,13 @@ fn handshake_and_tool_list() {
             "resolve_review",
             "find_matches",
             "maintain",
-            "consolidate"
+            "consolidate",
+            "checkpoint",
+            "resume",
+            "ingest",
+            "contradictions",
+            "timeline",
+            "feedback"
         ]
     );
     for tool in response["result"]["tools"].as_array().unwrap() {
@@ -573,4 +579,294 @@ fn community_tools() {
         text.starts_with("## Overview\n- The garden team."),
         "{text}"
     );
+}
+
+#[test]
+fn checkpoint_and_resume_a_task() {
+    let server = server();
+    let id = |result: &Value| structured(result)["id"].as_str().unwrap().to_owned();
+    let project = id(&call(
+        &server,
+        "remember",
+        json!({ "name": "Billing", "labels": ["Project"], "text": "The billing service" }),
+    ));
+    let nothing = call(&server, "resume", json!({}));
+    assert_eq!(structured(&nothing)["found"], false);
+
+    let first = id(&call(
+        &server,
+        "checkpoint",
+        json!({
+            "task": "Migrate billing to events",
+            "summary": "Producer done, consumer next.",
+            "done": ["producer"],
+            "next": ["consumer", "backfill"],
+            "about": project,
+        }),
+    ));
+    let second = call(
+        &server,
+        "checkpoint",
+        json!({
+            "task": "migrate  BILLING to events",
+            "summary": "Consumer done; backfill left.",
+            "done": ["producer", "consumer"],
+            "next": ["backfill"],
+            "decisions": ["at-least-once delivery"],
+            "files": ["src/consumer.rs"],
+            "about": project,
+        }),
+    );
+    assert_eq!(
+        structured(&second)["follows"],
+        first.as_str(),
+        "the same task in other words"
+    );
+    let second = id(&second);
+
+    let resumed = call(
+        &server,
+        "resume",
+        json!({ "task": "Migrate billing to events" }),
+    );
+    let resumed = structured(&resumed);
+    assert_eq!(resumed["found"], true);
+    assert_eq!(resumed["checkpoint"]["id"], second.as_str());
+    assert_eq!(resumed["checkpoint"]["previous"], first.as_str());
+    assert_eq!(resumed["checkpoint"]["next"], json!(["backfill"]));
+    assert_eq!(resumed["checkpoints_of_this_task"], 2);
+    assert_eq!(resumed["about"]["name"], "Billing");
+    assert!(
+        resumed["changed_since"].as_array().unwrap().is_empty(),
+        "nothing was written after it: {resumed}"
+    );
+
+    // What is written after the latest checkpoint shows when resuming.
+    call(
+        &server,
+        "remember",
+        json!({ "text": "Backfill takes two hours" }),
+    );
+    let latest = call(&server, "resume", json!({ "about": project }));
+    let changed = structured(&latest)["changed_since"]
+        .as_array()
+        .unwrap()
+        .clone();
+    assert!(
+        changed
+            .iter()
+            .any(|c| c["what"].as_str().unwrap().contains("Backfill")),
+        "{changed:?}"
+    );
+
+    let unknown = call(&server, "resume", json!({ "task": "something else" }));
+    let unknown = structured(&unknown);
+    assert_eq!(unknown["found"], false);
+    assert_eq!(unknown["tasks"][0]["task"], "migrate  BILLING to events");
+}
+
+#[test]
+fn ingest_cuts_documents_conversations_and_code() {
+    let server = server();
+    let doc = "# Runbook\n\nWhat to do when billing stops.\n\n## Restart\n\nRestart the consumer with systemctl.\n\n## Escalate\n\nCall Ana Torres at ana@example.com.";
+    let done = call(
+        &server,
+        "ingest",
+        json!({ "content": doc, "source": "docs/runbook.md" }),
+    );
+    let done = structured(&done).clone();
+    assert_eq!(done["chunks"], 3, "{done}");
+    assert_eq!(done["replaced"], 0);
+    assert!(done["extraction"]["texts_read"].as_u64().unwrap() >= 3);
+    let whole = done["id"].as_str().unwrap().to_owned();
+    let node = call(&server, "get_node", json!({ "id": whole }));
+    let node = structured(&node);
+    assert_eq!(node["name"], "docs/runbook.md");
+    assert_eq!(node["labels"], json!(["Document"]));
+
+    // Recall finds the chunk, which says where it is.
+    let found = call(
+        &server,
+        "recall",
+        json!({ "query": "restart the consumer" }),
+    );
+    let top = &structured(&found)["results"][0];
+    let chunk = call(&server, "get_node", json!({ "id": top["id"] }));
+    let chunk = structured(&chunk);
+    assert_eq!(chunk["props"]["part"], "Runbook > Restart", "{chunk}");
+    assert_eq!(chunk["sources"], json!([whole]));
+
+    // The same source again replaces its chunks.
+    let again = call(
+        &server,
+        "ingest",
+        json!({ "content": "# Runbook\n\nOnly this now.", "source": "docs/runbook.md", "extract": false }),
+    );
+    let again = structured(&again);
+    assert_eq!(again["id"], whole.as_str());
+    assert_eq!(again["replaced"], 3);
+    assert_eq!(again["chunks"], 1);
+
+    let chat = "Ana: Shall we ship Friday?\nBob: Yes, after the docs.\nAna: I will write them.";
+    let chat = call(
+        &server,
+        "ingest",
+        json!({ "content": chat, "kind": "conversation", "title": "Standup", "extract": false }),
+    );
+    assert_eq!(structured(&chat)["chunks"], 1);
+    let code = "fn add(a: i32) -> i32 {\n    a + 1\n}\n\nfn sub(a: i32) -> i32 {\n    a - 1\n}\n";
+    let code = call(
+        &server,
+        "ingest",
+        json!({ "content": code, "kind": "code", "source": "src/math.rs", "max_chars": 100, "extract": false }),
+    );
+    assert_eq!(structured(&code)["chunks"], 1, "both fit in one chunk");
+    let bad = call(&server, "ingest", json!({ "content": "x", "kind": "poem" }));
+    assert_eq!(bad["isError"], true);
+
+    let read_only = McpServer::new(Grafeno::in_memory().unwrap(), "agent".into()).with_access(
+        grafeno_server::mcp::McpAccess {
+            read_only: true,
+            ..Default::default()
+        },
+    );
+    for (tool, arguments) in [
+        ("ingest", json!({ "content": "x" })),
+        ("checkpoint", json!({ "task": "t", "summary": "s" })),
+        ("feedback", json!({ "id": "x", "verdict": "useful" })),
+    ] {
+        assert_eq!(call(&read_only, tool, arguments)["isError"], true, "{tool}");
+    }
+}
+
+#[test]
+fn contradictions_timeline_and_feedback() {
+    use grafeno::{Constraint, NewEdge, NewNode, OnConflict, Scope, Timestamp};
+    let db = Grafeno::in_memory().unwrap();
+    let (ana, acme, first) = db
+        .write(|tx| {
+            tx.create_constraint(
+                "agent",
+                Constraint::Edge {
+                    name: "one_employer".into(),
+                    label: "works_at".into(),
+                    scope: Scope::Source,
+                    on_conflict: OnConflict::Invalidate,
+                },
+            )?;
+            let ana = tx.create_node(
+                "agent",
+                NewNode::new("Person").prop("name", "Ana").text("Ana"),
+            )?;
+            let acme = tx.create_node("agent", NewNode::new("Company").prop("name", "Acme"))?;
+            let first = tx.create_edge(
+                "agent",
+                NewEdge::new(ana, "works_at", acme).valid_from(Timestamp::from_secs(1_577_836_800)),
+            )?;
+            Ok((ana, acme, first))
+        })
+        .unwrap();
+    db.write(|tx| {
+        let globex = tx.create_node("agent", NewNode::new("Company").prop("name", "Globex"))?;
+        tx.create_edge(
+            "agent",
+            NewEdge::new(ana, "works_at", globex).valid_from(Timestamp::from_secs(1_704_067_200)),
+        )
+    })
+    .unwrap();
+    let server = McpServer::new(db, "agent".into());
+
+    let found = call(
+        &server,
+        "contradictions",
+        json!({ "node": ana.to_string() }),
+    );
+    let found = structured(&found);
+    let first_one = &found["contradictions"][0];
+    assert_eq!(first_one["constraint"], "one_employer", "{found}");
+    assert_eq!(first_one["new"]["text"], "Ana works_at Globex");
+    assert_eq!(first_one["old"]["text"], "Ana works_at Acme");
+    let through_acme = call(
+        &server,
+        "contradictions",
+        json!({ "node": acme.to_string(), "limit": 5 }),
+    );
+    assert_eq!(
+        structured(&through_acme)["contradictions"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+
+    let timeline = call(&server, "timeline", json!({ "id": ana.to_string() }));
+    let timeline = structured(&timeline)["timeline"]
+        .as_array()
+        .unwrap()
+        .clone();
+    let kinds: Vec<&str> = timeline
+        .iter()
+        .map(|m| m["kind"].as_str().unwrap())
+        .collect();
+    assert_eq!(kinds[0], "fact_began", "2020 comes first: {kinds:?}");
+    assert!(
+        timeline
+            .iter()
+            .any(|m| m["kind"] == "fact_ended" && m["text"] == "ended: Ana works_at Acme"),
+        "{timeline:?}"
+    );
+    assert!(timeline.iter().any(|m| m["kind"] == "contradiction"));
+    let dates: Vec<&str> = timeline.iter().map(|m| m["at"].as_str().unwrap()).collect();
+    assert!(dates.windows(2).all(|pair| pair[0] <= pair[1]), "{dates:?}");
+
+    // Useful raises importance; obsolete archives; wrong retracts a fact.
+    let useful = call(
+        &server,
+        "feedback",
+        json!({ "id": ana.to_string(), "verdict": "useful", "note": "right person" }),
+    );
+    assert!(
+        structured(&useful)["result"]
+            .as_str()
+            .unwrap()
+            .contains("0.60"),
+        "{useful}"
+    );
+    let node = call(&server, "get_node", json!({ "id": ana.to_string() }));
+    assert_eq!(structured(&node)["props"]["feedback"], "useful");
+    assert_eq!(structured(&node)["props"]["feedback_note"], "right person");
+    call(
+        &server,
+        "feedback",
+        json!({ "id": acme.to_string(), "verdict": "obsolete" }),
+    );
+    let node = call(&server, "get_node", json!({ "id": acme.to_string() }));
+    assert!(
+        structured(&node)["labels"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("Archived"))
+    );
+    let wrong = call(
+        &server,
+        "feedback",
+        json!({ "id": first.to_string(), "verdict": "wrong" }),
+    );
+    assert!(
+        structured(&wrong)["result"]
+            .as_str()
+            .unwrap()
+            .contains("retracted")
+    );
+    for (id, verdict) in [(first.to_string(), "useful"), (ana.to_string(), "great")] {
+        let refused = call(&server, "feedback", json!({ "id": id, "verdict": verdict }));
+        assert_eq!(refused["isError"], true, "{verdict}");
+    }
+
+    // maintain reports health, and checks integrity when asked.
+    let report = call(&server, "maintain", json!({ "check": true }));
+    let health = &structured(&report)["health"];
+    assert_eq!(health["nodes"], 3, "{health}");
+    assert_eq!(health["contradictions"], 1);
+    assert_eq!(health["check"]["ok"], true);
 }

@@ -63,6 +63,18 @@ version (now 18) is upgraded in place, with a copy kept first.
   cluster that apply the same entry build the same graph. A write alone
   in its transaction costs what it did (#18).
 
+- **Added**: six MCP tools. `checkpoint` and `resume` save where a task
+  stands and take it up again in a later session (with what was written
+  since). `ingest` stores a document, a conversation or code as a whole
+  and its chunks, cut at headings, turns or definitions, and extracts what
+  they mention; the same source again replaces it. `contradictions` lists
+  facts that contradicted earlier ones; `timeline` tells how a node
+  changed; `feedback` marks a memory or fact useful, obsolete or wrong.
+  `maintain` also reports the namespace's size, its vector graphs' wear
+  and contradictions, and an integrity check with `check: true`. In the
+  library: `grafeno_memory::{save_checkpoint, resume, ingest_document,
+  cut, timeline}`.
+
 ## 0.2.1 (2026-11-11)
 
 The same database layout (18), HTTP API (version 1) and log entry format

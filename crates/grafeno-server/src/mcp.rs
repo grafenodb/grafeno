@@ -31,8 +31,10 @@ knowledge, call `context` (or `recall` to get ids). Store new facts, decisions a
 preferences with `remember`, and connect nodes with `relate`. When something stops being \
 true, `forget` it with mode \"invalidate\" so its history is kept; use \"retract\" only for \
 mistakes. Give lasting facts a higher `importance`. From time to time, call `maintain` to \
-merge duplicates and `consolidate` old memories into summaries. Ids are the UUIDs these \
-tools return.";
+merge duplicates and `consolidate` old memories into summaries. At the start of a session on \
+ongoing work, call `resume`; before stopping, save where it stands with `checkpoint`. Store \
+long texts (documents, conversations, code) with `ingest`, and say what helped or misled with \
+`feedback`. Ids are the UUIDs these tools return.";
 
 const SNIPPET_CHARS: usize = 400;
 
@@ -83,6 +85,9 @@ const WRITING_TOOLS: &[&str] = &[
     "consolidate",
     "summarize_communities",
     "set_summary",
+    "checkpoint",
+    "ingest",
+    "feedback",
 ];
 
 /// Serves MCP on stdin and stdout until stdin closes.
@@ -252,6 +257,12 @@ impl McpServer {
             "changes" => self.changes(arguments),
             "summarize_communities" => self.summarize_communities(arguments),
             "set_summary" => self.set_summary(arguments),
+            "checkpoint" => self.checkpoint(arguments),
+            "resume" => self.resume(arguments),
+            "ingest" => self.ingest(arguments),
+            "contradictions" => self.contradictions(arguments),
+            "timeline" => self.timeline(arguments),
+            "feedback" => self.feedback(arguments),
             _ => return Err((-32602, format!("unknown tool: {name}"))),
         };
         Ok(match outcome {
@@ -1148,6 +1159,8 @@ impl McpServer {
             #[serde(default)]
             limit: Option<usize>,
             #[serde(default)]
+            check: bool,
+            #[serde(default)]
             namespace: Option<String>,
         }
         let args: Args = parse_args(arguments)?;
@@ -1205,7 +1218,40 @@ impl McpServer {
             consolidation.push(json!({ "about": brief(&group.entity), "memories": memories }));
         }
 
+        // The namespace's size, its vector graphs' wear and, when asked,
+        // a full integrity check (it reads every record).
+        let stats = read.stats(ns).map_err(describe)?;
+        let vectors: Vec<Value> = read
+            .vector_health(ns)
+            .map_err(describe)?
+            .iter()
+            .map(|graph| {
+                json!({
+                    "index": graph.index,
+                    "vectors": graph.vectors,
+                    "removed_since_built": graph.removed,
+                    "churn": (graph.churn * 100.0).round() / 100.0,
+                })
+            })
+            .collect();
+        let mut health = json!({
+            "nodes": stats.nodes,
+            "edges": stats.edges,
+            "texts": stats.texts,
+            "vector_graphs": vectors,
+            "contradictions": read.constraint_events(ns, 10_000).map_err(describe)?.len(),
+        });
+        if args.check {
+            let report = read.check(ns).map_err(describe)?;
+            health["check"] = json!({
+                "ok": report.is_ok(),
+                "problems": report.problems.iter().take(limit).collect::<Vec<_>>(),
+                "unreachable_vectors": report.unreachable_vectors,
+            });
+        }
+
         Ok(ToolOutput::Json(json!({
+            "health": health,
             "duplicates": duplicates,
             "weak": weak,
             "consolidation": consolidation,
@@ -1264,6 +1310,419 @@ impl McpServer {
             "summarized": count,
             "archived": args.archive_sources,
         })))
+    }
+
+    fn checkpoint(&self, arguments: Value) -> ToolResult {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Args {
+            task: String,
+            summary: String,
+            #[serde(default)]
+            done: Vec<String>,
+            #[serde(default)]
+            next: Vec<String>,
+            #[serde(default)]
+            decisions: Vec<String>,
+            #[serde(default)]
+            files: Vec<String>,
+            #[serde(default)]
+            about: Option<String>,
+            #[serde(default)]
+            agent: Option<String>,
+            #[serde(default)]
+            namespace: Option<String>,
+        }
+        let args: Args = parse_args(arguments)?;
+        let ns = self.ns(&args.namespace);
+        let about = args
+            .about
+            .as_deref()
+            .map(parse_id)
+            .transpose()
+            .map_err(describe)?;
+        let change = self
+            .db
+            .begin_read()
+            .and_then(|read| read.changes(ns, 0, 1))
+            .map(|page| page.last)
+            .unwrap_or(0);
+        let agent = args
+            .agent
+            .or_else(|| self.access.actor.as_ref().map(|actor| actor.name.clone()));
+        let new = grafeno_memory::NewCheckpoint {
+            task: args.task,
+            summary: args.summary,
+            done: args.done,
+            next: args.next,
+            decisions: args.decisions,
+            files: args.files,
+            about,
+            agent,
+            change,
+        };
+        let id = self
+            .write(|tx| grafeno_memory::save_checkpoint(tx, ns, new))
+            .map_err(describe)?;
+        let read = self.db.begin_read().map_err(describe)?;
+        let saved = grafeno_memory::checkpoints(&read, ns, &grafeno_memory::ResumeQuery::default())
+            .map_err(describe)?
+            .into_iter()
+            .find(|checkpoint| checkpoint.id == id);
+        Ok(ToolOutput::Json(json!({
+            "id": id,
+            "follows": saved.and_then(|checkpoint| checkpoint.previous),
+        })))
+    }
+
+    fn resume(&self, arguments: Value) -> ToolResult {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Args {
+            #[serde(default)]
+            task: Option<String>,
+            #[serde(default)]
+            about: Option<String>,
+            #[serde(default)]
+            agent: Option<String>,
+            #[serde(default)]
+            namespace: Option<String>,
+        }
+        let args: Args = parse_args(arguments)?;
+        let ns = self.ns(&args.namespace);
+        let query = grafeno_memory::ResumeQuery {
+            task: args.task,
+            about: args
+                .about
+                .as_deref()
+                .map(parse_id)
+                .transpose()
+                .map_err(describe)?,
+            agent: args.agent,
+        };
+        let read = self.db.begin_read().map_err(describe)?;
+        let all = grafeno_memory::checkpoints(&read, ns, &query).map_err(describe)?;
+        let Some(latest) = all.first().cloned() else {
+            let tasks = grafeno_memory::tasks(&read, ns, &grafeno_memory::ResumeQuery::default())
+                .map_err(describe)?;
+            let tasks: Vec<Value> = tasks
+                .iter()
+                .take(20)
+                .map(|checkpoint| {
+                    json!({
+                        "task": checkpoint.task,
+                        "at": checkpoint.at.date(),
+                        "agent": checkpoint.agent,
+                        "summary": snippet(&checkpoint.summary),
+                    })
+                })
+                .collect();
+            return Ok(ToolOutput::Json(json!({
+                "found": false,
+                "tasks": tasks,
+                "hint": "No checkpoint matches. These are the tasks with checkpoints; resume one by its task.",
+            })));
+        };
+        let same_task = all
+            .iter()
+            .filter(|checkpoint| {
+                grafeno_memory::checkpoint::task_key(&checkpoint.task)
+                    == grafeno_memory::checkpoint::task_key(&latest.task)
+            })
+            .count();
+        // What was written since, by anyone, its own write left out.
+        let since = read.changes(ns, latest.change, 50).map_err(describe)?;
+        let mut changed = Vec::new();
+        for change in since.changes.iter() {
+            if change.node == Some(latest.id)
+                || change.from == Some(latest.id)
+                || change
+                    .labels
+                    .iter()
+                    .any(|l| l == grafeno_memory::CHECKPOINT)
+            {
+                continue;
+            }
+            let what = match (change.node, change.from, change.to) {
+                // An unnamed memory by the start of its text.
+                (Some(node), _, _) => match read.node(ns, node).map_err(describe)? {
+                    Some(record) if record.explicit_name().is_none() => {
+                        let text = read.text(ns, node).map_err(describe)?.unwrap_or_default();
+                        text.chars().take(80).collect()
+                    }
+                    _ => name_of(&read, ns, node),
+                },
+                (None, Some(from), Some(to)) => format!(
+                    "{} {} {}",
+                    name_of(&read, ns, from),
+                    change.labels.join(", "),
+                    name_of(&read, ns, to)
+                ),
+                _ => change.labels.join(", "),
+            };
+            changed.push(json!({ "op": change.op, "what": what, "labels": change.labels }));
+        }
+        let about = latest
+            .about
+            .map(|id| json!({ "id": id, "name": name_of(&read, ns, id) }));
+        Ok(ToolOutput::Json(json!({
+            "found": true,
+            "checkpoint": latest,
+            "about": about,
+            "checkpoints_of_this_task": same_task,
+            "changed_since": changed,
+            "more_changes": since.changes.len() >= 50,
+        })))
+    }
+
+    fn ingest(&self, arguments: Value) -> ToolResult {
+        fn yes() -> bool {
+            true
+        }
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Args {
+            content: String,
+            #[serde(default)]
+            kind: grafeno_memory::Kind,
+            #[serde(default)]
+            title: Option<String>,
+            #[serde(default)]
+            source: Option<String>,
+            #[serde(default)]
+            labels: Vec<String>,
+            #[serde(default)]
+            max_chars: Option<usize>,
+            #[serde(default = "yes")]
+            extract: bool,
+            #[serde(default)]
+            namespace: Option<String>,
+        }
+        let args: Args = parse_args(arguments)?;
+        let ns = self.ns(&args.namespace).to_owned();
+        let new = grafeno_memory::NewDocument {
+            content: args.content,
+            kind: args.kind,
+            title: args.title,
+            source: args.source,
+            labels: args.labels,
+            max_chars: args
+                .max_chars
+                .unwrap_or(grafeno_memory::DEFAULT_CHUNK_CHARS),
+        };
+        let done = self
+            .write(|tx| grafeno_memory::ingest_document(tx, &ns, new))
+            .map_err(describe)?;
+        let mut out = json!({
+            "id": done.id,
+            "chunks": done.chunks.len(),
+            "chunk_ids": done.chunks,
+            "replaced": done.replaced,
+        });
+        if args.extract {
+            let extracted = self.extract(json!({ "namespace": ns }))?;
+            if let ToolOutput::Json(report) = extracted {
+                out["extraction"] = report;
+            }
+        }
+        Ok(ToolOutput::Json(out))
+    }
+
+    fn contradictions(&self, arguments: Value) -> ToolResult {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Args {
+            #[serde(default)]
+            node: Option<String>,
+            #[serde(default)]
+            limit: Option<usize>,
+            #[serde(default)]
+            namespace: Option<String>,
+        }
+        let args: Args = parse_args(arguments)?;
+        let ns = self.ns(&args.namespace);
+        let node = args
+            .node
+            .as_deref()
+            .map(parse_id)
+            .transpose()
+            .map_err(describe)?;
+        let limit = args.limit.unwrap_or(20);
+        let read = self.db.begin_read().map_err(describe)?;
+        let fact = |id: grafeno::EdgeId| -> Result<Option<Value>, String> {
+            let Some(edge) = read.edge(ns, id).map_err(describe)? else {
+                return Ok(None);
+            };
+            Ok(Some(json!({
+                "id": edge.id,
+                "text": format!(
+                    "{} {} {}",
+                    name_of(&read, ns, edge.from),
+                    edge.label,
+                    name_of(&read, ns, edge.to)
+                ),
+                "valid_from": edge.valid_from.map(|at| at.date()),
+                "valid_to": edge.valid_to.map(|at| at.date()),
+                "touches": [edge.from, edge.to],
+            })))
+        };
+        let mut out = Vec::new();
+        for event in read.constraint_events(ns, 10_000).map_err(describe)? {
+            if out.len() >= limit {
+                break;
+            }
+            let (new, old) = (fact(event.new_edge)?, fact(event.old_edge)?);
+            if let Some(node) = node {
+                let touches = |fact: &Option<Value>| {
+                    fact.as_ref().is_some_and(|fact| {
+                        fact["touches"]
+                            .as_array()
+                            .is_some_and(|ends| ends.iter().any(|end| end == &json!(node)))
+                    })
+                };
+                if !touches(&new) && !touches(&old) {
+                    continue;
+                }
+            }
+            out.push(json!({
+                "constraint": event.constraint,
+                "action": event.action,
+                "new": new,
+                "old": old,
+                "replacement": event.replacement,
+                "ends_at": event.at.map(|at| at.date()),
+                "at": event.recorded_at.date(),
+                "by": event.by,
+            }));
+        }
+        Ok(ToolOutput::Json(json!({
+            "contradictions": out,
+            "hint": "Each is a fact that contradicted an earlier one under a constraint, and what \
+                was done: the earlier one invalidated (it ended), the new one refused, or both \
+                kept and flagged. Fix a flagged pair with `forget` (\"invalidate\" or \"retract\").",
+        })))
+    }
+
+    fn timeline(&self, arguments: Value) -> ToolResult {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Args {
+            id: String,
+            #[serde(default)]
+            limit: Option<usize>,
+            #[serde(default)]
+            namespace: Option<String>,
+        }
+        let args: Args = parse_args(arguments)?;
+        let ns = self.ns(&args.namespace);
+        let id = parse_id(&args.id).map_err(describe)?;
+        let read = self.db.begin_read().map_err(describe)?;
+        let moments =
+            grafeno_memory::timeline(&read, ns, id, args.limit.unwrap_or(100)).map_err(describe)?;
+        let moments: Vec<Value> = moments
+            .iter()
+            .map(|moment| {
+                json!({
+                    "at": moment.at.date(),
+                    "kind": moment.kind,
+                    "text": moment.text,
+                    "fact": moment.fact,
+                    "by": moment.by,
+                })
+            })
+            .collect();
+        Ok(ToolOutput::Json(json!({
+            "id": id,
+            "name": name_of(&read, ns, id),
+            "timeline": moments,
+        })))
+    }
+
+    fn feedback(&self, arguments: Value) -> ToolResult {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Args {
+            id: String,
+            verdict: String,
+            #[serde(default)]
+            note: Option<String>,
+            #[serde(default)]
+            namespace: Option<String>,
+        }
+        let args: Args = parse_args(arguments)?;
+        let ns = self.ns(&args.namespace);
+        let id = parse_id(&args.id).map_err(describe)?;
+        let edge_id = grafeno::EdgeId::from_u128(id.as_u128());
+        let read = self.db.begin_read().map_err(describe)?;
+        let node = read.node(ns, id).map_err(describe)?;
+        let is_edge = read.edge(ns, edge_id).map_err(describe)?.is_some();
+        let importance = match &node {
+            Some(node) => Some(read.memory(ns, node).map_err(describe)?.importance),
+            None => None,
+        };
+        drop(read);
+        let now = grafeno::Timestamp::now();
+        let note = args.note.clone();
+        let mark = |tx: &mut grafeno::WriteTx, verdict: &str| -> grafeno::Result<()> {
+            let mut props = Props::new();
+            props.insert("feedback".into(), json!(verdict));
+            props.insert("feedback_at".into(), json!(now.date()));
+            if let Some(note) = &note {
+                props.insert("feedback_note".into(), json!(note));
+            }
+            tx.set_node_props(ns, id, props)
+        };
+        let done = match (node.is_some(), is_edge, args.verdict.as_str()) {
+            (true, _, "useful") => {
+                let raised = (importance.unwrap_or(0.5) + 0.1).min(1.0);
+                self.write(|tx| {
+                    tx.set_importance(ns, id, raised)?;
+                    tx.touch(ns, &[id], now)?;
+                    mark(tx, "useful")
+                })
+                .map_err(describe)?;
+                format!("importance raised to {:.2}", raised)
+            }
+            (true, _, "obsolete") => {
+                self.write(|tx| {
+                    grafeno_memory::archive(tx, ns, &[id])?;
+                    mark(tx, "obsolete")
+                })
+                .map_err(describe)?;
+                "archived: kept, but left out of recall".to_owned()
+            }
+            (true, _, "wrong") => {
+                self.write(|tx| {
+                    grafeno_memory::archive(tx, ns, &[id])?;
+                    tx.set_importance(ns, id, 0.0)?;
+                    mark(tx, "wrong")
+                })
+                .map_err(describe)?;
+                "marked wrong and archived: kept for the record, left out of recall".to_owned()
+            }
+            (false, true, "useful") => {
+                return Err("a fact cannot be rated useful: rate the node it is about".into());
+            }
+            (false, true, "obsolete") => {
+                self.write(|tx| tx.invalidate_edge(ns, edge_id, now))
+                    .map_err(describe)?;
+                "fact invalidated: it ended now, and its history is kept".to_owned()
+            }
+            (false, true, "wrong") => {
+                self.write(|tx| tx.retract_edge(ns, edge_id))
+                    .map_err(describe)?;
+                "fact retracted: kept in history as a mistake".to_owned()
+            }
+            (_, _, other) if !matches!(other, "useful" | "obsolete" | "wrong") => {
+                return Err(format!(
+                    "unknown verdict {other:?}: use \"useful\", \"wrong\" or \"obsolete\""
+                ));
+            }
+            _ => return Err(format!("no node or fact with id {id}")),
+        };
+        Ok(ToolOutput::Json(
+            json!({ "id": id, "verdict": args.verdict, "result": done }),
+        ))
     }
 }
 
@@ -1747,13 +2206,15 @@ fn tools() -> Value {
         {
             "name": "maintain",
             "title": "Maintain",
-            "description": "Review memory health: likely duplicates (by name or meaning), weak \
+            "description": "Review memory health: the namespace's size, its vector graphs' wear \
+                and the contradictions on record; likely duplicates (by name or meaning), weak \
                 memories that are fading, and groups of older memories about one entity that \
                 could be summarized with `consolidate`. Changes nothing.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "limit": { "type": "integer", "minimum": 1, "description": "Maximum items per section. Default: 10." },
+                    "check": { "type": "boolean", "description": "Also check every record and index for integrity (reads them all). Default: false." },
                     "namespace": namespace
                 }
             }
@@ -1776,6 +2237,117 @@ fn tools() -> Value {
                     "namespace": namespace
                 },
                 "required": ["summary", "sources"]
+            }
+        },
+        {
+            "name": "checkpoint",
+            "title": "Checkpoint",
+            "description": "Save where a task stands so that you, or another agent, can take it up \
+                in a later session with `resume`: what the task is, a summary, what is done, what \
+                comes next, decisions taken and files touched. Checkpoints of one task form a \
+                chain; the newest is what `resume` returns.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "task": { "type": "string", "description": "What the work is, in the same words each time (such as \"migrate billing to events\")." },
+                    "summary": { "type": "string", "description": "Where it stands, in a few sentences." },
+                    "done": { "type": "array", "items": { "type": "string" }, "description": "What is finished." },
+                    "next": { "type": "array", "items": { "type": "string" }, "description": "What comes next, in order." },
+                    "decisions": { "type": "array", "items": { "type": "string" }, "description": "Decisions taken, and why." },
+                    "files": { "type": "array", "items": { "type": "string" }, "description": "Files or documents touched." },
+                    "about": id("Id of the project or node the task is about."),
+                    "agent": { "type": "string", "description": "Who saves it. Default: the name this server records writes as." },
+                    "namespace": namespace
+                },
+                "required": ["task", "summary"]
+            }
+        },
+        {
+            "name": "resume",
+            "title": "Resume",
+            "description": "Where a task stands: its latest checkpoint (summary, done, next, \
+                decisions, files), how many came before, and what was written in memory since. \
+                With no match, lists the tasks that have checkpoints.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "task": { "type": "string", "description": "The task's words. Omit for the latest checkpoint of any task." },
+                    "about": id("Only checkpoints about this node."),
+                    "agent": { "type": "string", "description": "Only checkpoints this agent saved." },
+                    "namespace": namespace
+                }
+            }
+        },
+        {
+            "name": "ingest",
+            "title": "Ingest",
+            "description": "Store a long text as memories: a document cut at its headings and \
+                paragraphs, a conversation cut between turns, or code cut at its definitions. \
+                The whole becomes one node and each chunk a memory linked to it, in order, with \
+                its lines; then the chunks are read for the entities they mention. Ingesting the \
+                same source again replaces it.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "content": { "type": "string", "description": "The whole text." },
+                    "kind": { "type": "string", "enum": ["document", "conversation", "code"], "description": "How to cut it. Default: document." },
+                    "title": { "type": "string", "description": "Its name. Default: the source, or its first line." },
+                    "source": { "type": "string", "description": "Where it comes from (a path, a URL); the same source again replaces it." },
+                    "labels": { "type": "array", "items": { "type": "string" }, "description": "More labels for the whole." },
+                    "max_chars": { "type": "integer", "minimum": 100, "description": "Characters per chunk at most. Default: 1500." },
+                    "extract": { "type": "boolean", "description": "Link the entities the chunks mention. Default: true." },
+                    "namespace": namespace
+                },
+                "required": ["content"]
+            }
+        },
+        {
+            "name": "contradictions",
+            "title": "Contradictions",
+            "description": "Facts that contradicted earlier ones under a constraint (one employer at \
+                a time, one birthplace), newest first, and what was done: the earlier fact ended, \
+                the new one refused, or both kept and flagged.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "node": id("Only contradictions that involve this node."),
+                    "limit": { "type": "integer", "minimum": 1, "description": "Default: 20." },
+                    "namespace": namespace
+                }
+            }
+        },
+        {
+            "name": "timeline",
+            "title": "Timeline",
+            "description": "How a node changed over time, oldest first: when it was recorded, when \
+                each of its facts began and ended, the values its properties had before, the \
+                merges it took part in and the contradictions its facts ran into.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "id": id("The node: a project, a decision, a person."),
+                    "limit": { "type": "integer", "minimum": 1, "description": "The latest moments kept. Default: 100." },
+                    "namespace": namespace
+                },
+                "required": ["id"]
+            }
+        },
+        {
+            "name": "feedback",
+            "title": "Feedback",
+            "description": "Say how a memory or fact turned out. \"useful\": a memory gains \
+                importance. \"obsolete\": a memory is archived, a fact ends now. \"wrong\": a \
+                memory is archived with no importance, a fact is retracted as a mistake. Nothing \
+                is deleted; the verdict is kept on the memory.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "id": id("The memory or fact."),
+                    "verdict": { "type": "string", "enum": ["useful", "wrong", "obsolete"] },
+                    "note": { "type": "string", "description": "Why, in a few words." },
+                    "namespace": namespace
+                },
+                "required": ["id", "verdict"]
             }
         }
     ])

@@ -661,12 +661,18 @@ another group's file. See [docs/cluster-runbooks.md](../../docs/cluster-runbooks
 | `extract`  | Reads new and changed memories and links what they mention (names, emails, URLs, handles, hashtags, dates, amounts, recurring new names). |
 | `add_mentions` | The entities a memory mentions, from the agent's own reading: linked, created or queued. |
 | `review` / `resolve_review` | What extraction could not decide, and settling it (link, create, dismiss). |
-| `maintain` | Lists likely duplicates, weak memories and groups ready to consolidate.        |
+| `maintain` | The namespace's size, its vector graphs' wear and contradictions on record (with `check: true`, an integrity check too); likely duplicates, weak memories and groups ready to consolidate. |
 | `consolidate` | Stores a summary of several memories and archives them.                     |
 | `overview` | For broad questions: community summaries that match a topic, or the top ones; with `id`, a community's parts and members. |
 | `summarize_communities` | Finds the communities (and communities of communities) and writes or refreshes their summaries. |
 | `set_summary` | Replaces a community summary's text with the agent's own (or undoes it). |
 | `changes`  | What was written since a sequence number: created, updated and deleted nodes and facts. |
+| `checkpoint` | Saves where a task stands (summary, done, next, decisions, files, the node it is about), after the task's previous checkpoint. |
+| `resume`   | A task's latest checkpoint, how many came before, and what was written since; with no match, the tasks that have checkpoints. |
+| `ingest`   | Stores a long text as a whole and its chunks: a document cut at headings and paragraphs, a conversation between turns, code at its definitions; then extracts what they mention. The same `source` again replaces it. |
+| `contradictions` | Facts that contradicted earlier ones under a constraint, and what was done (the earlier one ended, the new one refused, or both flagged). |
+| `timeline` | How a node changed, oldest first: its facts beginning and ending, earlier property values, merges, contradictions. |
+| `feedback` | `useful` raises a memory's importance; `obsolete` archives a memory or ends a fact; `wrong` archives a memory or retracts a fact. The verdict stays on the memory. |
 
 Every tool takes an optional `namespace`, which defaults to `--namespace`.
 
