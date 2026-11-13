@@ -886,6 +886,67 @@ notes. The multi-hop example (`examples/multi_hop.rs`, also a test) shows
 the other side: an answer three hops away still comes back, ranked above
 a near miss.
 
+## Writes with vectors on the one writer (`crates/grafeno/examples/vector_writes.rs`)
+
+A database file with immediate durability, on a laptop's NVMe SSD
+(Windows 11), release build, 2026-11-12. Each write is a node with a
+40-word text (from a 5 000-word vocabulary) and a 128-dimension vector
+(64 clusters); four threads search the graph without pause meanwhile.
+First what each part of a write costs, alone in its transaction and 200
+to a transaction (as the group commit runs them under load):
+
+| write | 10 000 vectors: alone, p50 ms | 200 to a transaction, ms each | 100 000 vectors: alone, p50 ms | 200 to a transaction, ms each |
+| --- | --- | --- | --- | --- |
+| empty commit | 0.86 | 0.00 | 0.88 | 0.00 |
+| node | 1.57 | 0.04 | 1.75 | 0.04 |
+| node + text | 6.69 | 0.57 | 8.80 | 1.54 |
+| node + vector | 4.92 | 0.98 | 8.25 | 3.74 |
+| node + text + vector | 10 | 2.24 | 15 | 4.78 |
+
+Then 256 clients offering writes at a fixed rate (open load; latency from
+the scheduled time):
+
+| vectors | offered/s | done/s | p50 ms | p95 ms | p99 ms | writes/commit | search p50 / p99 ms |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 10 000 | 100 | 99 | 36 | 50 | 52 | 2.2 | 0.59 / 0.97 |
+| 10 000 | 250 | 226 | 338 | 501 | 532 | 39.5 | 0.61 / 1.00 |
+| 10 000 | 500 | 402 | 676 | 984 | 1 067 | 136.4 | 0.62 / 1.01 |
+| 10 000 | 1 000 | 415 | 2 327 | 4 257 | 4 374 | 200.0 | 0.67 / 1.08 |
+| 100 000 | 100 | 88 | 445 | 685 | 745 | 17.6 | 2.19 / 3.35 |
+| 100 000 | 250 | 152 | 1 904 | 2 673 | 2 793 | 107.1 | 2.19 / 2.97 |
+| 100 000 | 500 | 154 | 4 125 | 6 855 | 6 974 | 166.7 | 2.18 / 3.08 |
+
+What this says:
+
+- **The commit and the record are not the cost.** Grouped, a commit is
+  paid once per group and a node's record is 0.04 ms. The writer's time
+  goes to the indexes: the vector graph first (an insert searches the
+  graph with `ef_construction` 100 and rewrites its neighbors' links), the
+  text's postings second. Both grow with what is indexed: the vector part
+  from 1.0 to 3.7 ms a write between 10 000 and 100 000 vectors.
+- **So the one writer tops out early with vectors**: about 400 writes a
+  second at 10 000 vectors and 150 at 100 000, against 11 000 small
+  writes (above). Past about half that rate, writes wait in line and
+  latency climbs into seconds; none was refused (the queue holds 4 096).
+- **Searches do not suffer**: they read snapshots, at the same latency
+  under any write load.
+- 1 000 000 vectors was not measured here: filling the graph alone takes
+  over an hour (see *Memory under a large graph*), and the trend is
+  already clear.
+
+Indexing from the change log, after the commit, would make writes return
+at the cost of their record and text, but the vectors would still be
+inserted by the one writer (in the bulk lane), so they would fall behind
+by as much as they now wait; searches would miss the newest vectors for
+that long. What raises the ceiling is taking the graph search out of the
+writer: find each new vector's neighbors on a read snapshot, on several
+threads, and leave the writer only the link lists to write, re-checking
+the few that changed meanwhile. Until then: send writes in batches
+(`/batch`, `/ingest`, `?bulk=true`), keep vectors in their own namespace
+or group when a cluster has several, and give write-heavy vector indexes a
+lower `ef_construction` (64 kept recall@10 at the same level on 20 000
+vectors, above).
+
 ## Remaining limits
 
 - **Vector search reads each visited vector from redb** (about 0.4 µs per

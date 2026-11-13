@@ -652,8 +652,13 @@ scrape_configs:
 
 Vigila `grafeno_write_queue` y `grafeno_write_seconds`: una cola que se
 mantiene alta indica que las escrituras llegan más rápido de lo que un
-escritor las confirma (cerca de 11 000 por segundo en un SSD con durabilidad
-inmediata, más con `durability = "eventual"`);
+escritor las confirma (cerca de 11 000 escrituras pequeñas por segundo en
+un SSD con durabilidad inmediata, más con `durability = "eventual"`). Las
+escrituras que indexan un texto y un vector cuestan mucho más, y casi todo
+es el grafo vectorial: unas 400 por segundo con 10 000 vectores de 128
+dimensiones, unas 150 con 100 000 (ver
+[benchmarks](benchmarks.md#writes-with-vectors-on-the-one-writer-cratesgrafenoexamplesvector_writesrs), en
+inglés); las búsquedas no se ralentizan por ellas.
 `grafeno_write_rejected_total` cuenta los 503 por encima del límite de la
 cola. Carga las exportaciones grandes con `?bulk=true`: así van en tramos
 entre las escrituras de los agentes en lugar de antes que ellas.
