@@ -13,6 +13,28 @@ version (now 18) is upgraded in place, with a copy kept first.
 
 ## Unreleased
 
+- **Added**: `grafeno mcp --listen ADDR` also serves the HTTP API on the
+  agent's database, with `--token` and `--cors-origins`: Grafeno Studio and
+  `grafeno shell --url` connect to it and see what the agent writes as it
+  writes it, though only one process can open the file. A second process
+  on a file that is open is refused with a message that says how.
+- **Security**: fixes from two outside reviews, each with a test; see
+  [docs/security.md](docs/security.md). A key made with a scoped key
+  takes its scope. On Windows, settings and data are no longer readable
+  by every user (`config init`, the instance commands, the installer;
+  `doctor` reports it). Cluster members prove themselves with the secret
+  on every hop, an empty secret is refused, `/status` on the members' port
+  needs it, and a malformed `Append` no longer stops a member's Raft
+  thread. Sign-in attempts are counted when they begin, with bounded
+  memory and a few password checks at a time. A writing transaction needs
+  a right to write; exporting everything needs the export right.
+  Webhooks reach only public addresses (`[background] webhooks_to_private`).
+  Refusals are sampled in the audit log
+  (`grafeno_audit_refusals_left_out_total`). A panic answers with a
+  reference. Limits: an ingested line (4 MiB), an MCP message (16 MiB),
+  edit distances, dates up to year 200 000. `COUNT { … }` and other
+  patterns in expressions follow their MATCH's `VALID AT`.
+  `docker compose` needs `GRAFENO_TOKEN`.
 - **Added**: how a memory or a fact is known. `remember` and `relate`
   take `origin` (`stated`, `observed`, `inferred`, `verified`) and
   `certainty` (0 to 1), stored as properties; `get_node`, `recall` and

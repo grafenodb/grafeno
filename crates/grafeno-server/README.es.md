@@ -722,6 +722,24 @@ atiende:
 | `--as NAME` | sus escrituras se registran como `NAME` (`@recorded_by`) |
 | `--own-only` | con `--as`: solo puede cambiar lo que registró |
 
+Solo un proceso puede abrir un archivo de base, así que mientras el
+servidor MCP de un agente lo tiene, Grafeno Studio o `grafeno shell --db`
+no pueden abrirlo a la vez. Para ver la memoria del agente mientras
+escribe, haz que su servidor MCP sirva también la API HTTP sobre la misma
+base, y conéctate a ella:
+
+```bash
+grafeno mcp --db agente.redb --namespace yo --listen 127.0.0.1:7810 --token "$GRAFENO_TOKEN"
+```
+
+Grafeno Studio se conecta a `http://127.0.0.1:7810` con ese token, y
+`grafeno shell --url http://127.0.0.1:7810 --token …` también: lo que el
+agente guarda aparece allí al momento, en las consultas y en el registro
+de cambios, y lo que se escribe allí el agente lo recuerda. `--listen`
+acepta `--token` (o `GRAFENO_TOKEN`) y `--cors-origins`; sin token,
+mantenlo en `127.0.0.1`. Un segundo proceso sobre el mismo archivo se
+rechaza con un mensaje que lo explica.
+
 La configuración de un cliente MCP (el archivo y su ubicación dependen del
 cliente):
 

@@ -101,6 +101,20 @@ enum Command {
         /// With --as: the agent may change only what it recorded.
         #[arg(long, requires = "actor")]
         own_only: bool,
+        /// Also serve the HTTP API on this address (such as
+        /// 127.0.0.1:7810), on the same database: Grafeno Studio and
+        /// `grafeno shell --url` connect to it and see what the agent
+        /// writes as it writes it. Only one process can open a database
+        /// file; this one shares it.
+        #[arg(long)]
+        listen: Option<SocketAddr>,
+        /// With --listen: every /v1 request needs this bearer token (or an
+        /// account's key or session).
+        #[arg(long, env = "GRAFENO_TOKEN", requires = "listen")]
+        token: Option<String>,
+        /// With --listen: origins allowed to call the API from a browser.
+        #[arg(long, value_delimiter = ',', requires = "listen")]
+        cors_origins: Vec<String>,
     },
     /// An interactive console for GQ queries and administration.
     Shell {
@@ -758,13 +772,73 @@ struct DbArgs {
 }
 
 impl DbArgs {
-    fn open(&self) -> grafeno::Result<Grafeno> {
+    fn open(&self) -> Result<Grafeno, Box<dyn std::error::Error>> {
         if self.memory {
-            Grafeno::in_memory()
-        } else {
-            Grafeno::open(&self.db)
+            return Ok(Grafeno::in_memory()?);
         }
+        Grafeno::open(&self.db).map_err(|error| held_elsewhere(&self.db, error))
     }
+}
+
+/// An error opening a database file, saying what to do when another
+/// process holds it.
+fn held_elsewhere(path: &std::path::Path, error: grafeno::Error) -> Box<dyn std::error::Error> {
+    let text = error.to_string();
+    if text.contains("already open") {
+        format!(
+            "{} is open in another process (a grafeno serve, a grafeno mcp or a console): \
+             only one process can open a database file. Stop it, or connect to it instead: \
+             start the agent's server with `grafeno mcp --db {} --listen 127.0.0.1:7810` and \
+             open http://127.0.0.1:7810 in Grafeno Studio, or `grafeno shell --url \
+             http://127.0.0.1:7810`",
+            path.display(),
+            path.display()
+        )
+        .into()
+    } else {
+        error.into()
+    }
+}
+
+/// Serves the HTTP API on `db`, in threads of its own, while this process
+/// serves MCP on its standard input and output. Refused at once if the
+/// address is taken.
+fn serve_beside_mcp(
+    db: std::sync::Arc<Grafeno>,
+    addr: SocketAddr,
+    token: Option<String>,
+    cors_origins: Vec<String>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?;
+    // Bound here, so that a taken address is an error now and not a line
+    // in a log nobody reads.
+    let listener = std::net::TcpListener::bind(addr)
+        .map_err(|error| format!("cannot serve the HTTP API on {addr}: {error}"))?;
+    listener.set_nonblocking(true)?;
+    let state = grafeno_server::http::AppState::new(db, token.as_deref().filter(|t| !t.is_empty()));
+    let options = grafeno_server::http::Options { cors_origins };
+    std::thread::Builder::new()
+        .name("grafeno-http".into())
+        .spawn(move || {
+            runtime.block_on(async move {
+                let listener = match tokio::net::TcpListener::from_std(listener) {
+                    Ok(listener) => listener,
+                    Err(error) => {
+                        eprintln!("grafeno: cannot serve the HTTP API: {error}");
+                        return;
+                    }
+                };
+                if let Err(error) =
+                    grafeno_server::http::serve_on(state, listener, options, std::future::pending())
+                        .await
+                {
+                    eprintln!("grafeno: the HTTP API stopped: {error}");
+                }
+            });
+        })?;
+    Ok(())
 }
 
 fn main() -> ExitCode {
@@ -901,6 +975,9 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             read_only,
             actor,
             own_only,
+            listen,
+            token,
+            cors_origins,
         } => {
             if let Some(name) = &actor {
                 grafeno::check_principal_name(name)?;
@@ -914,7 +991,11 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                     view: None,
                 }),
             };
-            mcp::run(db.open()?, namespace, access)?
+            let db = std::sync::Arc::new(db.open()?);
+            if let Some(addr) = listen {
+                serve_beside_mcp(db.clone(), addr, token, cors_origins)?;
+            }
+            mcp::run_shared(db, namespace, access)?
         }
         Command::Shell {
             config,
@@ -940,9 +1021,12 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             let backend = match url {
                 Some(url) => Backend::remote(&url, token.filter(|t| !t.is_empty())),
                 None if memory => Backend::Local(Grafeno::in_memory()?),
-                None => Backend::Local(Grafeno::open(
-                    db.unwrap_or_else(|| PathBuf::from("grafeno.redb")),
-                )?),
+                None => {
+                    let path = db.unwrap_or_else(|| PathBuf::from("grafeno.redb"));
+                    Backend::Local(
+                        Grafeno::open(&path).map_err(|error| held_elsewhere(&path, error))?,
+                    )
+                }
             };
             if let Some(user) = &user {
                 let password = if password_stdin {

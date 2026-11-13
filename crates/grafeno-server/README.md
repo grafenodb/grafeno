@@ -700,6 +700,23 @@ user who starts it, but it fences the agent it serves:
 | `--as NAME` | its writes are recorded as `NAME` (`@recorded_by`) |
 | `--own-only` | with `--as`: it may change only what it recorded |
 
+Only one process can open a database file, so while an agent's MCP server
+holds it, Grafeno Studio or `grafeno shell --db` cannot open it too. To
+watch the agent's memory as it writes, let its MCP server also serve the
+HTTP API on the same database, and connect to that:
+
+```bash
+grafeno mcp --db agent.redb --namespace me --listen 127.0.0.1:7810 --token "$GRAFENO_TOKEN"
+```
+
+Grafeno Studio connects to `http://127.0.0.1:7810` with that token, and
+`grafeno shell --url http://127.0.0.1:7810 --token …` works too: what the
+agent stores appears there at once, in queries and in the change log, and
+what is written there the agent recalls. `--listen` takes `--token` (or
+`GRAFENO_TOKEN`) and `--cors-origins`; without a token, keep it on
+`127.0.0.1`. A second process on the same file is refused with a message
+that says this.
+
 An MCP client's configuration (the file and its place depend on the
 client):
 

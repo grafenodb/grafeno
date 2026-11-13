@@ -322,8 +322,23 @@ pub async fn serve_until(
     shutdown: impl std::future::Future<Output = ()> + Send + 'static,
 ) -> std::io::Result<()> {
     let listener = tokio::net::TcpListener::bind(addr).await?;
+    serve_on(state, listener, options, shutdown).await
+}
+
+/// [`serve_until`] on a listener already bound.
+pub async fn serve_on(
+    state: AppState,
+    listener: tokio::net::TcpListener,
+    options: Options,
+    shutdown: impl std::future::Future<Output = ()> + Send + 'static,
+) -> std::io::Result<()> {
     let local = listener.local_addr()?;
     eprintln!("grafeno listening on http://{local}");
+    if state.token.is_none() && !state.keys.has_accounts() && !local.ip().is_loopback() {
+        eprintln!(
+            "warning: this server has no token and no account, and listens on {local}:              anyone who reaches it may do anything, and make its first superuser. Set a              token (grafeno config init) or create the first account before it is reachable              from a network."
+        );
+    }
     crate::events::start(&state);
     // Explicit transactions past their time give the writer back.
     {

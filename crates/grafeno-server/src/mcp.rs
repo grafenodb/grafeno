@@ -42,7 +42,8 @@ from a topic to the memories around it. Ids are the UUIDs these tools return.";
 const SNIPPET_CHARS: usize = 400;
 
 pub struct McpServer {
-    db: Grafeno,
+    /// Shared with the HTTP API when the process serves it too.
+    db: std::sync::Arc<Grafeno>,
     namespace: String,
     access: McpAccess,
 }
@@ -98,7 +99,18 @@ const WRITING_TOOLS: &[&str] = &[
 
 /// Serves MCP on stdin and stdout until stdin closes.
 pub fn run(db: Grafeno, namespace: String, access: McpAccess) -> io::Result<()> {
-    let server = McpServer::new(db, namespace).with_access(access);
+    run_shared(std::sync::Arc::new(db), namespace, access)
+}
+
+/// [`run`] on a database this process also uses for something else: the
+/// HTTP API, so that an interface or a console can watch what the agent
+/// writes while it writes it.
+pub fn run_shared(
+    db: std::sync::Arc<Grafeno>,
+    namespace: String,
+    access: McpAccess,
+) -> io::Result<()> {
+    let server = McpServer::shared(db, namespace).with_access(access);
     eprintln!(
         "grafeno MCP server ready (namespace {:?}{}{})",
         server.namespace,
@@ -199,6 +211,11 @@ enum ToolOutput {
 
 impl McpServer {
     pub fn new(db: Grafeno, namespace: String) -> Self {
+        Self::shared(std::sync::Arc::new(db), namespace)
+    }
+
+    /// A server on a database this process shares with something else.
+    pub fn shared(db: std::sync::Arc<Grafeno>, namespace: String) -> Self {
         Self {
             db,
             namespace,
