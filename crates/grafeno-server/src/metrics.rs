@@ -27,6 +27,8 @@ pub struct ServerMetrics {
     query_seconds: Histogram,
     /// Queries stopped by each of [`LIMITS`].
     limits: [AtomicU64; 6],
+    /// Refusals counted instead of written to the audit log.
+    audit_left_out: AtomicU64,
 }
 
 impl Default for ServerMetrics {
@@ -38,6 +40,7 @@ impl Default for ServerMetrics {
             queries: AtomicU64::new(0),
             query_seconds: Histogram::seconds(),
             limits: Default::default(),
+            audit_left_out: AtomicU64::new(0),
         }
     }
 }
@@ -51,6 +54,10 @@ impl ServerMetrics {
 
     pub fn busy(&self) {
         self.busy.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn audit_left_out(&self) {
+        self.audit_left_out.fetch_add(1, Ordering::Relaxed);
     }
 
     /// A GQ query ran for `seconds`; `limit_message` is the message of the
@@ -89,6 +96,12 @@ impl ServerMetrics {
             "grafeno_http_busy_total",
             "Requests answered 503 because too many were being served.",
             load(&self.busy),
+        );
+        counter(
+            &mut out,
+            "grafeno_audit_refusals_left_out_total",
+            "Refusals counted instead of written to the audit log (past ten a minute from one source).",
+            load(&self.audit_left_out),
         );
         histogram(
             &mut out,

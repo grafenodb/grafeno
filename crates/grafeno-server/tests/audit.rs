@@ -345,3 +345,28 @@ async fn managing_accounts_lists_and_ends_their_sessions() {
     assert_eq!(ended["account"], "helen");
     assert!(ended["via"].as_str().unwrap().starts_with("session:"));
 }
+
+/// Found by an outside review: every request with a wrong key wrote an
+/// event, so a flood of them was a flood of writes. Ten a minute from one
+/// source are written; the rest are counted, and the next one written says
+/// how many were left out.
+#[tokio::test]
+async fn a_flood_of_refusals_is_counted_not_written() {
+    let app = router(AppState::new(
+        Arc::new(Grafeno::in_memory().unwrap()),
+        Some(OWNER),
+    ));
+    for _ in 0..40 {
+        let (code, _) = call(&app, Some("not-a-key"), "GET", "/v1/namespaces", None).await;
+        assert_eq!(code, StatusCode::UNAUTHORIZED);
+    }
+    let all = events(&app).await;
+    assert_eq!(count(&all, "refused"), 10, "{all:?}");
+    let (code, metrics) = call(&app, Some(OWNER), "GET", "/v1/metrics", None).await;
+    assert_eq!(code, StatusCode::OK);
+    let metrics = metrics.as_str().unwrap_or_default().to_owned();
+    assert!(
+        metrics.contains("grafeno_audit_refusals_left_out_total 30"),
+        "{metrics}"
+    );
+}

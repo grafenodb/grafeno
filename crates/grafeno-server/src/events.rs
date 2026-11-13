@@ -225,7 +225,7 @@ pub fn deliver(state: &AppState, backoff: &mut HashMap<String, Instant>) -> graf
                     "gap": page.gap,
                 }))
                 .unwrap_or_default();
-                post_hook(&hook, &body)
+                post_hook(&hook, &body, state.background.webhooks_to_private)
             };
             match outcome {
                 Ok(()) => {
@@ -329,7 +329,13 @@ fn deliver_events(
                 "gap": page.gap,
             }))
             .unwrap_or_default();
-            post(url, secret.as_deref(), &body)
+            // Made in GQ, where the server's settings are not known: its
+            // address is checked here, before each delivery.
+            if state.background.webhooks_to_private {
+                post(url, secret.as_deref(), &body)
+            } else {
+                destination_allowed(url).and_then(|()| post(url, secret.as_deref(), &body))
+            }
         };
         match outcome {
             Ok(()) => {
@@ -361,14 +367,92 @@ fn deliver_events(
     Ok(delivered)
 }
 
-fn post_hook(hook: &Webhook, body: &[u8]) -> Result<(), String> {
+fn post_hook(hook: &Webhook, body: &[u8], private: bool) -> Result<(), String> {
+    // Looked up again for each delivery: a name may point elsewhere now.
+    if !private {
+        destination_allowed(&hook.url)?;
+    }
     post(&hook.url, hook.secret.as_deref(), body)
+}
+
+/// Whether an address is on the public internet: not this machine, a
+/// private or link-local network (cloud metadata services live there), a
+/// shared or reserved range, or a multicast group.
+pub fn public_address(address: std::net::IpAddr) -> bool {
+    use std::net::IpAddr;
+    match address {
+        IpAddr::V4(v4) => {
+            let [a, b, c, _] = v4.octets();
+            !(v4.is_loopback()
+                || v4.is_private()
+                || v4.is_link_local()
+                || v4.is_unspecified()
+                || v4.is_broadcast()
+                || v4.is_multicast()
+                || v4.is_documentation()
+                || a == 0
+                || (a == 100 && (64..128).contains(&b))
+                || (a == 192 && b == 0 && c == 0)
+                || (a == 198 && (18..20).contains(&b))
+                || a >= 240)
+        }
+        IpAddr::V6(v6) => {
+            if let Some(v4) = v6.to_ipv4_mapped() {
+                return public_address(IpAddr::V4(v4));
+            }
+            let first = v6.segments()[0];
+            !(v6.is_loopback()
+                || v6.is_unspecified()
+                || v6.is_multicast()
+                || (first & 0xfe00) == 0xfc00
+                || (first & 0xffc0) == 0xfe80
+                || (first == 0x2001 && v6.segments()[1] == 0x0db8))
+        }
+    }
+}
+
+/// Refuses a webhook URL whose host is, or resolves to, an address that
+/// is not public ([`public_address`]). Every address the name has must be
+/// public, so that a name cannot answer with a public one at first and a
+/// private one later from the same lookup.
+pub fn destination_allowed(url: &str) -> Result<(), String> {
+    use std::net::ToSocketAddrs;
+    let uri: axum::http::Uri = url.parse().map_err(|_| format!("{url:?} is not a URL"))?;
+    let host = uri
+        .host()
+        .ok_or_else(|| format!("{url:?} names no host"))?
+        .trim_start_matches('[')
+        .trim_end_matches(']');
+    let port = uri
+        .port_u16()
+        .unwrap_or(if uri.scheme_str() == Some("https") {
+            443
+        } else {
+            80
+        });
+    let addresses: Vec<std::net::SocketAddr> = (host, port)
+        .to_socket_addrs()
+        .map_err(|error| format!("{host} cannot be looked up: {error}"))?
+        .collect();
+    if addresses.is_empty() {
+        return Err(format!("{host} has no address"));
+    }
+    if let Some(private) = addresses.iter().find(|a| !public_address(a.ip())) {
+        return Err(format!(
+            "{host} is {}, which is not a public address: webhooks reach only the public internet \
+             unless [background] webhooks_to_private = true",
+            private.ip()
+        ));
+    }
+    Ok(())
 }
 
 fn post(url: &str, secret: Option<&str>, body: &[u8]) -> Result<(), String> {
     let agent: ureq::Agent = ureq::Agent::config_builder()
         .timeout_global(Some(Duration::from_secs(10)))
         .http_status_as_error(false)
+        // A redirect would go to an address nobody checked.
+        .max_redirects(0)
         .build()
         .into();
     let mut request = agent
@@ -573,6 +657,14 @@ pub struct BackgroundConfig {
     /// How often vector graphs are looked at (300 seconds).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compact_vectors_every_secs: Option<u64>,
+    /// Let webhooks reach this machine and private networks: loopback,
+    /// private, link-local and other addresses that are not on the public
+    /// internet (false). Off, such a webhook is refused when it is made
+    /// and when its address is looked up for each delivery, so that
+    /// someone who may make webhooks cannot point the server at a service
+    /// only it can reach.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub webhooks_to_private: bool,
 }
 
 impl BackgroundConfig {
@@ -586,6 +678,7 @@ impl BackgroundConfig {
             && self.compact_vectors_max.is_none()
             && self.compact_vectors_below_recall.is_none()
             && self.compact_vectors_every_secs.is_none()
+            && !self.webhooks_to_private
     }
 
     fn compact_at(&self) -> f64 {

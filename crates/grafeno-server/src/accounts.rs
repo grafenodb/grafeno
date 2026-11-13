@@ -76,7 +76,10 @@ async fn failed_signin(
         .outcome(outcome)
         .detail(json!({ "reason": reason }));
     event.address = address.clone();
-    crate::audit::record(state, event).await;
+    // Ten a minute from one address at most; the lockout itself is always
+    // written.
+    let source = format!("signin {}", address.as_deref().unwrap_or(name));
+    crate::audit::record_sampled(state, &source, event).await;
 }
 
 fn unauthorized(code: &'static str, message: impl Into<String>) -> ApiError {

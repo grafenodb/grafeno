@@ -221,7 +221,10 @@ async fn webhooks_receive_signed_batches() {
     tokio::spawn(async move { axum::serve(listener, receiver).await.unwrap() });
 
     let db = Arc::new(Grafeno::in_memory().unwrap());
-    let state = AppState::new(db.clone(), None);
+    let state = AppState::new(db.clone(), None).with_background(BackgroundConfig {
+        webhooks_to_private: true,
+        ..BackgroundConfig::default()
+    });
     let app = router(state.clone());
     db.write(|tx| tx.create_node("k", NewNode::new("Person")).map(|_| ()))
         .unwrap();
@@ -339,7 +342,10 @@ async fn background_work_runs_from_the_log() {
 #[tokio::test]
 async fn subscriptions_carry_values_over_http() {
     let db = Arc::new(Grafeno::in_memory().unwrap());
-    let state = AppState::new(db.clone(), None);
+    let state = AppState::new(db.clone(), None).with_background(BackgroundConfig {
+        webhooks_to_private: true,
+        ..BackgroundConfig::default()
+    });
     let app = router(state.clone());
     let query = |text: &str| json!({ "query": text });
     // Off by default.
@@ -484,4 +490,66 @@ async fn subscriptions_carry_values_over_http() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
+}
+
+/// Found by an outside review: a webhook could point the server at this
+/// machine, a private network or a cloud metadata service. Such addresses
+/// are refused unless `[background] webhooks_to_private` lets them.
+#[tokio::test]
+async fn webhooks_reach_only_public_addresses_by_default() {
+    let db = Arc::new(Grafeno::in_memory().unwrap());
+    let app = router(AppState::new(db.clone(), None));
+    for url in [
+        "http://127.0.0.1:18780/hook",
+        "http://localhost:18780/hook",
+        "http://169.254.169.254/latest/meta-data/",
+        "http://10.0.0.5/hook",
+        "http://192.168.1.1/hook",
+        "http://[::1]:8080/hook",
+        "http://[fe80::1]/hook",
+        "http://0.0.0.0/hook",
+    ] {
+        let (status, body) =
+            call(&app, "POST", "/v1/k/webhooks", Some(json!({ "url": url }))).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{url}: {body}");
+        assert!(body.to_string().contains("public address"), "{url}: {body}");
+    }
+    // Allowed when the setting says so.
+    let open = router(AppState::new(db, None).with_background(BackgroundConfig {
+        webhooks_to_private: true,
+        ..BackgroundConfig::default()
+    }));
+    let (status, body) = call(
+        &open,
+        "POST",
+        "/v1/k/webhooks",
+        Some(json!({ "url": "http://127.0.0.1:18780/hook" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+
+    // The check itself.
+    use grafeno_server::events::public_address;
+    for public in ["8.8.8.8", "1.1.1.1", "2606:4700:4700::1111"] {
+        assert!(public_address(public.parse().unwrap()), "{public}");
+    }
+    for private in [
+        "127.0.0.1",
+        "10.1.2.3",
+        "172.16.0.1",
+        "192.168.0.1",
+        "169.254.169.254",
+        "100.64.0.1",
+        "0.0.0.0",
+        "255.255.255.255",
+        "224.0.0.1",
+        "::1",
+        "fc00::1",
+        "fd12::1",
+        "fe80::1",
+        "::ffff:127.0.0.1",
+        "::ffff:10.0.0.1",
+    ] {
+        assert!(!public_address(private.parse().unwrap()), "{private}");
+    }
 }

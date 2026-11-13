@@ -61,6 +61,8 @@
 //! compact_vectors_max = 50000 # 50 000 vectors
 //! compact_vectors_below_recall = 0  # or whose recall falls below (0: off)
 //! compact_vectors_every_secs = 300
+//! webhooks_to_private = false  # let webhooks reach this machine and
+//!                              # private networks
 //!
 //! [transactions]         # explicit transactions (16.4)
 //! idle_timeout_secs = 30 # rolled back after this long without a request

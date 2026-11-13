@@ -142,6 +142,73 @@ pub async fn receive(
 }
 
 /// A refused request, as the audit log keeps it.
+/// Refusals of one source (an address, a caller) written per window at
+/// most; the rest are counted, and the count goes on the next one written.
+const SAMPLED_PER_WINDOW: u32 = 10;
+const SAMPLE_WINDOW: std::time::Duration = std::time::Duration::from_secs(60);
+/// Sources remembered at most; past it, new ones share one count.
+const SAMPLED_SOURCES: usize = 10_000;
+
+/// Keeps a flood of refusals (wrong credentials, missing rights) from
+/// turning into as many writes: each one is a transaction and a record,
+/// and a request with a bad key costs its sender nothing.
+#[derive(Default)]
+pub struct Sampler {
+    sources: std::sync::Mutex<std::collections::HashMap<String, (std::time::Instant, u32, u64)>>,
+}
+
+impl Sampler {
+    /// Whether to write a refusal of `source` now; when it is written, how
+    /// many of the source's refusals were left out before it.
+    pub fn admit(&self, source: &str) -> Option<u64> {
+        let now = std::time::Instant::now();
+        let mut sources = self.sources.lock().unwrap_or_else(|e| e.into_inner());
+        let source = if sources.contains_key(source) || sources.len() < SAMPLED_SOURCES {
+            source.to_owned()
+        } else {
+            sources.retain(|_, (start, _, left)| {
+                now.duration_since(*start) < SAMPLE_WINDOW || *left > 0
+            });
+            if sources.len() < SAMPLED_SOURCES {
+                source.to_owned()
+            } else {
+                "(many sources)".to_owned()
+            }
+        };
+        let entry = sources.entry(source).or_insert((now, 0, 0));
+        if now.duration_since(entry.0) >= SAMPLE_WINDOW {
+            let left = entry.2;
+            *entry = (now, 1, 0);
+            return Some(left);
+        }
+        if entry.1 < SAMPLED_PER_WINDOW {
+            entry.1 += 1;
+            Some(std::mem::take(&mut entry.2))
+        } else {
+            entry.2 += 1;
+            None
+        }
+    }
+}
+
+/// [`record`], sampled per source: a refusal past the source's share is
+/// counted (`grafeno_audit_refusals_left_out_total`) instead of written,
+/// and the next one written says how many were left out before it.
+pub async fn record_sampled(state: &AppState, source: &str, mut event: NewAuditEvent) {
+    match state.audit_sampler.admit(source) {
+        None => state.metrics.audit_left_out(),
+        Some(left_out) => {
+            if left_out > 0 {
+                if !event.detail.is_object() {
+                    event.detail = json!({});
+                }
+                event.detail["left_out_before"] = json!(left_out);
+            }
+            record(state, event).await;
+        }
+    }
+}
+
 pub fn refusal(method: &str, path: &str, code: &str, message: &str) -> NewAuditEvent {
     NewAuditEvent::new("refused")
         .target(format!("{method} {path}"))

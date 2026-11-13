@@ -67,6 +67,8 @@ pub struct AppState {
     pub settings: Arc<Value>,
     /// Explicit transactions open across requests (16.4).
     pub transactions: Arc<crate::transactions::Transactions>,
+    /// Which refusals reach the audit log, per source.
+    pub audit_sampler: Arc<crate::audit::Sampler>,
 }
 
 /// Where writes go: the group-commit writer of a single server, or the
@@ -191,6 +193,7 @@ impl AppState {
             }),
             keys: Arc::new(crate::auth::Credentials::load(&db).unwrap_or_default()),
             throttle: Arc::default(),
+            audit_sampler: Arc::default(),
             auth: crate::accounts::AuthConfig::default(),
             db,
             token: token.map(Arc::from),
@@ -643,8 +646,12 @@ fn panic_response(panic: Box<dyn std::any::Any + Send + 'static>) -> Response {
         .cloned()
         .or_else(|| panic.downcast_ref::<&str>().map(|s| (*s).to_owned()))
         .unwrap_or_default();
+    // What failed, and where, is for the server's log, not for whoever sent
+    // the request: a reference ties the two together.
+    let reference = grafeno::NodeId::new().to_string();
+    eprintln!("grafeno: request {reference} failed: {detail}");
     ApiError::internal(format!(
-        "the server failed while serving this request ({detail}); if the database file may be damaged, stop the server and run `grafeno check`"
+        "the server failed while serving this request (reference {reference}, in the server's log); if the database file may be damaged, stop the server and run `grafeno check`"
     ))
     .into_response()
 }
@@ -969,10 +976,12 @@ async fn auth(State(state): State<AppState>, request: Request, next: Next) -> Re
         (Err(_), Need::Public) => Caller::Anonymous,
         (Err(error), _) => {
             let _ = axum::body::to_bytes(request.into_body(), 1024 * 1024).await;
-            // Refused for its credential: audited (14.5).
+            // Refused for its credential: audited (14.5), ten a minute
+            // from one address at most, the rest counted.
             let mut event = crate::audit::refusal(&method, &path, error.code, &error.message);
+            let source = format!("credential {}", address.as_deref().unwrap_or("-"));
             event.address = address;
-            crate::audit::record(&state, event).await;
+            crate::audit::record_sampled(&state, &source, event).await;
             return error.into_response();
         }
     };
@@ -1002,7 +1011,8 @@ async fn auth(State(state): State<AppState>, request: Request, next: Next) -> Re
                         event.via = origin.via;
                         event.address = origin.address;
                     }
-                    crate::audit::record(&state, event).await;
+                    let source = format!("caller {}", caller.name());
+                    crate::audit::record_sampled(&state, &source, event).await;
                 }),
             )
             .await;
@@ -1037,7 +1047,8 @@ async fn auth(State(state): State<AppState>, request: Request, next: Next) -> Re
                         event.via = origin.via;
                         event.address = origin.address;
                     }
-                    crate::audit::record(&state, event).await;
+                    let source = format!("caller {}", auth::current().name());
+                    crate::audit::record_sampled(&state, &source, event).await;
                 }),
             )
             .await;
@@ -3450,6 +3461,13 @@ async fn create_webhook(
     if !(input.url.starts_with("http://") || input.url.starts_with("https://")) {
         return Err(ApiError::bad_request("the url must be http:// or https://"));
     }
+    if !state.background.webhooks_to_private {
+        let url = input.url.clone();
+        tokio::task::spawn_blocking(move || crate::events::destination_allowed(&url))
+            .await
+            .map_err(|e| ApiError::internal(e.to_string()))?
+            .map_err(ApiError::bad_request)?;
+    }
     let since = match input.since {
         Some(since) => since,
         None => {
@@ -4128,4 +4146,29 @@ async fn summaries(
     })
     .await?;
     Ok((StatusCode::CREATED, Json(json!({ "id": id }))))
+}
+
+#[cfg(test)]
+mod tests {
+    use http_body_util::BodyExt;
+
+    /// Found by an outside review: a panic's message, with paths and
+    /// internals, reached the client.
+    #[tokio::test]
+    async fn a_panic_is_answered_with_a_reference_not_its_message() {
+        let response = super::panic_response(Box::new(String::from(
+            "attempt to multiply with overflow at src/secret/path.rs:59",
+        )));
+        assert_eq!(
+            response.status(),
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR
+        );
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(
+            !text.contains("overflow") && !text.contains("secret/path"),
+            "{text}"
+        );
+        assert!(text.contains("reference "), "{text}");
+    }
 }
