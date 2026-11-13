@@ -184,7 +184,33 @@ evidence behind them (`by_evidence`), counts and never probabilities.
 **Acceptance:** a topic with incomplete, contradictory and out-of-date
 information; the reflection tells the three apart.
 
-## Phase 13: the graph engine on its own
+## Phase 13: the graph engine on its own (done)
+
+Checked on 2026-11-13, on Windows, debug build:
+
+- **No dependency on the cognitive layer.** `grafeno-core` depends on
+  nothing of the workspace; `grafeno` only on `grafeno-core`;
+  `grafeno-query` only on `grafeno` and `grafeno-core`, for its code and
+  its tests (`cargo tree -e normal,dev`). None of them depends on
+  `grafeno-memory`, `grafeno-server`, an agent, a model or a provider.
+  The only mention of a palace in their tests is a word in the list of
+  names the documentation must not use (`crates/grafeno/tests/names.rs`).
+- **Their tests pass alone.**
+  `cargo test -p grafeno-core -p grafeno -p grafeno-query`: 58 test
+  binaries, 290 tests passed, 0 failed, 2 ignored (the child processes
+  that the crash and durability tests start themselves), in 253 s.
+- **What the engine is measured on** stays in
+  [benchmarks.md](../benchmarks.md): writes, reads, traversals,
+  algorithms, indexes, memory, growth, recovery. Nothing measured there
+  pointed to a problem this phase should fix, so, as the phase asks, no
+  optimization was made without one.
+
+One test of the engine varies from run to run:
+`search_quality_survives_deletes_reinserts_and_churn`
+(`crates/grafeno/tests/vector_churn.rs`) asserts a vector recall of 0.95
+on an index whose levels come from random ids; it failed once in this
+work under a loaded machine and passed alone. It is recorded here rather
+than loosened.
 
 | Capability | Class | Plan |
 | --- | --- | --- |

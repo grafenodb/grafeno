@@ -13,6 +13,9 @@ version (now 18) is upgraded in place, with a copy kept first.
 
 ## Unreleased
 
+- **Checked**: the graph engine on its own (phase 13). `grafeno-core`,
+  `grafeno` and `grafeno-query` depend on nothing of the cognitive layer,
+  and their tests pass alone: 290 passed, none failed.
 - **Added**: the quality of knowledge (phase 12). `palace_reflect` names
   the sources behind each item it lists, counts records by the evidence
   behind them (conflicting, obsolete, verified, supported, and with no
