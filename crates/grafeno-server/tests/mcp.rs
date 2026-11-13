@@ -1426,3 +1426,186 @@ fn a_read_only_server_reads_palaces_and_writes_none() {
     drop(reader);
     let _ = std::fs::remove_file(&path);
 }
+
+/// Phase 2's acceptance: a technical description goes in, an agent's
+/// reading of it goes in with one call, and the entities, the relations,
+/// their evidence and certainty and their places in a palace come back.
+#[test]
+fn a_technical_description_becomes_entities_relations_and_places() {
+    let server = server();
+    let doc = "# Billing\n\nThe billing service runs on Ledger.\n\nAna Torres maintains the billing service. It publishes invoices to the events queue.";
+    let ingested = call(
+        &server,
+        "ingest",
+        json!({ "content": doc, "source": "docs/billing.md", "extract": false }),
+    );
+    let ingested = structured(&ingested).clone();
+    let chunk = ingested["chunk_ids"][0].as_str().unwrap().to_owned();
+
+    // The agent read the chunk with its own model and hands over what it
+    // read: four entities and three relations.
+    let read = call(
+        &server,
+        "add_mentions",
+        json!({
+            "id": chunk,
+            "mentions": [
+                { "surface": "billing service", "label": "Service" },
+                { "surface": "Ledger", "label": "Database" },
+                { "surface": "Ana Torres", "label": "Person" },
+                { "surface": "events queue", "label": "Queue" }
+            ],
+            "relations": [
+                { "from": 0, "label": "runs_on", "to": 1, "origin": "stated", "certainty": 0.95 },
+                { "from": "Ana Torres", "label": "maintains", "to": "billing service" },
+                { "from": 0, "label": "publishes_to", "to": "events queue", "certainty": 0.6,
+                  "valid_from": "2026-01-01" },
+                { "from": 0, "label": "owned_by", "to": "Bob" }
+            ]
+        }),
+    );
+    let read = structured(&read).clone();
+    assert_eq!(read["created"], 4, "{read}");
+    assert_eq!(read["relations"].as_array().unwrap().len(), 3);
+    assert_eq!(read["skipped"][0]["relation"], 3);
+    let entity = |index: usize| read["entities"][index]["id"].as_str().unwrap().to_owned();
+    let (service, ana) = (entity(0), entity(2));
+    assert_eq!(read["entities"][1]["name"], "Ledger");
+
+    // Each fact says how it is known and where it came from.
+    let node = call(&server, "get_node", json!({ "id": service }));
+    let node = structured(&node).clone();
+    assert_eq!(node["known"], "not stated");
+    let fact = |label: &str| {
+        node["facts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|fact| fact["label"] == label)
+            .unwrap_or_else(|| panic!("no {label} in {node}"))
+            .clone()
+    };
+    let runs_on = fact("runs_on");
+    assert_eq!(
+        runs_on["known"],
+        json!({ "origin": "stated", "certainty": 0.95 })
+    );
+    assert_eq!(runs_on["sources"], json!([chunk]));
+    assert_eq!(runs_on["other"]["name"], "Ledger");
+    let maintains = fact("maintains");
+    assert_eq!(maintains["direction"], "in");
+    assert_eq!(maintains["known"], json!({ "origin": "inferred" }));
+    let publishes = fact("publishes_to");
+    assert_eq!(publishes["valid_from"], "2026-01-01");
+    assert_eq!(
+        publishes["known"],
+        json!({ "origin": "inferred", "certainty": 0.6 })
+    );
+    // A fact nobody qualified has no `known` at all.
+    let mentions = fact("mentions");
+    assert!(mentions["known"].is_null(), "{mentions}");
+
+    // The agent checks one inferred fact against the document and says so.
+    let maintains_id = maintains["id"].as_str().unwrap();
+    let whole = ingested["id"].as_str().unwrap();
+    let verified = call(
+        &server,
+        "feedback",
+        json!({ "id": maintains_id, "verdict": "verified", "source": whole }),
+    );
+    let verified = structured(&verified);
+    assert_eq!(verified["known"]["origin"], "verified");
+    assert_eq!(verified["known"]["certainty"], 1.0);
+    assert_eq!(verified["known"]["verified_by"], whole);
+    let node = call(&server, "get_node", json!({ "id": ana }));
+    let after = structured(&node)["facts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|fact| fact["label"] == "maintains")
+        .unwrap()
+        .clone();
+    assert_eq!(after["known"]["origin"], "verified");
+
+    // A memory of a kind, with how it is known.
+    let decision = call(
+        &server,
+        "remember",
+        json!({ "text": "Invoices go through the events queue so billing can be replayed",
+                "labels": ["Decision"], "origin": "stated", "certainty": 0.9 }),
+    );
+    let decision = structured(&decision)["id"].as_str().unwrap().to_owned();
+    let found = call(
+        &server,
+        "recall",
+        json!({ "query": "events queue", "labels": ["Decision"] }),
+    );
+    let results = structured(&found)["results"].as_array().unwrap().clone();
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0]["id"], decision.as_str());
+    assert_eq!(
+        results[0]["known"],
+        json!({ "origin": "stated", "certainty": 0.9 })
+    );
+
+    // The context shows it too.
+    let context = call(
+        &server,
+        "context",
+        json!({ "query": "billing service ledger" }),
+    );
+    let text = context["content"][0]["text"].as_str().unwrap();
+    assert!(
+        text.contains("runs_on Ledger [stated, certainty 0.95]"),
+        "{text}"
+    );
+
+    // The entities and the memory have a place, and a walk finds them
+    // with the relations between them.
+    structured(&call(&server, "palace_create", json!({ "name": "Work" })));
+    structured(&call(
+        &server,
+        "palace_create_room",
+        json!({ "palace": "Work", "name": "Billing", "topic": "billing and invoices" }),
+    ));
+    for memory in [&service, &decision] {
+        structured(&call(
+            &server,
+            "palace_anchor",
+            json!({ "memory": memory, "room": "Billing" }),
+        ));
+    }
+    let walk = call(
+        &server,
+        "palace_walk",
+        json!({ "topic": "billing and invoices", "hops": 1 }),
+    );
+    let walk = structured(&walk).clone();
+    let names: Vec<&str> = walk["memories"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|memory| memory["name"].as_str().unwrap())
+        .collect();
+    assert!(names.contains(&"billing service"), "{names:?}");
+    assert!(
+        names.contains(&"Ledger") && names.contains(&"Ana Torres"),
+        "{names:?}"
+    );
+
+    // Bad input is refused with a reason, and nothing is written.
+    for (arguments, says) in [
+        (json!({ "text": "x", "certainty": 1.5 }), "between 0 and 1"),
+        (json!({ "text": "x", "origin": "rumour" }), "unknown origin"),
+    ] {
+        let refused = call(&server, "remember", arguments);
+        assert_eq!(refused["isError"], true, "{refused}");
+        assert!(refused.to_string().contains(says), "{refused}");
+    }
+    let refused = call(
+        &server,
+        "feedback",
+        json!({ "id": decision, "verdict": "useful", "source": whole }),
+    );
+    assert_eq!(refused["isError"], true, "{refused}");
+}

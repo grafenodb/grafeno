@@ -330,10 +330,16 @@ impl McpServer {
             #[serde(default)]
             importance: Option<f32>,
             #[serde(default)]
+            certainty: Option<f64>,
+            #[serde(default)]
+            origin: Option<String>,
+            #[serde(default)]
             namespace: Option<String>,
         }
         let args: Args = parse_args(arguments)?;
         let ns = self.ns(&args.namespace);
+        let known = grafeno_memory::knowledge::stated(args.origin.as_deref(), args.certainty)
+            .map_err(describe)?;
         let mut new = NewNode {
             labels: if args.labels.is_empty() {
                 vec!["Memory".into()]
@@ -353,6 +359,7 @@ impl McpServer {
             _ => args.text,
         };
         new.text = Some(text);
+        new.props.extend(known);
         if let Some(name) = args.name {
             new.props.insert("name".into(), Value::String(name));
         }
@@ -467,14 +474,19 @@ impl McpServer {
                     Signal::Memory { importance, .. } => format!("importance {importance:.2}"),
                 });
             }
-            out.push(json!({
+            let mut item = json!({
                 "id": result.node.id,
                 "name": result.node.display_name(),
                 "labels": result.node.labels,
                 "score": result.score,
                 "text": snippet(&text),
                 "why": why,
-            }));
+            });
+            let known = grafeno_memory::knowledge::of_node(&result.node);
+            if !known.is_unstated() {
+                item["known"] = known.to_json();
+            }
+            out.push(item);
         }
         drop(read);
         self.touch(ns, &ids)?;
@@ -526,16 +538,23 @@ impl McpServer {
             #[serde(default)]
             sources: Vec<String>,
             #[serde(default)]
+            certainty: Option<f64>,
+            #[serde(default)]
+            origin: Option<String>,
+            #[serde(default)]
             namespace: Option<String>,
         }
         let args: Args = parse_args(arguments)?;
         let ns = self.ns(&args.namespace);
+        let known = grafeno_memory::knowledge::stated(args.origin.as_deref(), args.certainty)
+            .map_err(describe)?;
         let mut edge = NewEdge::new(
             parse_id(&args.from).map_err(describe)?,
             args.label,
             parse_id(&args.to).map_err(describe)?,
         );
         edge.props = args.props;
+        edge.props.extend(known);
         edge.sources = parse_ids(&args.sources)?;
         edge.valid_from = args
             .valid_from
@@ -755,14 +774,24 @@ impl McpServer {
             .take(50)
         {
             let edge = &neighbor.edge;
-            facts.push(json!({
+            let mut fact = json!({
                 "id": edge.id,
                 "direction": if edge.from == id { "out" } else { "in" },
                 "label": edge.label,
                 "other": { "id": neighbor.node, "name": name_of(&read, ns, neighbor.node) },
                 "valid_from": edge.valid_from.map(|at| at.date()),
                 "valid_to": edge.valid_to.map(|at| at.date()),
-            }));
+            });
+            // How it is known, when someone said: an inferred fact is told
+            // apart from a verified one.
+            let known = grafeno_memory::knowledge::of_edge(edge);
+            if !known.is_unstated() {
+                fact["known"] = known.to_json();
+            }
+            if !edge.sources.is_empty() {
+                fact["sources"] = json!(edge.sources);
+            }
+            facts.push(fact);
         }
         Ok(ToolOutput::Json(json!({
             "id": node.id,
@@ -771,6 +800,7 @@ impl McpServer {
             "props": node.props,
             "text": text,
             "sources": node.sources,
+            "known": grafeno_memory::knowledge::of_node(&node).to_json(),
             "created": node.created_at.date(),
             "updated": node.updated_at.date(),
             "importance": round2(memory.importance),
@@ -1026,25 +1056,109 @@ impl McpServer {
     fn add_mentions(&self, arguments: Value) -> ToolResult {
         #[derive(Deserialize)]
         #[serde(deny_unknown_fields)]
+        struct Relation {
+            from: grafeno_memory::MentionRef,
+            label: String,
+            to: grafeno_memory::MentionRef,
+            #[serde(default)]
+            certainty: Option<f64>,
+            #[serde(default)]
+            origin: Option<String>,
+            #[serde(default)]
+            valid_from: Option<TimeInput>,
+            #[serde(default)]
+            valid_to: Option<TimeInput>,
+        }
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
         struct Args {
             id: String,
             mentions: Vec<grafeno_memory::AgentMention>,
+            #[serde(default)]
+            relations: Vec<Relation>,
             #[serde(default)]
             namespace: Option<String>,
         }
         let args: Args = parse_args(arguments)?;
         let ns = self.ns(&args.namespace);
         let source = parse_id(&args.id).map_err(describe)?;
+        let mut relations = Vec::with_capacity(args.relations.len());
+        for relation in args.relations {
+            let time = |input: &Option<TimeInput>| {
+                input
+                    .as_ref()
+                    .map(TimeInput::resolve)
+                    .transpose()
+                    .map_err(describe)
+            };
+            relations.push(grafeno_memory::AgentRelation {
+                valid_from: time(&relation.valid_from)?,
+                valid_to: time(&relation.valid_to)?,
+                from: relation.from,
+                label: relation.label,
+                to: relation.to,
+                certainty: relation.certainty,
+                origin: relation.origin,
+            });
+        }
         let read = self.db.begin_read().map_err(describe)?;
-        let report = self
-            .write(|tx| grafeno_memory::ingest(tx, &read, ns, source, &args.mentions, "Entity"))
+        let reading = self
+            .write(|tx| {
+                grafeno_memory::ingest_reading(
+                    tx,
+                    &read,
+                    ns,
+                    source,
+                    &args.mentions,
+                    &relations,
+                    "Entity",
+                )
+            })
             .map_err(describe)?;
-        Ok(ToolOutput::Json(json!({
-            "mentions": report.mentions,
-            "linked": report.linked,
-            "created": report.created,
-            "waiting_for_review": report.queued,
-        })))
+        drop(read);
+        let read = self.db.begin_read().map_err(describe)?;
+        let entities: Vec<Value> = args
+            .mentions
+            .iter()
+            .zip(&reading.entities)
+            .map(|(mention, entity)| match entity {
+                Some(id) => {
+                    json!({ "surface": mention.surface, "id": id, "name": name_of(&read, ns, *id) })
+                }
+                None => json!({ "surface": mention.surface, "waiting_for_review": true }),
+            })
+            .collect();
+        let skipped: Vec<Value> = reading
+            .skipped
+            .iter()
+            .map(|(index, why)| json!({ "relation": index, "why": why }))
+            .collect();
+        let mut output = json!({
+            "mentions": reading.report.mentions,
+            "linked": reading.report.linked,
+            "created": reading.report.created,
+            "waiting_for_review": reading.report.queued,
+            "entities": entities,
+            "relations": reading.relations,
+        });
+        if !skipped.is_empty() {
+            output["skipped"] = json!(skipped);
+        }
+        if !reading.contradicted.is_empty() {
+            output["contradicted"] = json!(
+                reading
+                    .contradicted
+                    .iter()
+                    .map(|event| json!({
+                        "fact": event.old_edge,
+                        "action": event.action,
+                        "constraint": event.constraint,
+                        "until": event.at,
+                    }))
+                    .collect::<Vec<_>>()
+            );
+        }
+        Ok(ToolOutput::Json(output))
     }
 
     fn review(&self, arguments: Value) -> ToolResult {
@@ -1663,6 +1777,10 @@ impl McpServer {
             #[serde(default)]
             note: Option<String>,
             #[serde(default)]
+            source: Option<String>,
+            #[serde(default)]
+            certainty: Option<f64>,
+            #[serde(default)]
             namespace: Option<String>,
         }
         let args: Args = parse_args(arguments)?;
@@ -1688,7 +1806,42 @@ impl McpServer {
             }
             tx.set_node_props(ns, id, props)
         };
+        if args.verdict != "verified" && (args.source.is_some() || args.certainty.is_some()) {
+            return Err("`source` and `certainty` go with the verdict \"verified\"".into());
+        }
         let done = match (node.is_some(), is_edge, args.verdict.as_str()) {
+            (found, edge, "verified") if found || edge => {
+                let source = args
+                    .source
+                    .as_deref()
+                    .map(parse_id)
+                    .transpose()
+                    .map_err(describe)?;
+                let record = if found {
+                    grafeno_memory::Record::Node(id)
+                } else {
+                    grafeno_memory::Record::Edge(edge_id)
+                };
+                let known = self
+                    .write(|tx| {
+                        let known =
+                            grafeno_memory::verify(tx, ns, record, source, args.certainty, now)?;
+                        if found {
+                            mark(tx, "verified")?;
+                        }
+                        Ok(known)
+                    })
+                    .map_err(describe)?;
+                return Ok(ToolOutput::Json(json!({
+                    "id": id,
+                    "verdict": "verified",
+                    "result": match source {
+                        Some(_) => "verified, with the source that supports it",
+                        None => "verified, with no source named",
+                    },
+                    "known": known.to_json(),
+                })));
+            }
             (true, _, "useful") => {
                 let raised = (importance.unwrap_or(0.5) + 0.1).min(1.0);
                 self.write(|tx| {
@@ -1729,9 +1882,9 @@ impl McpServer {
                     .map_err(describe)?;
                 "fact retracted: kept in history as a mistake".to_owned()
             }
-            (_, _, other) if !matches!(other, "useful" | "obsolete" | "wrong") => {
+            (_, _, other) if !matches!(other, "useful" | "obsolete" | "wrong" | "verified") => {
                 return Err(format!(
-                    "unknown verdict {other:?}: use \"useful\", \"wrong\" or \"obsolete\""
+                    "unknown verdict {other:?}: use \"useful\", \"verified\", \"wrong\" or \"obsolete\""
                 ));
             }
             _ => return Err(format!("no node or fact with id {id}")),
@@ -2202,6 +2355,16 @@ fn tools() -> Value {
         "description": "ISO 8601 date or date-time, such as 2024-05-01 or 2024-05-01T10:30:00Z."
     });
     let id = |description: &str| json!({ "type": "string", "description": description });
+    let certainty = json!({
+        "type": "number", "minimum": 0, "maximum": 1,
+        "description": "How sure this is, from 0 to 1. Omit when you cannot say."
+    });
+    let origin = json!({
+        "type": "string", "enum": ["stated", "observed", "inferred", "verified"],
+        "description": "How it is known: stated (someone said or wrote it), observed (you saw it: \
+            a file, an output), inferred (you concluded it), verified (checked against a source; \
+            prefer `feedback` with \"verified\" and the source). Omit when you cannot say."
+    });
     let importance = json!({
         "type": "number", "minimum": 0, "maximum": 1,
         "description": "How much this matters, from 0 to 1 (default 0.5). Important memories rank \
@@ -2218,7 +2381,11 @@ fn tools() -> Value {
             "description": "Store a memory: a fact, decision, preference, person, project or document. \
                 It becomes searchable by `recall` and `context`. Optionally link it to existing nodes. \
                 With a `name` that already exists (ignoring case and accents, and with a label in \
-                common when labels are given), the existing node is updated instead and `reused` is true.",
+                common when labels are given), the existing node is updated instead and `reused` is true. \
+                Label what kind of memory it is when you can: Fact (something that is the case), \
+                Decision (a choice and its reasons), Experience (something that happened: an attempt, \
+                an incident) or Task (something to do); and say how it is known with `origin` and \
+                `certainty`.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -2229,6 +2396,8 @@ fn tools() -> Value {
                     "sources": { "type": "array", "items": { "type": "string" }, "description": "Ids of the nodes this memory comes from." },
                     "embedding": { "type": "array", "items": { "type": "number" }, "description": "Optional embedding of the text." },
                     "importance": importance.clone(),
+                    "certainty": certainty.clone(),
+                    "origin": origin.clone(),
                     "links": {
                         "type": "array",
                         "description": "Facts from the new node to existing nodes.",
@@ -2304,6 +2473,8 @@ fn tools() -> Value {
                     "valid_to": date,
                     "props": { "type": "object", "description": "Extra properties of the fact." },
                     "sources": { "type": "array", "items": { "type": "string" }, "description": "Ids of the nodes this fact comes from." },
+                    "certainty": certainty.clone(),
+                    "origin": origin.clone(),
                     "namespace": namespace
                 },
                 "required": ["from", "label", "to"]
@@ -2492,8 +2663,10 @@ fn tools() -> Value {
         {
             "name": "add_mentions",
             "title": "Add mentions",
-            "description": "Say which entities a memory mentions (from your own reading of it): each is linked to the \
-                node it is (by the label's match rule, or by name), created when new, or queued when ambiguous.",
+            "description": "Say which entities a memory mentions, and how they are related, from your own reading \
+                of it: each entity is linked to the node it is (by the label's match rule, or by name), created \
+                when new, or queued when ambiguous; each relation becomes a fact between two of them, with the \
+                memory as its source, `inferred` unless you say it is `stated` in so many words.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -2508,6 +2681,23 @@ fn tools() -> Value {
                                 "props": { "type": "object", "description": "What you know of it (email, …)." }
                             },
                             "required": ["surface"]
+                        }
+                    },
+                    "relations": {
+                        "type": "array",
+                        "description": "Relations between the entities above, such as Ana works_at Acme.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "from": { "type": ["integer", "string"], "description": "A mention above: its position (from 0) or its surface." },
+                                "label": { "type": "string", "description": "Relation, in snake_case, such as works_at." },
+                                "to": { "type": ["integer", "string"], "description": "A mention above: its position (from 0) or its surface." },
+                                "certainty": certainty.clone(),
+                                "origin": { "type": "string", "enum": ["stated", "observed", "inferred"], "description": "Default: inferred." },
+                                "valid_from": date,
+                                "valid_to": date
+                            },
+                            "required": ["from", "label", "to"]
                         }
                     },
                     "namespace": namespace
@@ -2691,15 +2881,18 @@ fn tools() -> Value {
             "name": "feedback",
             "title": "Feedback",
             "description": "Say how a memory or fact turned out. \"useful\": a memory gains \
-                importance. \"obsolete\": a memory is archived, a fact ends now. \"wrong\": a \
-                memory is archived with no importance, a fact is retracted as a mistake. Nothing \
-                is deleted; the verdict is kept on the memory.",
+                importance. \"verified\": you checked it and it holds; name the `source` that \
+                supports it, and what it was before is kept. \"obsolete\": a memory is archived, a \
+                fact ends now. \"wrong\": a memory is archived with no importance, a fact is \
+                retracted as a mistake. Nothing is deleted; the verdict is kept on the memory.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "id": id("The memory or fact."),
-                    "verdict": { "type": "string", "enum": ["useful", "wrong", "obsolete"] },
+                    "verdict": { "type": "string", "enum": ["useful", "verified", "wrong", "obsolete"] },
                     "note": { "type": "string", "description": "Why, in a few words." },
+                    "source": id("With \"verified\": the node (a document, a page, an output) that supports it."),
+                    "certainty": { "type": "number", "minimum": 0, "maximum": 1, "description": "With \"verified\": how sure, after the check. Default: 1." },
                     "namespace": namespace
                 },
                 "required": ["id", "verdict"]

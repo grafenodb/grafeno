@@ -27,6 +27,11 @@ nothing to migrate.
 How it was built, stage by stage, is in
 [mental-palace-roadmap.md](mental-palace-roadmap.md).
 
+Where it is going, in six phases, is
+[mental-palace/IMPLEMENTATION_PLAN.md](mental-palace/IMPLEMENTATION_PLAN.md);
+how memories and facts say how they are known is
+[mental-palace/cognitive-memory.md](mental-palace/cognitive-memory.md).
+
 ## Concepts
 
 | Concept | What it is |

@@ -24,8 +24,8 @@ use std::hash::{BuildHasher, BuildHasherDefault, DefaultHasher};
 use std::sync::Arc;
 
 use grafeno::{
-    Decision, Direction, EdgeFilter, Error, Grafeno, IndexRange, NewEdge, NewNode, NodeId, Probe,
-    Props, ReadTx, Result, Value, WriteTx, normalize_name,
+    Decision, Direction, EdgeFilter, EdgeId, Error, Grafeno, IndexRange, NewEdge, NewNode, NodeId,
+    Probe, Props, ReadTx, Result, Timestamp, Value, WriteTx, normalize_name,
 };
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -745,8 +745,22 @@ pub fn ingest(
     mentions: &[AgentMention],
     default_label: &str,
 ) -> Result<ExtractReport> {
+    Ok(ingest_targets(tx, read, ns, source, mentions, default_label)?.0)
+}
+
+/// [`ingest`], with the node each mention was linked to, in order: `None`
+/// for one that waits in the review queue.
+fn ingest_targets(
+    tx: &mut WriteTx,
+    read: &ReadTx,
+    ns: &str,
+    source: NodeId,
+    mentions: &[AgentMention],
+    default_label: &str,
+) -> Result<(ExtractReport, Vec<Option<NodeId>>)> {
     tx.node(ns, source)?.ok_or(Error::NodeNotFound(source))?;
     let mut report = ExtractReport::default();
+    let mut targets = Vec::with_capacity(mentions.len());
     for m in mentions {
         *report.found.entry("agent".into()).or_default() += 1;
         let value = normalize_name(&m.surface);
@@ -798,6 +812,7 @@ pub fn ingest(
                     )?;
                     report.queued += 1;
                     let _ = best;
+                    targets.push(None);
                     continue;
                 }
                 _ => None,
@@ -824,6 +839,7 @@ pub fn ingest(
                         props.clone(),
                     )?;
                     report.queued += 1;
+                    targets.push(None);
                     continue;
                 }
             }
@@ -844,6 +860,117 @@ pub fn ingest(
         };
         tx.create_edge(ns, mention(&found, target, source, false, "agent"))?;
         report.mentions += 1;
+        targets.push(Some(target));
     }
-    Ok(report)
+    Ok((report, targets))
+}
+
+/// A relation an agent read between two of the entities it mentions in a
+/// text: `from` and `to` are the mentions' positions in the same call, or
+/// their surfaces as written there.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct AgentRelation {
+    pub from: MentionRef,
+    pub label: String,
+    pub to: MentionRef,
+    /// How sure the agent is, from 0 to 1.
+    #[serde(default)]
+    pub certainty: Option<f64>,
+    /// How it is known: `inferred` (the default) when the agent concluded
+    /// it, `stated` when the text says it in so many words.
+    #[serde(default)]
+    pub origin: Option<String>,
+    #[serde(default)]
+    pub valid_from: Option<Timestamp>,
+    #[serde(default)]
+    pub valid_to: Option<Timestamp>,
+}
+
+/// A mention of the same call, by position or by its surface.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum MentionRef {
+    Index(usize),
+    Surface(String),
+}
+
+/// What became of an agent's reading of a text.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct Reading {
+    pub report: ExtractReport,
+    /// The node each mention was linked to, in order; `None` while it
+    /// waits in the review queue.
+    pub entities: Vec<Option<NodeId>>,
+    /// The facts recorded, in the order of the relations.
+    pub relations: Vec<EdgeId>,
+    /// Relations not recorded, each with its position and why.
+    pub skipped: Vec<(usize, String)>,
+    /// Earlier facts the new ones contradicted under a constraint.
+    pub contradicted: Vec<grafeno::ConstraintEvent>,
+}
+
+/// An agent's reading of a text in one call: the entities it mentions
+/// ([`ingest`]) and the relations between them, each a fact from one
+/// entity to another with the text as its source, `inferred` unless said
+/// otherwise, and the certainty given. A relation whose entity waits in
+/// review, or that names a mention not in the call, is skipped and said
+/// why; the rest are recorded.
+pub fn ingest_reading(
+    tx: &mut WriteTx,
+    read: &ReadTx,
+    ns: &str,
+    source: NodeId,
+    mentions: &[AgentMention],
+    relations: &[AgentRelation],
+    default_label: &str,
+) -> Result<Reading> {
+    // Every relation is checked before anything is written.
+    let mut checked = Vec::with_capacity(relations.len());
+    for relation in relations {
+        if relation.label.trim().is_empty() {
+            return Err(Error::Invalid("a relation needs a label".into()));
+        }
+        let origin = relation.origin.as_deref().unwrap_or("inferred");
+        let props = crate::knowledge::stated(Some(origin), relation.certainty)?;
+        checked.push(props);
+    }
+    let position = |reference: &MentionRef| -> Option<usize> {
+        match reference {
+            MentionRef::Index(index) => (*index < mentions.len()).then_some(*index),
+            MentionRef::Surface(surface) => {
+                let key = normalize_name(surface);
+                mentions
+                    .iter()
+                    .position(|m| normalize_name(&m.surface) == key)
+            }
+        }
+    };
+    let (report, entities) = ingest_targets(tx, read, ns, source, mentions, default_label)?;
+    let mut reading = Reading {
+        report,
+        entities,
+        ..Reading::default()
+    };
+    for (index, (relation, props)) in relations.iter().zip(checked).enumerate() {
+        let (Some(from), Some(to)) = (position(&relation.from), position(&relation.to)) else {
+            reading
+                .skipped
+                .push((index, "it names a mention that is not in this call".into()));
+            continue;
+        };
+        let (Some(from), Some(to)) = (reading.entities[from], reading.entities[to]) else {
+            reading.skipped.push((
+                index,
+                "one of its entities waits in the review queue".into(),
+            ));
+            continue;
+        };
+        let mut edge = NewEdge::new(from, relation.label.trim(), to).source(source);
+        edge.props = props;
+        edge.valid_from = relation.valid_from;
+        edge.valid_to = relation.valid_to;
+        reading.relations.push(tx.create_edge(ns, edge)?);
+        reading.contradicted.extend(tx.take_constraint_events());
+    }
+    Ok(reading)
 }

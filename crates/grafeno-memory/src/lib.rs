@@ -31,6 +31,7 @@ pub mod communities;
 mod context;
 pub mod documents;
 pub mod extract;
+pub mod knowledge;
 mod maintenance;
 pub mod palace;
 mod recall;
@@ -51,6 +52,7 @@ pub use context::{
 pub use documents::{
     CHUNK, DEFAULT_CHUNK_CHARS, Ingested, Kind, NewDocument, Piece, cut, ingest_document,
 };
+pub use knowledge::{Assessment, CERTAINTY, KINDS, ORIGIN, Origin, Record, verify};
 pub use maintenance::{
     ConsolidationGroup, ConsolidationOptions, DISTINCT_FROM, DecayOptions, Duplicate,
     DuplicateOptions, Summary, WeakMemory, archive, consolidation_groups, find_duplicates,
@@ -64,7 +66,8 @@ pub use palace::{
 };
 pub use recall::{ARCHIVED, Expansion, Ranking, RecallQuery, Recalled, Signal, recall};
 pub use reconcile::{
-    AgentMention, ExtractOptions, ExtractReport, MENTIONS, Occurrence, Plan, Resolution,
-    ReviewItem, SOURCE_LABELS, extract, extract_batch, ingest, plan, resolve, review_queue,
+    AgentMention, AgentRelation, ExtractOptions, ExtractReport, MENTIONS, MentionRef, Occurrence,
+    Plan, Reading, Resolution, ReviewItem, SOURCE_LABELS, extract, extract_batch, ingest,
+    ingest_reading, plan, resolve, review_queue,
 };
 pub use timeline::{Moment, timeline};

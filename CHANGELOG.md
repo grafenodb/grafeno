@@ -13,6 +13,18 @@ version (now 18) is upgraded in place, with a copy kept first.
 
 ## Unreleased
 
+- **Added**: how a memory or a fact is known. `remember` and `relate`
+  take `origin` (`stated`, `observed`, `inferred`, `verified`) and
+  `certainty` (0 to 1), stored as properties; `get_node`, `recall` and
+  `context` show them, and a record with neither reads as not stated.
+  `add_mentions` takes `relations` between the entities it mentions,
+  stored as facts with the memory as source and `inferred` by default, and
+  answers with the entity each mention became. `feedback` takes the
+  verdict `verified`, with the `source` that supports it, keeping what the
+  record was before. `Fact`, `Decision`, `Experience` and `Task` are the
+  kinds of memory with a meaning. In `grafeno-memory`: the `knowledge`
+  module, `ingest_reading` and `verify`. No layout change. See
+  [docs/mental-palace/cognitive-memory.md](docs/mental-palace/cognitive-memory.md).
 - **Added**: mental palaces. Memories that already exist are arranged
   into places and found again by where they are: a palace has rooms, a
   room has loci, and a memory is anchored at any number of loci without

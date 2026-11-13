@@ -213,11 +213,18 @@ fn add_items(
         };
         let available = item_budget.saturating_sub(context.tokens + header_cost);
 
-        let mut block = render_item(number, &heading, &node.labels, &text);
+        // Its labels, and how it is known when someone said.
+        let known = crate::knowledge::of_node(node).note();
+        let tags = if known.is_empty() {
+            node.labels.join(", ")
+        } else {
+            format!("{}; {known}", node.labels.join(", "))
+        };
+        let mut block = render_item(number, &heading, &tags, &text);
         let mut cost = count(&block);
         let mut truncated = false;
         if cost > available {
-            let frame = count(&render_item(number, &heading, &node.labels, ""));
+            let frame = count(&render_item(number, &heading, &tags, ""));
             if text.is_empty() || available < frame + MIN_TRUNCATED_TOKENS {
                 continue;
             }
@@ -228,7 +235,7 @@ fn add_items(
             let mut limit = available - frame;
             loop {
                 text = truncate(&whole, limit, count);
-                block = render_item(number, &heading, &node.labels, &text);
+                block = render_item(number, &heading, &tags, &text);
                 cost = count(&block);
                 if cost <= available || limit < MIN_TRUNCATED_TOKENS {
                     break;
@@ -350,7 +357,14 @@ fn add_facts(
     for (_, _, edge) in candidates {
         let from = name_of(read, ns, edge.from, &names, &mut other_names)?;
         let to = name_of(read, ns, edge.to, &names, &mut other_names)?;
-        let line = format!("- {from} {} {to}{}\n", edge.label, validity(&edge));
+        // How the fact is known, when someone said.
+        let known = crate::knowledge::of_edge(&edge).note();
+        let known = if known.is_empty() {
+            String::new()
+        } else {
+            format!(" [{known}]")
+        };
+        let line = format!("- {from} {} {to}{}{known}\n", edge.label, validity(&edge));
         // One blank line between the memories and the facts.
         let rendered = &context.rendered;
         let header = if !context.facts.is_empty() {
@@ -443,8 +457,7 @@ fn item_body(read: &ReadTx, ns: &str, node: &Node) -> Result<String> {
     })
 }
 
-fn render_item(number: usize, name: &str, labels: &[String], body: &str) -> String {
-    let labels = labels.join(", ");
+fn render_item(number: usize, name: &str, labels: &str, body: &str) -> String {
     let heading = if name.is_empty() {
         format!("[{number}] ({labels})")
     } else {

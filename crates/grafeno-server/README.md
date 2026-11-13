@@ -659,7 +659,7 @@ another group's file. See [docs/cluster-runbooks.md](../../docs/cluster-runbooks
 | `undo_merge` | Undoes a merge by its `merge_id`: the merged node and its facts come back.   |
 | `find_matches` | Before creating an entity, the nodes that may already be it, by the label's match rule, with a decision and each field's similarity. |
 | `extract`  | Reads new and changed memories and links what they mention (names, emails, URLs, handles, hashtags, dates, amounts, recurring new names). |
-| `add_mentions` | The entities a memory mentions, from the agent's own reading: linked, created or queued. |
+| `add_mentions` | The entities a memory mentions, and the relations between them, from the agent's own reading: entities linked, created or queued; relations stored as facts with the memory as source, `inferred` unless said `stated`. |
 | `review` / `resolve_review` | What extraction could not decide, and settling it (link, create, dismiss). |
 | `maintain` | The namespace's size, its vector graphs' wear and contradictions on record (with `check: true`, an integrity check too); likely duplicates, weak memories and groups ready to consolidate. |
 | `consolidate` | Stores a summary of several memories and archives them.                     |
@@ -672,7 +672,7 @@ another group's file. See [docs/cluster-runbooks.md](../../docs/cluster-runbooks
 | `ingest`   | Stores a long text as a whole and its chunks: a document cut at headings and paragraphs, a conversation between turns, code at its definitions; then extracts what they mention. The same `source` again replaces it. |
 | `contradictions` | Facts that contradicted earlier ones under a constraint, and what was done (the earlier one ended, the new one refused, or both flagged). |
 | `timeline` | How a node changed, oldest first: its facts beginning and ending, earlier property values, merges, contradictions. |
-| `feedback` | `useful` raises a memory's importance; `obsolete` archives a memory or ends a fact; `wrong` archives a memory or retracts a fact. The verdict stays on the memory. |
+| `feedback` | `useful` raises a memory's importance; `verified` records a check, with the `source` that supports it, and keeps what it was before; `obsolete` archives a memory or ends a fact; `wrong` archives a memory or retracts a fact. The verdict stays on the memory. |
 | `palace_create` / `palace_create_room` | Makes a palace, or a room in one with its loci (places inside it); returns the one there is when it exists. |
 | `palace_anchor` | Puts an existing memory at a locus of a room, without copying or changing it; with `remove`, takes the anchor away. |
 | `palace_map` | The palaces with their rooms, loci and counts; with `room`, the memories at each locus. |
@@ -684,6 +684,11 @@ bring them back by where they are; see
 [docs/mental-palace.md](../../docs/mental-palace.md).
 
 Every tool takes an optional `namespace`, which defaults to `--namespace`.
+
+`remember` and `relate` take `origin` (`stated`, `observed`, `inferred`,
+`verified`) and `certainty` (0 to 1); `get_node`, `recall` and `context`
+show them, and a record with neither reads as not stated. See
+[docs/mental-palace/cognitive-memory.md](../../docs/mental-palace/cognitive-memory.md).
 
 The MCP server opens the database file itself, so it cannot keep out the
 user who starts it, but it fences the agent it serves:

@@ -679,7 +679,7 @@ herramientas:
 | `undo_merge` | Deshace una fusión por su `merge_id`: el nodo fusionado y sus hechos vuelven. |
 | `find_matches` | Antes de crear una entidad, los nodos que ya podrían serla, según la regla de coincidencia de la etiqueta, con una decisión y la similitud de cada campo. |
 | `extract`  | Lee los recuerdos nuevos y modificados y enlaza lo que mencionan (nombres, correos, URLs, usuarios, hashtags, fechas, montos, nombres nuevos recurrentes). |
-| `add_mentions` | Las entidades que menciona un recuerdo, según la propia lectura del agente: enlazadas, creadas o en cola. |
+| `add_mentions` | Las entidades que menciona un recuerdo, y las relaciones entre ellas, según la lectura del propio agente: entidades enlazadas, creadas o en cola; relaciones guardadas como hechos con el recuerdo como fuente, `inferred` salvo que se diga `stated`. |
 | `review` / `resolve_review` | Lo que la extracción no pudo decidir, y resolverlo (enlazar, crear, descartar). |
 | `maintain` | El tamaño del namespace, el desgaste de sus grafos vectoriales y las contradicciones registradas (con `check: true`, también una revisión de integridad); los posibles duplicados, los recuerdos débiles y los grupos listos para consolidar. |
 | `consolidate` | Guarda un resumen de varios recuerdos y los archiva.                        |
@@ -692,7 +692,7 @@ herramientas:
 | `ingest`   | Guarda un texto largo como un todo y sus fragmentos: un documento cortado por encabezados y párrafos, una conversación entre turnos, código por sus definiciones; luego extrae lo que mencionan. La misma `source` de nuevo lo reemplaza. |
 | `contradictions` | Hechos que contradijeron a otros anteriores bajo una restricción, y lo que se hizo (el anterior terminó, el nuevo se rechazó, o ambos quedaron marcados). |
 | `timeline` | Cómo cambió un nodo, del más antiguo al más reciente: sus hechos comenzando y terminando, valores anteriores de sus propiedades, fusiones, contradicciones. |
-| `feedback` | `useful` sube la importancia de un recuerdo; `obsolete` archiva un recuerdo o termina un hecho; `wrong` archiva un recuerdo o retracta un hecho. El veredicto queda en el recuerdo. |
+| `feedback` | `useful` sube la importancia de un recuerdo; `verified` registra una comprobación, con la `source` que la respalda, y guarda lo que era antes; `obsolete` archiva un recuerdo o termina un hecho; `wrong` archiva un recuerdo o retracta un hecho. El veredicto queda en el recuerdo. |
 | `palace_create` / `palace_create_room` | Crea un palacio, o una sala en uno con sus loci (lugares dentro de ella); devuelve el que ya hay cuando existe. |
 | `palace_anchor` | Pone un recuerdo que ya existe en un locus de una sala, sin copiarlo ni cambiarlo; con `remove`, quita el ancla. |
 | `palace_map` | Los palacios con sus salas, loci y cuentas; con `room`, los recuerdos de cada locus. |
@@ -705,6 +705,11 @@ los traen de vuelta por dónde están; véase
 
 Cada herramienta acepta un `namespace` opcional, que por defecto es
 `--namespace`.
+
+`remember` y `relate` aceptan `origin` (`stated`, `observed`, `inferred`,
+`verified`) y `certainty` (de 0 a 1); `get_node`, `recall` y `context`
+los muestran, y un registro sin ninguno se lee como no indicado. Véase
+[docs/mental-palace/cognitive-memory.md](../../docs/mental-palace/cognitive-memory.md) (en inglés).
 
 El servidor MCP abre el archivo de la base por sí mismo, así que no puede
 dejar fuera al usuario que lo inicia, pero sí limita al agente al que
