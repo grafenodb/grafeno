@@ -1,7 +1,7 @@
 # Grafeno Cognitive Memory: implementation plan
 
-**Status:** phases 0 (this audit) and 1 to 5 are done. Phase 6 is
-planned.
+**Status:** every phase, 0 to 6, is done. What is left of each is said
+under it.
 
 The aim is for Grafeno to be the persistent memory and knowledge of any
 agent, through six phases of the Mental Palace, and to stay independent
@@ -111,7 +111,7 @@ whole of it is green.
 | 3. Retrieval | Everything, since phase 3 | — | — |
 | 4. Consolidation | Everything, since phase 4 | — | — |
 | 5. Several agents | Everything but the TypeScript client and clusters, since phase 5 | — | The tools route on a cluster; the TypeScript client |
-| 6. Metacognition | `maintain`, `contradictions`, `timeline`, `overview`, `get_node` | What is known of a topic (recall answers it without saying what is thin) | Gaps, staleness, what to verify, the limits of an answer |
+| 6. Metacognition | Everything, since phase 6 | — | — |
 
 ## Phase 1: structural palace (done)
 
@@ -406,7 +406,25 @@ Acceptance:
 - A second process on a file that is open is refused with a message that
   says what to do.
 
-## Phase 6: metacognition
+## Phase 6: metacognition (done)
+
+Built as proposed below: one tool, `palace_reflect`, and questions as a
+kind of memory. What it does is in
+[../mental-palace.md](../mental-palace.md#reflection). Tests:
+`crates/grafeno-memory/tests/reflect.rs`, whose first test is the
+acceptance below, and `reflection_separates_what_is_known_from_what_is_not`
+in `crates/grafeno-server/tests/mcp.rs`. Decided on the way:
+
+- A question is closed by a relation `answers` from the memory that
+  answers it, made with `relate`; no tool of its own.
+- "Mentioned and never described" is a node only `mentions` reach, with
+  no text and nothing but a name.
+- The steps a checkpoint left are gaps of the room or node it is about;
+  a topic has no checkpoint of its own.
+- `palace_knowledge_gaps` and `palace_inspect` were not needed: the gaps
+  are a section of the reflection, and inspecting a record is `get_node`
+  and `timeline`.
+
 
 What exists answers part of it: `maintain` reports health, duplicates,
 weak memories and contradictions on record; `contradictions` lists what

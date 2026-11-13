@@ -101,7 +101,8 @@ fn handshake_and_tool_list() {
             "palace_map",
             "palace_walk",
             "palace_enter",
-            "palace_review"
+            "palace_review",
+            "palace_reflect"
         ]
     );
     for tool in response["result"]["tools"].as_array().unwrap() {
@@ -1394,7 +1395,13 @@ fn a_read_only_server_reads_palaces_and_writes_none() {
         .collect();
     assert_eq!(
         names,
-        ["palace_map", "palace_walk", "palace_enter", "palace_review"]
+        [
+            "palace_map",
+            "palace_walk",
+            "palace_enter",
+            "palace_review",
+            "palace_reflect"
+        ]
     );
 
     let map = call(&reader, "palace_map", json!({ "room": "Storage" }));
@@ -1932,4 +1939,116 @@ fn palaces_are_reviewed_rooms_removed_and_consolidations_undone() {
     );
     let wrong = call(&server, "consolidate", json!({ "undo": notes[0] }));
     assert!(failure(&wrong).contains("not a summary"));
+}
+
+/// Phase 6 over MCP: a reflection on a topic with partial information
+/// separates the known, the inferred, the clashing, the out of date and the
+/// missing; a topic with nothing says so.
+#[test]
+fn reflection_separates_what_is_known_from_what_is_not() {
+    let server = server();
+    let service = remembered(
+        &server,
+        json!({ "name": "Billing service", "text": "Billing sends the invoices", "labels": ["Service"] }),
+    );
+    let doc = remembered(
+        &server,
+        json!({ "text": "Billing runbook: runs on Ledger" }),
+    );
+    let ledger = remembered(
+        &server,
+        json!({ "name": "Ledger", "text": "A database", "labels": ["Database"] }),
+    );
+    let ana = remembered(
+        &server,
+        json!({ "name": "Ana", "text": "A person", "labels": ["Person"] }),
+    );
+    let fact = structured(&call(
+        &server,
+        "relate",
+        json!({ "from": service, "label": "runs_on", "to": ledger }),
+    ))["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    structured(&call(
+        &server,
+        "feedback",
+        json!({ "id": fact, "verdict": "verified", "source": doc }),
+    ));
+    let guess = structured(&call(
+        &server,
+        "relate",
+        json!({ "from": ana, "label": "maintains", "to": service, "origin": "inferred" }),
+    ))["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let question = remembered(
+        &server,
+        json!({ "text": "Who approves billing refunds?", "labels": ["Question"] }),
+    );
+
+    let reflection = call(&server, "palace_reflect", json!({ "topic": "billing" }));
+    let reflection = structured(&reflection).clone();
+    assert_eq!(reflection["nothing"], false);
+    assert_eq!(reflection["known"]["verified"][0]["id"], fact.as_str());
+    assert!(
+        reflection["uncertain"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["id"] == guess.as_str() && item["why"] == "inferred, with no source"),
+        "{reflection}"
+    );
+    assert!(
+        reflection["gaps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["id"] == question.as_str() && item["kind"] == "question")
+    );
+    assert!(reflection["next"].as_array().unwrap().len() >= 2);
+    assert!(
+        reflection["hint"]
+            .as_str()
+            .unwrap()
+            .contains("not as truth")
+    );
+
+    // Answered, the question is no longer a gap.
+    let answer = remembered(
+        &server,
+        json!({ "text": "The billing lead approves refunds" }),
+    );
+    structured(&call(
+        &server,
+        "relate",
+        json!({ "from": answer, "label": "answers", "to": question }),
+    ));
+    let again = call(&server, "palace_reflect", json!({ "topic": "billing" }));
+    assert!(
+        !structured(&again)["gaps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["id"] == question.as_str())
+    );
+
+    let nothing = call(&server, "palace_reflect", json!({ "topic": "volcanoes" }));
+    let nothing = structured(&nothing).clone();
+    assert_eq!(nothing["nothing"], true);
+    assert_eq!(nothing["known"]["memories"], 0);
+    assert!(
+        nothing["hint"]
+            .as_str()
+            .unwrap()
+            .contains("rather than guess")
+    );
+    let both = call(
+        &server,
+        "palace_reflect",
+        json!({ "topic": "billing", "node": service }),
+    );
+    assert!(failure(&both).contains("one of"));
 }

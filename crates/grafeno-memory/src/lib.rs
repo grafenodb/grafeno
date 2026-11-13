@@ -36,6 +36,7 @@ mod maintenance;
 pub mod palace;
 mod recall;
 mod reconcile;
+mod reflect;
 pub mod timeline;
 
 pub use checkpoint::{
@@ -53,7 +54,9 @@ pub use context::{
 pub use documents::{
     CHUNK, DEFAULT_CHUNK_CHARS, Ingested, Kind, NewDocument, Piece, cut, ingest_document,
 };
-pub use knowledge::{Assessment, CERTAINTY, KINDS, ORIGIN, Origin, Record, verify};
+pub use knowledge::{
+    ANSWERS, Assessment, CERTAINTY, KINDS, ORIGIN, Origin, QUESTION, Record, verify,
+};
 pub use maintenance::{
     ConsolidationGroup, ConsolidationOptions, DISTINCT_FROM, DecayOptions, Duplicate,
     DuplicateOptions, Summary, Superseded, SupersededOptions, UndoneSummary, WeakMemory, archive,
@@ -72,4 +75,5 @@ pub use reconcile::{
     Plan, Reading, Resolution, ReviewItem, SOURCE_LABELS, extract, extract_batch, ingest,
     ingest_reading, plan, resolve, review_queue,
 };
+pub use reflect::{Clash, Item, Known, Limits, ReflectOptions, Reflection, Scope, Step, reflect};
 pub use timeline::{Moment, timeline};

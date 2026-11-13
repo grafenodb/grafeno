@@ -38,6 +38,11 @@ pub const DECISION: &str = "Decision";
 pub const EXPERIENCE: &str = "Experience";
 /// Something to do.
 pub const TASK: &str = "Task";
+/// Something not known yet, kept to be answered: open while nothing
+/// [`ANSWERS`] it.
+pub const QUESTION: &str = "Question";
+/// A memory → the question it answers.
+pub const ANSWERS: &str = "answers";
 /// The kinds of memory with a meaning. A memory may have any other label
 /// too; these are the ones an agent can count on.
 pub const KINDS: [&str; 4] = [FACT, DECISION, EXPERIENCE, TASK];

@@ -107,7 +107,7 @@ that already used `Palace`, `Room`, `Locus`, `has_room`, `has_locus` or
 
 ## Tools
 
-The MCP server (`grafeno mcp`) has seven tools for palaces. Each takes the
+The MCP server (`grafeno mcp`) has eight tools for palaces. Each takes the
 optional `namespace` every tool takes. Where a palace or a room is asked
 for, its name or its id will do.
 
@@ -120,8 +120,9 @@ for, its name or its id will do.
 | `palace_walk` | no | From a `topic` or a node (`from`): the rooms and loci that match, the memories anchored there, the anchored memories that match, the rooms their doors lead to, and what the graph's relations lead to from those, up to `hops` (2 by default, 3 at most). `order`: `distance` (default) or `relevance`; `budget`: also the memories reached and the facts joining them as text within that many tokens. |
 | `palace_enter` | no | A room's context for the start of a session: its loci, its memories (strongest first) and the facts that connect them as text within a token `budget`, and the latest checkpoint about the room. |
 | `palace_review` | no | Proposals to arrange a palace better, each with its reason and the call that carries it out; nothing applied (see [below](#review-removal-and-undoing)). |
+| `palace_reflect` | no | What is known about a topic, a room or a node, and what is not: known, uncertain, conflicts, stale, gaps, what to check next (see [below](#reflection)). |
 
-A read-only server (`--read-only`) offers only the four that read.
+A read-only server (`--read-only`) offers only the five that read.
 An agent fenced to some namespaces (`--allow`) reaches palaces in those
 only.
 
@@ -383,6 +384,38 @@ grafeno mcp --url http://127.0.0.1:7810 --token "$AGENT_KEY" --namespace team
 Limits of the shared way: rights by namespace only (a caller with rules on
 labels, properties or records is refused by the tools route and uses the
 API's own routes), and no tools route on a cluster yet.
+
+## Reflection
+
+Added in phase 6 of the [plan](mental-palace/IMPLEMENTATION_PLAN.md).
+
+`palace_reflect` says what is known about a topic, a room or a node, and
+what is not. It reads only, and every item names the record it comes
+from, so an agent can check it with `get_node` or `timeline` before it
+answers:
+
+| Section | What is in it |
+| --- | --- |
+| `known` | The memories and facts found, counted by kind (Fact, Decision, Experience, Task, Question) and by how they are known (stated, observed, inferred, verified, not stated); the verified ones named. |
+| `uncertain` | What was inferred with no source, and what has a certainty under 0.5. |
+| `conflicts` | Clashes recorded under constraints that involve them, the unsettled ones first: a flagged clash keeps both facts and waits for someone. |
+| `stale` | Facts no longer true, memories archived or marked obsolete, memories long unused, and older memories a newer one may overtake. |
+| `gaps` | Open questions, things mentioned and never described, places in a room with nothing at them, and steps left in the room's or node's checkpoint. |
+| `next` | What to check, each step with the call that does it and the records it is about. |
+| `limits` | How much it looked at, whether there were more matches, and what it cannot see. |
+
+A topic with nothing stored answers `nothing: true` and empty sections:
+no unrelated memory is offered in place of one that is not there.
+
+**Questions** are memories labeled `Question`: something not known yet,
+kept so it is not forgotten. A question is open until a memory is related
+to it with `answers` (`relate` from the answer to the question).
+
+What a reflection does not do: decide that something is true or false,
+look anything up, or change anything. Origin and certainty are what agents
+stated; conflicts are those recorded under constraints, so two facts that
+clash with no constraint to say so are not found; a topic is matched by
+its words, whole, so a memory that says it in other words is not found.
 
 ## Known limits
 

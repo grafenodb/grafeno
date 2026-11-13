@@ -392,6 +392,7 @@ impl McpServer {
             "palace_walk" => self.palace_walk(arguments),
             "palace_enter" => self.palace_enter(arguments),
             "palace_review" => self.palace_review(arguments),
+            "palace_reflect" => self.palace_reflect(arguments),
             _ => return Err((-32602, format!("unknown tool: {name}"))),
         };
         Ok(match outcome {
@@ -2489,6 +2490,62 @@ impl McpServer {
         Ok(ToolOutput::Json(output))
     }
 
+    fn palace_reflect(&self, arguments: Value) -> ToolResult {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Args {
+            #[serde(default)]
+            topic: Option<String>,
+            #[serde(default)]
+            room: Option<String>,
+            #[serde(default)]
+            palace: Option<String>,
+            #[serde(default)]
+            node: Option<String>,
+            #[serde(default)]
+            limit: Option<usize>,
+            #[serde(default)]
+            namespace: Option<String>,
+        }
+        let args: Args = parse_args(arguments)?;
+        let ns = self.ns(&args.namespace);
+        let read = self.db.begin_read().map_err(describe)?;
+        let given = [
+            args.topic.is_some(),
+            args.room.is_some(),
+            args.node.is_some(),
+        ]
+        .iter()
+        .filter(|given| **given)
+        .count();
+        if given != 1 {
+            return Err("name one of `topic`, `room` or `node`".into());
+        }
+        let scope = if let Some(topic) = args.topic.filter(|t| !t.trim().is_empty()) {
+            grafeno_memory::Scope::Topic(topic)
+        } else if let Some(room) = &args.room {
+            grafeno_memory::Scope::Room(self.room_ref(&read, ns, args.palace.as_deref(), room)?)
+        } else if let Some(node) = &args.node {
+            grafeno_memory::Scope::Node(parse_id(node).map_err(describe)?)
+        } else {
+            return Err("`topic` is empty".into());
+        };
+        let options = grafeno_memory::ReflectOptions {
+            limit: args.limit.unwrap_or(20).clamp(1, 100),
+            ..Default::default()
+        };
+        let reflection = grafeno_memory::reflect(&read, ns, &scope, &options).map_err(describe)?;
+        let mut output = serde_json::to_value(&reflection).unwrap_or_default();
+        output["hint"] = json!(if reflection.nothing {
+            "Nothing is stored about it. Say so rather than guess; store what you learn with `remember`, \
+             and keep what you need to find out as a memory labeled Question."
+        } else {
+            "Each item names its record (get_node, timeline). Counts are of what is stored, and origin \
+             and certainty are what agents stated: report them as such, not as truth."
+        });
+        Ok(ToolOutput::Json(output))
+    }
+
     fn palace_enter(&self, arguments: Value) -> ToolResult {
         #[derive(Deserialize)]
         #[serde(deny_unknown_fields)]
@@ -2691,7 +2748,8 @@ fn tools() -> Value {
                 common when labels are given), the existing node is updated instead and `reused` is true. \
                 Label what kind of memory it is when you can: Fact (something that is the case), \
                 Decision (a choice and its reasons), Experience (something that happened: an attempt, \
-                an incident) or Task (something to do); and say how it is known with `origin` and \
+                an incident), Task (something to do) or Question (something not known yet, open until \
+                a memory is related to it with `answers`); and say how it is known with `origin` and \
                 `certainty`.",
             "inputSchema": {
                 "type": "object",
@@ -3340,6 +3398,29 @@ fn tools() -> Value {
                     "namespace": namespace
                 },
                 "required": ["palace"]
+            }
+        },
+        {
+            "name": "palace_reflect",
+            "title": "Reflect on what is known",
+            "description": "What is known about a topic, a room or a node, and what is not, each \
+                item with the record it comes from: what is known (counted by kind and by how it is \
+                known, the verified named), what is uncertain (inferred with no source, low \
+                certainty), conflicts recorded under constraints (settled or not), what may be out \
+                of date (facts that ended, archived, long unused, overtaken by a newer memory), \
+                gaps (open questions, things mentioned and never described, empty places, steps \
+                left in a checkpoint), what to check next, and the limits of the look. Use it \
+                before answering on uncertain ground. Writes nothing.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "topic": { "type": "string", "description": "What to reflect on, in its words." },
+                    "room": { "type": "string", "description": "Or a room: its name or its id." },
+                    "palace": { "type": "string", "description": "The room's palace, when two have a room of that name." },
+                    "node": id("Or a node: it and what it is related to."),
+                    "limit": { "type": "integer", "minimum": 1, "maximum": 100, "description": "Items per section. Default: 20." },
+                    "namespace": namespace
+                }
             }
         }
     ])

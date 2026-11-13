@@ -700,6 +700,7 @@ herramientas:
 | `palace_map` | Los palacios con sus salas, loci y cuentas; con `room`, los recuerdos de cada locus. |
 | `palace_walk` | De un tema o un nodo a los recuerdos que lo rodean: las salas que coinciden, lo anclado en ellas, las salas a las que llevan sus puertas (un hecho `leads_to` entre salas) y a dónde llevan desde ahí las relaciones del grafo. Por distancia o por relevancia; con `budget`, también como texto con los hechos que los unen. |
 | `palace_review` | Propuestas para ordenar mejor un palacio (dividir, fusionar, mover, lugares vacíos, salas para comunidades sin lugar), cada una con su motivo; no aplica nada. |
+| `palace_reflect` | Lo que se sabe de un tema, una sala o un nodo, y lo que no: contado por tipo y origen, lo incierto, los conflictos, lo desactualizado, los vacíos (preguntas abiertas incluidas), qué comprobar después; cada elemento con su registro. No escribe nada. |
 | `palace_enter` | El contexto de una sala para empezar una sesión: sus recuerdos y hechos como texto dentro de un presupuesto de tokens, y el último checkpoint sobre la sala. |
 
 Las herramientas `palace_*` ordenan en lugares recuerdos que ya existen y

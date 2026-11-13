@@ -52,6 +52,7 @@ Four labels have a meaning, beside any other a memory has:
 | `Decision` | A choice made, with its reasons. |
 | `Experience` | Something that happened: an attempt, an incident. |
 | `Task` | Something to do. |
+| `Question` | Something not known yet: open until a memory is related to it with `answers` (phase 6). |
 
 They are labels, so `remember` takes them in `labels` and `recall` and
 `context` filter by them, as by any label. Nothing classifies a memory on

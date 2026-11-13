@@ -13,6 +13,16 @@ version (now 18) is upgraded in place, with a copy kept first.
 
 ## Unreleased
 
+- **Added**: metacognition (phase 6 of the Mental Palace plan).
+  `palace_reflect` says what is known about a topic, a room or a node and
+  what is not, each item with its record: what is known (by kind and by
+  origin, the verified named), what is uncertain (inferred with no source,
+  low certainty), conflicts recorded under constraints, what may be out of
+  date, gaps (open questions, things mentioned and never described, empty
+  places, steps left in a checkpoint), what to check next, and the limits
+  of the look. A topic with nothing stored says so. It writes nothing.
+  `Question` is a kind of memory, open until a memory `answers` it. In
+  `grafeno-memory`: `reflect`, `QUESTION`, `ANSWERS`.
 - **Added**: several agents share one memory (phase 5 of the Mental
   Palace plan). `grafeno mcp --url URL --token KEY` runs the agent's
   tools on a Grafeno server instead of opening a file: the server owns the
