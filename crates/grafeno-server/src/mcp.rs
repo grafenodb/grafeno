@@ -2718,6 +2718,9 @@ impl McpServer {
             node: Option<String>,
             #[serde(default)]
             limit: Option<usize>,
+            /// What each kind of memory is expected to have.
+            #[serde(default)]
+            expected: std::collections::BTreeMap<String, grafeno_memory::Shape>,
             #[serde(default)]
             namespace: Option<String>,
         }
@@ -2746,6 +2749,7 @@ impl McpServer {
         };
         let options = grafeno_memory::ReflectOptions {
             limit: args.limit.unwrap_or(20).clamp(1, 100),
+            shapes: args.expected,
             ..Default::default()
         };
         let reflection = grafeno_memory::reflect(&read, ns, &scope, &options).map_err(describe)?;
@@ -3712,11 +3716,14 @@ fn tools() -> Value {
             "description": "What is known about a topic, a room or a node, and what is not, each \
                 item with the record it comes from: what is known (counted by kind and by how it is \
                 known, the verified named), what is uncertain (inferred with no source, low \
-                certainty), conflicts recorded under constraints (settled or not), what may be out \
-                of date (facts that ended, archived, long unused, overtaken by a newer memory), \
-                gaps (open questions, things mentioned and never described, empty places, steps \
-                left in a checkpoint), what to check next, and the limits of the look. Use it \
-                before answering on uncertain ground. Writes nothing.",
+                certainty), what was stated with no source (`unsupported`), conflicts (each a \
+                `change` of state or a `contradiction`), what may be out of date (facts that \
+                ended, archived, long unused, overtaken by a newer memory), gaps (open questions, \
+                things mentioned and never described, empty places, steps left in a checkpoint, \
+                and what a kind's expected shape asks for and a memory lacks), the sources behind \
+                each item, records counted by the evidence behind them (counts, not \
+                probabilities), what to check next, and the limits of the look. Use it before \
+                answering on uncertain ground. Writes nothing and looks nothing up outside.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -3725,6 +3732,17 @@ fn tools() -> Value {
                     "palace": { "type": "string", "description": "The room's palace, when two have a room of that name." },
                     "node": id("Or a node: it and what it is related to."),
                     "limit": { "type": "integer", "minimum": 1, "maximum": 100, "description": "Items per section. Default: 20." },
+                    "expected": {
+                        "type": "object",
+                        "additionalProperties": {
+                            "type": "object",
+                            "properties": {
+                                "relations": { "type": "array", "items": { "type": "string" } },
+                                "properties": { "type": "array", "items": { "type": "string" } }
+                            }
+                        },
+                        "description": "What each kind of memory should have, by kind: {\"Decision\": {\"relations\": [\"supported_by\"], \"properties\": [\"reason\"]}}. A memory that lacks it is a gap. Shapes can also be declared once, as a memory labeled Shape with the properties kind, relations and properties; one given here wins for its kind."
+                    },
                     "namespace": namespace
                 }
             }

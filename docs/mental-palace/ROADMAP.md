@@ -162,7 +162,14 @@ a tool of its own.
 **Acceptance:** two palaces sharing memories; a memory changed by an
 authorized call; both views show the same change.
 
-## Phase 12: the quality of knowledge
+## Phase 12: the quality of knowledge (done)
+
+Built as planned below; what it does is in
+[mental-palace.md](../mental-palace.md#reflection). Tests:
+`crates/grafeno-memory/tests/quality.rs` (the acceptance) and
+`reflection_finds_what_an_expected_shape_lacks` in
+`crates/grafeno-server/tests/mcp.rs`. Records are also counted by the
+evidence behind them (`by_evidence`), counts and never probabilities.
 
 | Capability | Class | Plan |
 | --- | --- | --- |

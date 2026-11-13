@@ -79,7 +79,10 @@ pub use reconcile::{
     Plan, Reading, Resolution, ReviewItem, SOURCE_LABELS, extract, extract_batch, ingest,
     ingest_reading, plan, resolve, review_queue,
 };
-pub use reflect::{Clash, Item, Known, Limits, ReflectOptions, Reflection, Scope, Step, reflect};
+pub use reflect::{
+    Clash, Item, Known, Limits, ReflectOptions, Reflection, SHAPE, Scope, Shape, Step, reflect,
+    shapes,
+};
 pub use timeline::{Moment, timeline};
 pub use views::{
     MAX_ROUTE_HOPS, Reconstruction, Route, RouteQuery, RouteStep, Routes, reconstruct, route,

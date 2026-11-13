@@ -403,23 +403,36 @@ answers:
 
 | Section | What is in it |
 | --- | --- |
-| `known` | The memories and facts found, counted by kind (Fact, Decision, Experience, Task, Question) and by how they are known (stated, observed, inferred, verified, not stated); the verified ones named. |
+| `known` | The memories and facts found, counted by kind (Fact, Decision, Experience, Task, Question) and by how they are known (stated, observed, inferred, verified, not stated); the verified ones named; and `by_evidence`, each record counted once by what is stored behind it: `conflicting`, `obsolete`, `verified`, `supported` (sources or `supported_by`), `inferred, no source`, `stated, no source`, `not stated, no source`. Counts of records, not probabilities. |
 | `uncertain` | What was inferred with no source, and what has a certainty under 0.5. |
+| `unsupported` | What was said to be stated or observed with no source and nothing supporting it: a claim whose evidence was never recorded. |
 | `conflicts` | Clashes recorded under constraints that involve them, or recorded by an agent with `contradicts`, the unsettled ones first. Each is a `change` (the constraint ended or shortened the older fact: the state changed) or a `contradiction` (a flagged clash, or a `contradicts`: both stand and wait for someone). |
 | `stale` | Facts no longer true, memories archived or marked obsolete, memories long unused, and older memories a newer one may overtake. |
-| `gaps` | Open questions, things mentioned and never described, places in a room with nothing at them, and steps left in the room's or node's checkpoint. |
+| `gaps` | Open questions, things mentioned and never described, places in a room with nothing at them, steps left in the room's or node's checkpoint, and what a kind's expected shape asks for and a memory lacks. |
 | `next` | What to check, each step with the call that does it and the records it is about. |
 | `limits` | How much it looked at, whether there were more matches, and what it cannot see. |
+| `sources` | The sources behind each item listed, by its id: a record's `sources` and what a memory is `supported_by`. |
 
 A topic with nothing stored answers `nothing: true` and empty sections:
 no unrelated memory is offered in place of one that is not there.
+
+**Expected shapes** (phase 12 of the
+[roadmap](mental-palace/ROADMAP.md)) say what a kind of memory should
+have: a Decision its `reason` and a `supported_by` relation, say. They are
+declared once as a memory labeled `Shape`, with the properties `kind`,
+`relations` and `properties`, or given in the call (`expected`, by kind,
+which wins for its kind). A memory that lacks what its kind asks for is a
+gap, and `next` asks to complete it if it is known, or to keep a Question
+if not. A Shape is a declaration, not a memory: it is never counted or
+listed.
 
 **Questions** are memories labeled `Question`: something not known yet,
 kept so it is not forgotten. A question is open until a memory is related
 to it with `answers` (`relate` from the answer to the question).
 
 What a reflection does not do: decide that something is true or false,
-look anything up, or change anything. Origin and certainty are what agents
+look anything up (it recommends checks; it never runs a search outside
+Grafeno), give a probability, or change anything. Origin and certainty are what agents
 stated; conflicts are those recorded under constraints or with
 `contradicts`, so two facts that clash with neither to say so are not
 found, and facts from different sources are not taken for contradictions; a topic is matched by

@@ -2436,3 +2436,48 @@ fn a_route_follows_relations_in_order() {
     );
     assert!(failure(&empty).contains("step"));
 }
+
+#[test]
+fn reflection_finds_what_an_expected_shape_lacks() {
+    let server = server();
+    let decision = remembered(
+        &server,
+        json!({ "text": "Invoice files are kept for a year", "labels": ["Decision"] }),
+    );
+    let claim = remembered(
+        &server,
+        json!({ "text": "Invoice totals are rounded per line" }),
+    );
+    structured(&call(
+        &server,
+        "update",
+        json!({ "id": claim, "props": { "origin": "stated" } }),
+    ));
+    let reflection = call(
+        &server,
+        "palace_reflect",
+        json!({ "topic": "invoice",
+                "expected": { "Decision": { "relations": ["supported_by"], "properties": ["reason"] } } }),
+    );
+    let reflection = structured(&reflection).clone();
+    let gap = reflection["gaps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["id"] == decision.as_str())
+        .unwrap_or_else(|| panic!("no gap for the decision: {reflection}"))
+        .clone();
+    assert!(gap["why"].as_str().unwrap().contains("reason"));
+    assert_eq!(
+        reflection["unsupported"][0]["id"],
+        claim.as_str(),
+        "{reflection}"
+    );
+    assert!(reflection["known"]["by_evidence"].is_object());
+    let bad = call(
+        &server,
+        "palace_reflect",
+        json!({ "topic": "invoice", "expected": { "Decision": { "edges": [] } } }),
+    );
+    failure(&bad);
+}
