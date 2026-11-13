@@ -107,6 +107,10 @@ Filename: "{sys}\icacls.exe"; Parameters: """{code:InstalledDataDir}"" /grant:r 
 Filename: "{sys}\icacls.exe"; Parameters: """{code:InstalledDataDir}"" /inheritance:r"; Flags: runhidden waituntilterminated
 ; The virtual account may use Grafeno's folders, and nothing else.
 Filename: "{sys}\icacls.exe"; Parameters: """{#SettingsDir}"" /grant ""NT SERVICE\Grafeno:(OI)(CI)M"""; Flags: runhidden waituntilterminated; Tasks: service; Check: VirtualAccount
+; The settings file inherits nothing (grafeno config init makes it private
+; to SYSTEM, the administrators and its maker): the service's account is
+; named on it too, or the service could not read its settings.
+Filename: "{sys}\icacls.exe"; Parameters: """{#ConfigFile}"" /grant ""NT SERVICE\Grafeno:M"""; Flags: runhidden waituntilterminated; Tasks: service; Check: VirtualAccount
 Filename: "{sys}\icacls.exe"; Parameters: """{code:InstalledDataDir}"" /grant ""NT SERVICE\Grafeno:(OI)(CI)M"""; Flags: runhidden waituntilterminated; Tasks: service; Check: VirtualAccount
 ; Other computers may connect: a firewall rule for the port.
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""Grafeno {code:Port}"" dir=in action=allow protocol=TCP localport={code:Port}"; Flags: runhidden waituntilterminated; StatusMsg: "Opening the port in the firewall..."; Check: OpensFirewall
