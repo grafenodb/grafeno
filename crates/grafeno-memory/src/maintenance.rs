@@ -553,8 +553,226 @@ pub fn write_summary(tx: &mut WriteTx, ns: &str, summary: Summary) -> Result<Nod
         tx.create_edge(ns, NewEdge::new(id, "about", about))?;
     }
     tx.set_importance(ns, id, importance)?;
+    // Which of them this summary archives, so that undoing it brings back
+    // those and not one archived before.
+    let mut archived = Vec::new();
     if summary.archive_sources {
+        for &source in &summary.sources {
+            if tx
+                .node(ns, source)?
+                .is_some_and(|node| !node.has_label(ARCHIVED))
+            {
+                archived.push(source.to_string());
+            }
+        }
         archive(tx, ns, &summary.sources)?;
     }
+    let mut props = grafeno::Props::new();
+    props.insert(ARCHIVED_BY_SUMMARY.into(), serde_json::json!(archived));
+    tx.set_node_props(ns, id, props)?;
     Ok(id)
 }
+
+/// What makes two memories a possible older and newer version of one
+/// thing.
+#[derive(Clone, Debug)]
+pub struct SupersededOptions {
+    /// Labels of the memories compared (Memory, Note, Episode, Fact,
+    /// Decision, Experience, Task).
+    pub memory_labels: Vec<String>,
+    /// The share of words two memories have in common, from 0 to 1, for
+    /// them to be about the same thing in other words. Past
+    /// [`crate::REDUNDANT`] they say the same thing: a repeat, not an
+    /// update.
+    pub min_overlap: f64,
+    /// Memories about one entity compared at most (the newest).
+    pub per_entity: usize,
+    pub limit: usize,
+}
+
+impl Default for SupersededOptions {
+    fn default() -> Self {
+        Self {
+            memory_labels: [
+                "Memory",
+                "Note",
+                "Episode",
+                crate::knowledge::FACT,
+                crate::knowledge::DECISION,
+                crate::knowledge::EXPERIENCE,
+                crate::knowledge::TASK,
+            ]
+            .iter()
+            .map(|label| label.to_string())
+            .collect(),
+            min_overlap: 0.4,
+            per_entity: 50,
+            limit: 20,
+        }
+    }
+}
+
+/// An older memory that a newer one, about the same entity and in many of
+/// the same words, may have overtaken.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct Superseded {
+    pub older: Node,
+    pub newer: Node,
+    /// What both are about.
+    pub about: Vec<Node>,
+    /// The share of their words in common.
+    pub overlap: f64,
+}
+
+fn words_of(text: &str) -> HashSet<String> {
+    grafeno::normalize_name(text)
+        .split(' ')
+        .filter(|word| word.len() > 1)
+        .map(str::to_owned)
+        .collect()
+}
+
+/// Pairs of memories where a newer one may say what an older one said, as
+/// it is now: both linked to the same entity, with many words in common
+/// but not the same text. Listed for an agent to judge, most alike first;
+/// nothing is archived or changed.
+pub fn superseded(read: &ReadTx, ns: &str, options: &SupersededOptions) -> Result<Vec<Superseded>> {
+    let is_memory = |node: &Node| {
+        options
+            .memory_labels
+            .iter()
+            .any(|label| node.has_label(label))
+            && !node.has_label(ARCHIVED)
+            && !crate::palace::is_structure(node)
+    };
+    // The memories about each entity.
+    let mut about: HashMap<NodeId, Vec<Node>> = HashMap::new();
+    let mut entities: HashMap<NodeId, Node> = HashMap::new();
+    let mut seen = HashSet::new();
+    for label in &options.memory_labels {
+        for node in read.nodes_page(ns, Some(label), None, usize::MAX)? {
+            if !is_memory(&node) || !seen.insert(node.id) {
+                continue;
+            }
+            for (_, other) in read.neighbor_ids(ns, node.id, Direction::Both, &EdgeFilter::any())? {
+                let Some(entity) = read.node(ns, other)? else {
+                    continue;
+                };
+                if is_memory(&entity)
+                    || entity.has_label(ARCHIVED)
+                    || crate::palace::is_structure(&entity)
+                    || entity.has_label(crate::communities::COMMUNITY)
+                {
+                    continue;
+                }
+                about.entry(entity.id).or_default().push(node.clone());
+                entities.entry(entity.id).or_insert(entity);
+            }
+        }
+    }
+    let mut texts: HashMap<NodeId, HashSet<String>> = HashMap::new();
+    let mut pairs: HashMap<(NodeId, NodeId), Superseded> = HashMap::new();
+    for (entity, mut memories) in about {
+        memories.sort_by_key(|node| std::cmp::Reverse((node.created_at, node.id)));
+        memories.truncate(options.per_entity);
+        for node in &memories {
+            if let std::collections::hash_map::Entry::Vacant(slot) = texts.entry(node.id) {
+                slot.insert(words_of(&read.text(ns, node.id)?.unwrap_or_default()));
+            }
+        }
+        for (i, newer) in memories.iter().enumerate() {
+            for older in &memories[i + 1..] {
+                if older.created_at >= newer.created_at {
+                    continue;
+                }
+                let (a, b) = (&texts[&newer.id], &texts[&older.id]);
+                if a.is_empty() || b.is_empty() {
+                    continue;
+                }
+                let common = a.intersection(b).count();
+                let overlap = common as f64 / (a.len() + b.len() - common) as f64;
+                if overlap < options.min_overlap || overlap >= crate::context::REDUNDANT {
+                    continue;
+                }
+                let pair = pairs
+                    .entry((older.id, newer.id))
+                    .or_insert_with(|| Superseded {
+                        older: older.clone(),
+                        newer: newer.clone(),
+                        about: Vec::new(),
+                        overlap,
+                    });
+                pair.about.push(entities[&entity].clone());
+            }
+        }
+    }
+    let mut out: Vec<Superseded> = pairs.into_values().collect();
+    for pair in &mut out {
+        pair.about.sort_by_key(|node| node.id);
+    }
+    out.sort_by(|a, b| {
+        b.overlap
+            .total_cmp(&a.overlap)
+            .then(b.newer.created_at.cmp(&a.newer.created_at))
+            .then(a.older.id.cmp(&b.older.id))
+    });
+    out.truncate(options.limit);
+    Ok(out)
+}
+
+/// What undoing a summary did.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct UndoneSummary {
+    /// The memories it had archived, out of the archive again.
+    pub restored: Vec<NodeId>,
+    /// Those it summarized that were archived before it, and stay so.
+    pub kept_archived: Vec<NodeId>,
+}
+
+/// Undoes [`write_summary`]: the summary is deleted, and the memories it
+/// archived come back. Memories archived before the summary stay archived.
+pub fn undo_summary(tx: &mut WriteTx, ns: &str, summary: NodeId) -> Result<UndoneSummary> {
+    let node = tx
+        .node(ns, summary)?
+        .ok_or(grafeno::Error::NodeNotFound(summary))?;
+    let archived: Vec<NodeId> = node
+        .prop(ARCHIVED_BY_SUMMARY)
+        .and_then(Value::as_array)
+        .map(|ids| {
+            ids.iter()
+                .filter_map(Value::as_str)
+                .filter_map(|id| id.parse::<uuid::Uuid>().ok())
+                .map(NodeId::from)
+                .collect()
+        })
+        .unwrap_or_default();
+    if node.prop(ARCHIVED_BY_SUMMARY).is_none() {
+        return Err(grafeno::Error::Invalid(format!(
+            "{summary} is not a summary that consolidation wrote"
+        )));
+    }
+    let mut restored = Vec::new();
+    for id in &archived {
+        if let Some(source) = tx.node(ns, *id)?
+            && source.has_label(ARCHIVED)
+        {
+            tx.remove_label(ns, *id, ARCHIVED)?;
+            restored.push(*id);
+        }
+    }
+    let kept_archived = node
+        .sources
+        .iter()
+        .copied()
+        .filter(|id| !archived.contains(id))
+        .collect();
+    tx.delete_node(ns, summary)?;
+    Ok(UndoneSummary {
+        restored,
+        kept_archived,
+    })
+}
+
+/// On a summary: the memories its writing archived (and undoing it brings
+/// back).
+pub const ARCHIVED_BY_SUMMARY: &str = "archived_sources";

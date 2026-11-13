@@ -652,7 +652,7 @@ another group's file. See [docs/cluster-runbooks.md](../../docs/cluster-runbooks
 | `context`  | Relevant memories and facts as compact text within a token budget, after the community summaries that match. |
 | `relate`   | Records a fact (edge) between two nodes, with optional valid dates; says which facts it contradicted under a constraint (and ended). |
 | `update`   | Replaces a node's text, renames it, merges properties (a `null` is stored), removes properties by name (`remove_props`), changes labels or importance. |
-| `forget`   | Invalidates (default), retracts or deletes a fact; deletes a node.            |
+| `forget`   | Invalidates (default), retracts or deletes a fact; deletes a node; deletes a palace, room or locus with what is under it, never a memory. `dry_run` says what would go. |
 | `get_node` | A node with its text, properties and connecting facts.                        |
 | `query`    | A read-only [GQ](../../docs/query-language.md) statement; at most 200 rows.   |
 | `merge`    | Folds a duplicate node into another one; refused when they disagree unless `force`. Returns a `merge_id`. |
@@ -661,8 +661,8 @@ another group's file. See [docs/cluster-runbooks.md](../../docs/cluster-runbooks
 | `extract`  | Reads new and changed memories and links what they mention (names, emails, URLs, handles, hashtags, dates, amounts, recurring new names). |
 | `add_mentions` | The entities a memory mentions, and the relations between them, from the agent's own reading: entities linked, created or queued; relations stored as facts with the memory as source, `inferred` unless said `stated`. |
 | `review` / `resolve_review` | What extraction could not decide, and settling it (link, create, dismiss). |
-| `maintain` | The namespace's size, its vector graphs' wear and contradictions on record (with `check: true`, an integrity check too); likely duplicates, weak memories and groups ready to consolidate. |
-| `consolidate` | Stores a summary of several memories and archives them.                     |
+| `maintain` | The namespace's size, its vector graphs' wear and contradictions on record (with `check: true`, an integrity check too); likely duplicates, weak memories, groups ready to consolidate, and older memories a newer one may overtake. |
+| `consolidate` | Stores a summary of several memories and archives them; `undo` deletes a summary and brings them back. |
 | `overview` | For broad questions: community summaries that match a topic, or the top ones; with `id`, a community's parts and members. |
 | `summarize_communities` | Finds the communities (and communities of communities) and writes or refreshes their summaries. |
 | `set_summary` | Replaces a community summary's text with the agent's own (or undoes it). |
@@ -677,6 +677,7 @@ another group's file. See [docs/cluster-runbooks.md](../../docs/cluster-runbooks
 | `palace_anchor` | Puts an existing memory at a locus of a room, without copying or changing it; with `remove`, takes the anchor away. |
 | `palace_map` | The palaces with their rooms, loci and counts; with `room`, the memories at each locus. |
 | `palace_walk` | From a topic or a node to the memories around it: the rooms that match, what is anchored there, the rooms their doors lead to (a `leads_to` fact between rooms), and what the graph's relations lead to from those. By distance or by relevance; with `budget`, also as text with the facts joining them. |
+| `palace_review` | Proposals to arrange a palace better (split, merge, move, empty places, rooms for unplaced communities), each with its reason; nothing applied. |
 | `palace_enter` | A room's context for the start of a session: its memories and facts as text within a token budget, and the latest checkpoint about the room. |
 
 The `palace_*` tools arrange memories that already exist into places and

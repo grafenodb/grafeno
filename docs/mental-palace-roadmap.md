@@ -488,7 +488,6 @@ None of this is part of the stages above.
 
 - Routes: ordered paths between loci and between rooms, and walking one.
 - Doors: links between rooms of different palaces.
-- Deleting a room or a palace with what is under it, in one call.
 - Suggested placement: proposing a room for a new memory, for the agent
   to accept or not.
 - Rooms proposed from community summaries.

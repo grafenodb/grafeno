@@ -56,14 +56,15 @@ pub use documents::{
 pub use knowledge::{Assessment, CERTAINTY, KINDS, ORIGIN, Origin, Record, verify};
 pub use maintenance::{
     ConsolidationGroup, ConsolidationOptions, DISTINCT_FROM, DecayOptions, Duplicate,
-    DuplicateOptions, Summary, WeakMemory, archive, consolidation_groups, find_duplicates,
-    weak_memories, write_summary,
+    DuplicateOptions, Summary, Superseded, SupersededOptions, UndoneSummary, WeakMemory, archive,
+    consolidation_groups, find_duplicates, superseded, undo_summary, weak_memories, write_summary,
 };
 pub use palace::{
     ANCHORED_AT, Anchored, AnchoredMemory, Created, DOOR, Door, EnterOptions, Entered, Hop, LOCUS,
-    LocusMap, MapOptions, NewRoom, PALACE, PalaceMap, Place, ROOM, Reached, RoomMap, Walk,
-    WalkOrder, WalkPlace, WalkQuery, anchor, anchors_of, create_locus, create_palace, create_room,
-    enter, find_locus, find_palace, find_room, map_palace, map_room, palaces, unanchor, walk,
+    LocusMap, MapOptions, NewRoom, PALACE, PalaceMap, Place, Proposal, ROOM, Reached, Removal,
+    Review, ReviewOptions, RoomMap, Walk, WalkOrder, WalkPlace, WalkQuery, anchor, anchors_of,
+    create_locus, create_palace, create_room, enter, find_locus, find_palace, find_room,
+    map_palace, map_room, palaces, remove, review, unanchor, walk,
 };
 pub use recall::{ARCHIVED, Expansion, Ranking, RecallQuery, Recalled, Signal, recall};
 pub use reconcile::{

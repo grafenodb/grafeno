@@ -353,6 +353,7 @@ impl McpServer {
             "palace_map" => self.palace_map(arguments),
             "palace_walk" => self.palace_walk(arguments),
             "palace_enter" => self.palace_enter(arguments),
+            "palace_review" => self.palace_review(arguments),
             _ => return Err((-32602, format!("unknown tool: {name}"))),
         };
         Ok(match outcome {
@@ -746,6 +747,8 @@ impl McpServer {
             #[serde(default)]
             at: Option<TimeInput>,
             #[serde(default)]
+            dry_run: bool,
+            #[serde(default)]
             namespace: Option<String>,
         }
         let args: Args = parse_args(arguments)?;
@@ -753,7 +756,57 @@ impl McpServer {
         let id = parse_id(&args.id).map_err(describe)?;
         let edge_id = grafeno::EdgeId::from_u128(id.as_u128());
         let read = self.db.begin_read().map_err(describe)?;
-        let is_node = read.node(ns, id).map_err(describe)?.is_some();
+        let node = read.node(ns, id).map_err(describe)?;
+        // A palace, a room or a locus goes with what is under it, and never
+        // with a memory: removing a room no longer leaves its loci behind.
+        if let Some(node) = node
+            .as_ref()
+            .filter(|n| grafeno_memory::palace::is_structure(n))
+        {
+            if args.mode.as_deref().is_some_and(|mode| mode != "delete") {
+                return Err(
+                    "a palace, a room or a locus can only be forgotten with mode \"delete\"".into(),
+                );
+            }
+            let name = node.display_name();
+            drop(read);
+            let removal = self
+                .write(|tx| grafeno_memory::remove(tx, ns, id, args.dry_run))
+                .map_err(describe)?;
+            return Ok(ToolOutput::Json(json!({
+                "id": id,
+                "name": name,
+                "result": if removal.done {
+                    "deleted with what was under it; no memory was deleted"
+                } else {
+                    "nothing deleted (dry_run): this is what would go; no memory would"
+                },
+                "palaces": removal.palaces,
+                "rooms": removal.rooms,
+                "loci": removal.loci,
+                "anchors": removal.anchors,
+                "left_in_no_place": removal.unplaced,
+            })));
+        }
+        if args.dry_run {
+            let facts = match &node {
+                Some(_) => read
+                    .neighbor_ids(ns, id, Direction::Both, &EdgeFilter::any())
+                    .map_err(describe)?
+                    .len(),
+                None => 0,
+            };
+            return Ok(ToolOutput::Json(json!({
+                "id": id,
+                "result": if node.is_some() {
+                    "nothing deleted (dry_run): the node and its facts would go"
+                } else {
+                    "nothing changed (dry_run)"
+                },
+                "facts": facts,
+            })));
+        }
+        let is_node = node.is_some();
         let is_edge = read.edge(ns, edge_id).map_err(describe)?.is_some();
         drop(read);
         let mode = args.mode.as_deref();
@@ -1466,7 +1519,37 @@ impl McpServer {
             });
         }
 
+        // Older memories a newer one may have overtaken: for the agent to
+        // judge, with feedback "obsolete" or a summary.
+        let superseded = grafeno_memory::superseded(
+            &read,
+            ns,
+            &grafeno_memory::SupersededOptions {
+                limit,
+                ..Default::default()
+            },
+        )
+        .map_err(describe)?;
+        let superseded: Vec<Value> = superseded
+            .iter()
+            .map(|pair| {
+                let text = |node: &Node| {
+                    read.text(ns, node.id)
+                        .ok()
+                        .flatten()
+                        .map(|text| snippet(&text))
+                        .unwrap_or_default()
+                };
+                json!({
+                    "older": { "id": pair.older.id, "text": text(&pair.older), "at": pair.older.created_at.date() },
+                    "newer": { "id": pair.newer.id, "text": text(&pair.newer), "at": pair.newer.created_at.date() },
+                    "about": pair.about.iter().map(&brief).collect::<Vec<_>>(),
+                    "overlap": round2(pair.overlap as f32),
+                })
+            })
+            .collect();
         Ok(ToolOutput::Json(json!({
+            "superseded": superseded,
             "health": health,
             "duplicates": duplicates,
             "weak": weak,
@@ -1474,7 +1557,8 @@ impl McpServer {
             "hint": "Merge true duplicates with `merge`; relate different ones with \
                 distinct_from. Summarize each consolidation group with `consolidate`. Weak \
                 memories can be left alone, made more important with `update`, or deleted \
-                with `forget`.",
+                with `forget`. A superseded older memory, if the newer one replaces it, is \
+                archived with `feedback` \"obsolete\".",
         })))
     }
 
@@ -1485,8 +1569,12 @@ impl McpServer {
         #[derive(Deserialize)]
         #[serde(deny_unknown_fields)]
         struct Args {
-            summary: String,
+            #[serde(default)]
+            summary: Option<String>,
+            #[serde(default)]
             sources: Vec<String>,
+            #[serde(default)]
+            undo: Option<String>,
             #[serde(default)]
             about: Option<String>,
             #[serde(default)]
@@ -1500,11 +1588,31 @@ impl McpServer {
         }
         let args: Args = parse_args(arguments)?;
         let ns = self.ns(&args.namespace);
+        if let Some(undo) = &args.undo {
+            if args.summary.is_some() || !args.sources.is_empty() {
+                return Err("`undo` goes alone: the id of the summary to undo".into());
+            }
+            let summary = parse_id(undo).map_err(describe)?;
+            let undone = self
+                .write(|tx| grafeno_memory::undo_summary(tx, ns, summary))
+                .map_err(describe)?;
+            return Ok(ToolOutput::Json(json!({
+                "undone": summary,
+                "restored": undone.restored,
+                "kept_archived": undone.kept_archived,
+                "result": "the summary is deleted and the memories it archived are back in recall",
+            })));
+        }
+        let Some(text) = args.summary else {
+            return Err(
+                "`summary` is the text of the summary (or `undo` a summary by its id)".into(),
+            );
+        };
         if args.sources.is_empty() {
             return Err("`sources` must name the memories being summarized".into());
         }
         let summary = Summary {
-            text: args.summary,
+            text,
             name: args.name,
             sources: parse_ids(&args.sources)?,
             about: args
@@ -2293,6 +2401,56 @@ impl McpServer {
         Ok(ToolOutput::Json(output))
     }
 
+    fn palace_review(&self, arguments: Value) -> ToolResult {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Args {
+            palace: String,
+            #[serde(default)]
+            crowded: Option<usize>,
+            #[serde(default)]
+            namespace: Option<String>,
+        }
+        let args: Args = parse_args(arguments)?;
+        let ns = self.ns(&args.namespace);
+        let read = self.db.begin_read().map_err(describe)?;
+        let palace = self.palace_ref(&read, ns, &args.palace)?;
+        let mut options = grafeno_memory::ReviewOptions::default();
+        if let Some(crowded) = args.crowded {
+            options.crowded = crowded.max(1);
+        }
+        let review = grafeno_memory::review(&read, ns, palace, &options).map_err(describe)?;
+        use grafeno_memory::Proposal;
+        // Each proposal with the call that would carry it out.
+        let proposals: Vec<Value> = review
+            .proposals
+            .iter()
+            .map(|proposal| {
+                let mut value = serde_json::to_value(proposal).unwrap_or_default();
+                value["how"] = json!(match proposal {
+                    Proposal::SplitRoom { .. } => "palace_create_room for each part, then palace_anchor the memories there (and remove: true here)",
+                    Proposal::EmptyLocus { .. } | Proposal::EmptyRoom { .. } => "forget it (dry_run: true first), or leave it for later",
+                    Proposal::MoveMemory { .. } => "palace_anchor it in to_room, and remove: true from where it is",
+                    Proposal::MergeRooms { .. } => "palace_anchor the second room's memories in the first, then forget the second",
+                    Proposal::NewRoom { .. } => "palace_create_room, then palace_anchor its memories",
+                });
+                value
+            })
+            .collect();
+        let mut output = json!({
+            "palace": { "id": palace, "name": name_of(&read, ns, palace) },
+            "proposals": proposals,
+            "applied": "nothing: a review only proposes",
+        });
+        if !review.communities {
+            output["hint"] = json!(
+                "No community summaries yet: proposals that depend on them (moves, splits by \
+                 community, rooms for unplaced communities) need `summarize_communities` first."
+            );
+        }
+        Ok(ToolOutput::Json(output))
+    }
+
     fn palace_enter(&self, arguments: Value) -> ToolResult {
         #[derive(Deserialize)]
         #[serde(deny_unknown_fields)]
@@ -2617,13 +2775,16 @@ fn tools() -> Value {
             "title": "Forget",
             "description": "Forget a node or a fact. For facts, mode \"invalidate\" (default) means it \
                 stopped being true at `at` (default now) and keeps its history; \"retract\" means it was \
-                a mistake; \"delete\" erases it. Nodes are always deleted with their facts.",
+                a mistake; \"delete\" erases it. Nodes are always deleted with their facts. A palace, \
+                a room or a locus is deleted with what is under it (rooms, loci, anchors), never a \
+                memory. `dry_run` says what would go and changes nothing.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "id": id("Id of the node or fact."),
                     "mode": { "type": "string", "enum": ["invalidate", "retract", "delete"] },
                     "at": date,
+                    "dry_run": { "type": "boolean", "description": "Say what would be deleted, and change nothing. Default: false." },
                     "namespace": namespace
                 },
                 "required": ["id"]
@@ -2880,7 +3041,8 @@ fn tools() -> Value {
             "title": "Consolidate",
             "description": "Replace several memories with one summary you wrote. The summary links \
                 to its sources and to the entity it is about, and the sources are archived (kept, \
-                but left out of recall).",
+                but left out of recall). `undo` with a summary's id deletes it and brings back the \
+                memories it archived.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -2890,9 +3052,9 @@ fn tools() -> Value {
                     "name": { "type": "string", "description": "Optional name for the summary." },
                     "embedding": { "type": "array", "items": { "type": "number" }, "description": "Optional embedding of the summary." },
                     "archive_sources": { "type": "boolean", "description": "Archive the sources. Default: true." },
+                    "undo": id("Instead: the id of a summary to undo."),
                     "namespace": namespace
-                },
-                "required": ["summary", "sources"]
+                }
             }
         },
         {
@@ -3122,6 +3284,24 @@ fn tools() -> Value {
                     "namespace": namespace
                 },
                 "required": ["room"]
+            }
+        },
+        {
+            "name": "palace_review",
+            "title": "Review a palace",
+            "description": "Proposals to arrange a palace better, each with its reason and the \
+                call that carries it out; nothing is applied. Rooms too full for one context, \
+                empty rooms and loci, memories whose community lives mostly in another room, \
+                rooms that hold mostly the same memories, and communities of memories with no \
+                room (these need `summarize_communities` first).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "palace": { "type": "string", "description": "The palace: its name or its id." },
+                    "crowded": { "type": "integer", "minimum": 1, "description": "A room with more memories than this is proposed for splitting. Default: 60." },
+                    "namespace": namespace
+                },
+                "required": ["palace"]
             }
         }
     ])

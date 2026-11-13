@@ -1,6 +1,6 @@
 # Grafeno Cognitive Memory: implementation plan
 
-**Status:** phases 0 (this audit), 1, 2 and 3 are done. Phases 4 to 6
+**Status:** phases 0 (this audit) and 1 to 4 are done. Phases 5 and 6
 are planned.
 
 The aim is for Grafeno to be the persistent memory and knowledge of any
@@ -109,7 +109,7 @@ whole of it is green.
 | 1. Structural palace | Everything | — | — |
 | 2. Cognitive memory | Everything, since phase 2 | — | — |
 | 3. Retrieval | Everything, since phase 3 | — | — |
-| 4. Consolidation | Duplicates, contradictions under constraints, valid time, history, merges with undo, consolidation, archiving, feedback | Obsolete memories (weak ones, by use; not by age or by being superseded) | Proposals to reorganize a palace |
+| 4. Consolidation | Everything, since phase 4 | — | — |
 | 5. Several agents | A server that owns the file, accounts, keys, roles, rights down to records, who recorded, audit, concurrency | Shared and private palaces (namespaces and grants do it; nothing says so or tests it) | MCP through the server; palaces, checkpoints, timelines and feedback over HTTP |
 | 6. Metacognition | `maintain`, `contradictions`, `timeline`, `overview`, `get_node` | What is known of a topic (recall answers it without saying what is thin) | Gaps, staleness, what to verify, the limits of an answer |
 
@@ -267,7 +267,29 @@ Acceptance:
 - The example prints latency and tokens; the numbers go in
   `docs/benchmarks.md` with how they were taken.
 
-## Phase 4: consolidation and evolution
+## Phase 4: consolidation and evolution (done)
+
+Built as proposed below; what it does is in
+[../mental-palace.md](../mental-palace.md#review-removal-and-undoing).
+Tests: `crates/grafeno-memory/tests/palace_evolution.rs` (six, the
+acceptance among them) and
+`palaces_are_reviewed_rooms_removed_and_consolidations_undone` in
+`crates/grafeno-server/tests/mcp.rs`. Decided on the way:
+
+- Removing downwards is `forget` on a palace, a room or a locus, with
+  `dry_run`, and no tool of its own. Before, `forget` on a room left its
+  loci behind; now it takes them.
+- A summary records which memories it archived (`archived_sources`), so
+  that `consolidate` with `undo` brings back those and not one archived
+  before it. Summaries written before this phase cannot be undone this
+  way.
+- A merge was already recorded and undone (`undo_merge`); a
+  consolidation's summary appears in its sources' timelines as a
+  `summarizes` fact, with who recorded it.
+- Superseded memories are told by shared entities and shared words, with
+  no model: a newer memory that only says the opposite in other words is
+  not found.
+
 
 | Asked | Today |
 | --- | --- |

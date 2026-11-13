@@ -107,7 +107,7 @@ that already used `Palace`, `Room`, `Locus`, `has_room`, `has_locus` or
 
 ## Tools
 
-The MCP server (`grafeno mcp`) has six tools for palaces. Each takes the
+The MCP server (`grafeno mcp`) has seven tools for palaces. Each takes the
 optional `namespace` every tool takes. Where a palace or a room is asked
 for, its name or its id will do.
 
@@ -119,8 +119,9 @@ for, its name or its id will do.
 | `palace_map` | no | With no arguments, every palace with its rooms, loci and counts. With `palace`, that palace. With `room`, that room and the memories at each locus. |
 | `palace_walk` | no | From a `topic` or a node (`from`): the rooms and loci that match, the memories anchored there, the anchored memories that match, the rooms their doors lead to, and what the graph's relations lead to from those, up to `hops` (2 by default, 3 at most). `order`: `distance` (default) or `relevance`; `budget`: also the memories reached and the facts joining them as text within that many tokens. |
 | `palace_enter` | no | A room's context for the start of a session: its loci, its memories (strongest first) and the facts that connect them as text within a token `budget`, and the latest checkpoint about the room. |
+| `palace_review` | no | Proposals to arrange a palace better, each with its reason and the call that carries it out; nothing applied (see [below](#review-removal-and-undoing)). |
 
-A read-only server (`--read-only`) offers only the three that read.
+A read-only server (`--read-only`) offers only the four that read.
 An agent fenced to some namespaces (`--allow`) reaches palaces in those
 only.
 
@@ -130,7 +131,7 @@ What these tools do not do, because a tool already does:
 | --- | --- |
 | Save where the work in a room stands | `checkpoint` with `about` set to the room's id |
 | Rename or describe a palace, room or locus | `update` |
-| Delete one | `forget` (see [Known limits](#known-limits)) |
+| Delete one, with what is under it | `forget` (`dry_run: true` first) |
 | Search every memory, anchored or not | `recall`, `context` |
 | See a memory with its relations | `get_node` |
 
@@ -313,13 +314,40 @@ Added in phase 3 of the [plan](mental-palace/IMPLEMENTATION_PLAN.md).
   memory whose words are nearly those of one already packed (85 % in
   common), and say how many they left out.
 
+## Review, removal and undoing
+
+Added in phase 4 of the [plan](mental-palace/IMPLEMENTATION_PLAN.md).
+
+- **`palace_review`** (reads only) proposes how to arrange a palace, each
+  proposal with its reason and the call that carries it out, and applies
+  nothing:
+
+  | Proposal | When |
+  | --- | --- |
+  | `split_room` | A room holds more memories than `crowded` (60): one context cannot carry it. The largest communities among them say how to split it. |
+  | `empty_room`, `empty_locus` | Nothing anchored there (the entrance is not counted as an empty locus). |
+  | `move_memory` | A memory's community lives mostly (two thirds) in another room. |
+  | `merge_rooms` | Two rooms share half of their memories or more. |
+  | `new_room` | A community of four memories or more has none in the palace. |
+
+  What depends on communities needs community summaries
+  (`summarize_communities`); without them the review says so and proposes
+  the rest.
+- **`forget` on a palace, a room or a locus** deletes it with what is under
+  it: a palace's rooms, a room's loci, and the anchors at them. No memory
+  is deleted; the answer lists those left in no place. `dry_run: true`
+  says what would go and changes nothing.
+- **Superseded memories.** `maintain` lists pairs of memories about the
+  same entity where a newer one shares many of the older one's words (40 %
+  to 85 % of them: past that it is a repeat): the newer may say what the
+  older said, as it is now. Nothing is changed; `feedback` `obsolete`
+  archives the older one when it is.
+- **Undoing a consolidation.** `consolidate` with `undo` and a summary's
+  id deletes the summary and brings back the memories it archived; those
+  archived before it stay archived.
+
 ## Known limits
 
-- **Deleting is not recursive.** `forget` on a room deletes the room and
-  its edges and leaves its loci without a room; on a palace, it leaves
-  the rooms without a palace. The memories are never touched, and
-  `palace_anchor` reports such places with no room or palace. To delete
-  a room cleanly, forget its loci first.
 - **A walk is about what is in a palace.** A memory that matches the
   topic and is anchored nowhere is not returned; `recall` is for that. A
   walk with no result says so.
@@ -376,7 +404,7 @@ cargo test --workspace
 | `crates/grafeno-memory/tests/palace.rs` | Creating and finding; one of each when created twice; anchoring at several loci with the memory unchanged; namespaces; a file closed and opened again. |
 | `crates/grafeno-memory/tests/palace_isolation.rs` | Recall, context, duplicates, weak memories, consolidation, communities and extraction answer the same with a palace as without. |
 | `crates/grafeno-memory/tests/palace_walk.rs` | Maps; walks by topic, from a node, through relations, inside one palace, with a hop limit; entering a room, within a budget, after a restart, with its checkpoint. |
-| `crates/grafeno-server/tests/mcp.rs` | The six tools end to end beside the existing ones; bad input; namespaces and the agent's fence; a read-only server on a file another server wrote. |
+| `crates/grafeno-server/tests/mcp.rs` | The palace tools end to end beside the existing ones; bad input; namespaces and the agent's fence; a read-only server on a file another server wrote. |
 | `crates/grafeno-server/tests/http.rs` | A palace read through the subgraph and query routes. |
 
 ## Planned
@@ -384,7 +412,6 @@ cargo test --workspace
 None of this exists yet.
 
 - Routes: ordered paths between loci and between rooms, and walking one.
-- Deleting a room or a palace with what is under it, in one call.
 - Suggested placement: proposing a room for a new memory, for the agent
   to accept or not.
 - Rooms proposed from community summaries.

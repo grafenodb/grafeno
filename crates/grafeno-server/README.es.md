@@ -672,7 +672,7 @@ herramientas:
 | `context`  | Recuerdos y hechos relevantes como texto compacto dentro de un presupuesto de tokens, después de los resúmenes de comunidades que coinciden. |
 | `relate`   | Registra un hecho (arista) entre dos nodos, con fechas de validez opcionales; indica qué hechos contradijo bajo una restricción (y terminó). |
 | `update`   | Reemplaza el texto de un nodo, lo renombra, combina propiedades (un `null` se guarda), quita propiedades por nombre (`remove_props`), cambia etiquetas o importancia. |
-| `forget`   | Invalida (por defecto), retracta o elimina un hecho; elimina un nodo.         |
+| `forget`   | Invalida (por defecto), retracta o elimina un hecho; elimina un nodo; elimina un palacio, sala o locus con lo que hay debajo, nunca un recuerdo. `dry_run` dice qué se iría. |
 | `get_node` | Un nodo con su texto, propiedades y los hechos que lo conectan.               |
 | `query`    | Una sentencia [GQ](../../docs/query-language.md) de solo lectura; 200 filas como máximo. |
 | `merge`    | Fusiona un nodo duplicado en otro; se rechaza cuando discrepan salvo con `force`. Devuelve un `merge_id`. |
@@ -681,8 +681,8 @@ herramientas:
 | `extract`  | Lee los recuerdos nuevos y modificados y enlaza lo que mencionan (nombres, correos, URLs, usuarios, hashtags, fechas, montos, nombres nuevos recurrentes). |
 | `add_mentions` | Las entidades que menciona un recuerdo, y las relaciones entre ellas, según la lectura del propio agente: entidades enlazadas, creadas o en cola; relaciones guardadas como hechos con el recuerdo como fuente, `inferred` salvo que se diga `stated`. |
 | `review` / `resolve_review` | Lo que la extracción no pudo decidir, y resolverlo (enlazar, crear, descartar). |
-| `maintain` | El tamaño del namespace, el desgaste de sus grafos vectoriales y las contradicciones registradas (con `check: true`, también una revisión de integridad); los posibles duplicados, los recuerdos débiles y los grupos listos para consolidar. |
-| `consolidate` | Guarda un resumen de varios recuerdos y los archiva.                        |
+| `maintain` | El tamaño del namespace, el desgaste de sus grafos vectoriales y las contradicciones registradas (con `check: true`, también una revisión de integridad); los posibles duplicados, los recuerdos débiles, los grupos listos para consolidar y los recuerdos antiguos que uno más nuevo puede haber superado. |
+| `consolidate` | Guarda un resumen de varios recuerdos y los archiva; `undo` borra un resumen y los recupera. |
 | `overview` | Para preguntas amplias: los resúmenes de comunidades que coinciden con un tema, o los principales; con `id`, las partes y miembros de una comunidad. |
 | `summarize_communities` | Encuentra las comunidades (y comunidades de comunidades) y escribe o actualiza sus resúmenes. |
 | `set_summary` | Reemplaza el texto de un resumen de comunidad por el del propio agente (o lo deshace). |
@@ -697,6 +697,7 @@ herramientas:
 | `palace_anchor` | Pone un recuerdo que ya existe en un locus de una sala, sin copiarlo ni cambiarlo; con `remove`, quita el ancla. |
 | `palace_map` | Los palacios con sus salas, loci y cuentas; con `room`, los recuerdos de cada locus. |
 | `palace_walk` | De un tema o un nodo a los recuerdos que lo rodean: las salas que coinciden, lo anclado en ellas, las salas a las que llevan sus puertas (un hecho `leads_to` entre salas) y a dónde llevan desde ahí las relaciones del grafo. Por distancia o por relevancia; con `budget`, también como texto con los hechos que los unen. |
+| `palace_review` | Propuestas para ordenar mejor un palacio (dividir, fusionar, mover, lugares vacíos, salas para comunidades sin lugar), cada una con su motivo; no aplica nada. |
 | `palace_enter` | El contexto de una sala para empezar una sesión: sus recuerdos y hechos como texto dentro de un presupuesto de tokens, y el último checkpoint sobre la sala. |
 
 Las herramientas `palace_*` ordenan en lugares recuerdos que ya existen y

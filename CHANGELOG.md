@@ -13,6 +13,17 @@ version (now 18) is upgraded in place, with a copy kept first.
 
 ## Unreleased
 
+- **Added**: phase 4 of the Mental Palace plan. `palace_review` proposes
+  how to arrange a palace (split a crowded room, merge rooms that hold the
+  same, move a memory to the room its community lives in, remove empty
+  places, a room for a community with none) and applies nothing.
+  `maintain` lists older memories a newer one about the same entity may
+  overtake. `consolidate` with `undo` deletes a summary and brings back
+  the memories it archived. In `grafeno-memory`: `review`, `remove`,
+  `superseded`, `undo_summary`.
+- **Changed**: `forget` on a palace, a room or a locus deletes it with
+  what is under it (rooms, loci, anchors), never a memory; before, it left
+  the loci of a room behind. `forget` takes `dry_run`.
 - **Added**: retrieval over palaces (phase 3 of the Mental Palace plan).
   `palace_walk` takes `order` (`distance`, the default, or `relevance`:
   the full-text match of the topic, then distance) and `budget` (the

@@ -1260,3 +1260,369 @@ pub fn enter(read: &ReadTx, ns: &str, room: NodeId, options: &EnterOptions) -> R
         checkpoint,
     })
 }
+
+/// What removing a palace, a room or a locus takes away: never a memory.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct Removal {
+    pub palaces: Vec<NodeId>,
+    pub rooms: Vec<NodeId>,
+    pub loci: Vec<NodeId>,
+    /// Anchors of memories at those loci (the memories stay).
+    pub anchors: usize,
+    /// Memories that were anchored there and nowhere else: they stay, in
+    /// no place.
+    pub unplaced: Vec<NodeId>,
+    /// Whether it was done, or only said.
+    pub done: bool,
+}
+
+/// Removes a palace with its rooms and their loci, a room with its loci, or
+/// a locus, and the anchors at them: the structure under it, and never a
+/// memory. With `dry_run`, only says what it would take.
+pub fn remove(tx: &mut WriteTx, ns: &str, id: NodeId, dry_run: bool) -> Result<Removal> {
+    let node = tx.node(ns, id)?.ok_or(Error::NodeNotFound(id))?;
+    if !is_structure(&node) {
+        return Err(Error::Invalid(format!(
+            "{id} is a memory, not a palace, a room or a locus: nothing under it is removed"
+        )));
+    }
+    let mut removal = Removal::default();
+    if node.has_label(PALACE) {
+        removal.palaces.push(id);
+        for room in children(tx, ns, id, HAS_ROOM, ROOM)? {
+            removal.rooms.push(room.id);
+        }
+    } else if node.has_label(ROOM) {
+        removal.rooms.push(id);
+    } else {
+        removal.loci.push(id);
+    }
+    for room in removal.rooms.clone() {
+        for locus in children(tx, ns, room, HAS_LOCUS, LOCUS)? {
+            removal.loci.push(locus.id);
+        }
+    }
+    let gone: HashSet<NodeId> = removal.loci.iter().copied().collect();
+    let mut memories = HashSet::new();
+    for locus in &removal.loci {
+        for (_, memory) in tx.edges_of(ns, *locus, Direction::In, ANCHORED_AT)? {
+            removal.anchors += 1;
+            memories.insert(memory);
+        }
+    }
+    for memory in memories {
+        let elsewhere = tx
+            .edges_of(ns, memory, Direction::Out, ANCHORED_AT)?
+            .iter()
+            .any(|(_, locus)| !gone.contains(locus));
+        if !elsewhere {
+            removal.unplaced.push(memory);
+        }
+    }
+    removal.unplaced.sort();
+    if dry_run {
+        return Ok(removal);
+    }
+    // Deleting a node deletes its edges: the anchors and doors go with it.
+    for structure in removal
+        .loci
+        .iter()
+        .chain(&removal.rooms)
+        .chain(&removal.palaces)
+    {
+        tx.delete_node(ns, *structure)?;
+    }
+    removal.done = true;
+    Ok(removal)
+}
+
+/// What a review proposes, and why. Nothing is applied.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Proposal {
+    /// A room holds more than one context can carry: split it, by the
+    /// communities its memories belong to.
+    SplitRoom {
+        room: NodeId,
+        name: String,
+        memories: usize,
+        /// The largest communities among its memories: (community, name,
+        /// memories of the room in it).
+        by_community: Vec<(NodeId, String, usize)>,
+    },
+    /// A locus (not the entrance) with nothing at it.
+    EmptyLocus {
+        locus: NodeId,
+        room: String,
+        name: String,
+    },
+    /// A room with nothing in it.
+    EmptyRoom { room: NodeId, name: String },
+    /// A memory whose community lives mostly in another room.
+    MoveMemory {
+        memory: NodeId,
+        name: String,
+        from_room: String,
+        to_room: NodeId,
+        to_name: String,
+        community: String,
+        /// Members of the community in the other room, of those placed.
+        share: f64,
+    },
+    /// Two rooms with most of their memories in common: merge them.
+    MergeRooms {
+        rooms: [NodeId; 2],
+        names: [String; 2],
+        overlap: f64,
+    },
+    /// A community of memories, none of them in the palace: a room for it.
+    NewRoom {
+        community: NodeId,
+        name: String,
+        memories: Vec<NodeId>,
+    },
+}
+
+/// What a review looks at.
+#[derive(Clone, Debug)]
+pub struct ReviewOptions {
+    /// A room with more memories than this is proposed for splitting.
+    pub crowded: usize,
+    /// Two rooms sharing at least this share of their memories are
+    /// proposed for merging.
+    pub overlap: f64,
+    /// A community's members in another room, of those placed, from which
+    /// a memory is proposed to move there.
+    pub elsewhere: f64,
+    /// Communities with no room, of at least this many memories, proposed
+    /// as rooms (the largest first).
+    pub new_room_min: usize,
+    pub new_rooms: usize,
+}
+
+impl Default for ReviewOptions {
+    fn default() -> Self {
+        Self {
+            crowded: 60,
+            overlap: 0.5,
+            elsewhere: 0.66,
+            new_room_min: 4,
+            new_rooms: 5,
+        }
+    }
+}
+
+/// A review of a palace.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct Review {
+    pub palace: NodeId,
+    pub proposals: Vec<Proposal>,
+    /// Whether the namespace has community summaries: without them, what
+    /// depends on communities is not proposed.
+    pub communities: bool,
+}
+
+/// The lowest community a node belongs to.
+fn community_of(read: &ReadTx, ns: &str, id: NodeId) -> Result<Option<Node>> {
+    for (_, other) in read.edges_of(ns, id, Direction::Out, crate::communities::MEMBER_OF)? {
+        if let Some(node) = read.node(ns, other)?
+            && node.has_label(crate::communities::COMMUNITY)
+        {
+            return Ok(Some(node));
+        }
+    }
+    Ok(None)
+}
+
+/// Proposes how a palace could be better arranged, with the reasons, and
+/// changes nothing: rooms too full for one context, empty loci and rooms,
+/// memories whose community lives in another room, rooms that hold mostly
+/// the same memories, and communities of memories with no room. What
+/// depends on communities needs community summaries
+/// ([`crate::refresh_communities`]).
+pub fn review(read: &ReadTx, ns: &str, palace: NodeId, options: &ReviewOptions) -> Result<Review> {
+    expect(read, ns, palace, PALACE)?;
+    let mut proposals = Vec::new();
+    let communities = !read
+        .nodes_with_label(ns, crate::communities::COMMUNITY)?
+        .is_empty();
+    // Each room: its memories, and each memory's community.
+    let mut rooms: Vec<(Node, Vec<NodeId>)> = Vec::new();
+    let mut placed: HashMap<NodeId, Vec<usize>> = HashMap::new();
+    let mut names: HashMap<NodeId, String> = HashMap::new();
+    for room in children(read, ns, palace, HAS_ROOM, ROOM)? {
+        let mut memories: Vec<NodeId> = Vec::new();
+        let mut loci = children(read, ns, room.id, HAS_LOCUS, LOCUS)?;
+        loci.sort_by_key(|node| (position(node), node.id));
+        for locus in &loci {
+            let here = anchored(read, ns, locus.id)?;
+            if here.is_empty() && name_of(locus) != ENTRANCE {
+                proposals.push(Proposal::EmptyLocus {
+                    locus: locus.id,
+                    room: name_of(&room),
+                    name: name_of(locus),
+                });
+            }
+            for (_, memory) in here {
+                if !memories.contains(&memory.id) {
+                    names.insert(memory.id, title(read, ns, &memory)?);
+                    memories.push(memory.id);
+                }
+            }
+        }
+        if memories.is_empty() {
+            proposals.push(Proposal::EmptyRoom {
+                room: room.id,
+                name: name_of(&room),
+            });
+        }
+        let at = rooms.len();
+        for memory in &memories {
+            placed.entry(*memory).or_default().push(at);
+        }
+        rooms.push((room, memories));
+    }
+    let mut community: HashMap<NodeId, Option<Node>> = HashMap::new();
+    if communities {
+        for memory in placed.keys() {
+            community.insert(*memory, community_of(read, ns, *memory)?);
+        }
+    }
+    // Too full.
+    for (room, memories) in &rooms {
+        if memories.len() > options.crowded {
+            let mut counts: HashMap<NodeId, (String, usize)> = HashMap::new();
+            for memory in memories {
+                if let Some(Some(group)) = community.get(memory) {
+                    counts
+                        .entry(group.id)
+                        .or_insert_with(|| (name_of(group), 0))
+                        .1 += 1;
+                }
+            }
+            let mut by_community: Vec<(NodeId, String, usize)> = counts
+                .into_iter()
+                .map(|(id, (name, count))| (id, name, count))
+                .collect();
+            by_community.sort_by(|a, b| b.2.cmp(&a.2).then(a.0.cmp(&b.0)));
+            by_community.truncate(5);
+            proposals.push(Proposal::SplitRoom {
+                room: room.id,
+                name: name_of(room),
+                memories: memories.len(),
+                by_community,
+            });
+        }
+    }
+    // Memories whose community lives in another room.
+    if communities {
+        let mut members: HashMap<NodeId, Vec<NodeId>> = HashMap::new();
+        for (memory, group) in &community {
+            if let Some(group) = group {
+                members.entry(group.id).or_default().push(*memory);
+            }
+        }
+        let mut moves = Vec::new();
+        for (memory, group) in &community {
+            let Some(group) = group else { continue };
+            let mates = &members[&group.id];
+            if mates.len() < 3 {
+                continue;
+            }
+            let mine = &placed[memory];
+            for (at, (room, held)) in rooms.iter().enumerate() {
+                if mine.contains(&at) {
+                    continue;
+                }
+                let there = mates.iter().filter(|m| held.contains(m)).count();
+                let share = there as f64 / mates.len() as f64;
+                if share >= options.elsewhere {
+                    moves.push(Proposal::MoveMemory {
+                        memory: *memory,
+                        name: names[memory].clone(),
+                        from_room: mine
+                            .iter()
+                            .map(|at| name_of(&rooms[*at].0))
+                            .collect::<Vec<_>>()
+                            .join(", "),
+                        to_room: room.id,
+                        to_name: name_of(room),
+                        community: name_of(group),
+                        share: (share * 100.0).round() / 100.0,
+                    });
+                }
+            }
+        }
+        moves.sort_by_key(|proposal| match proposal {
+            Proposal::MoveMemory { memory, .. } => *memory,
+            _ => NodeId::from_u128(0),
+        });
+        proposals.extend(moves);
+    }
+    // Rooms that hold mostly the same.
+    for (i, (a, held_a)) in rooms.iter().enumerate() {
+        for (b, held_b) in &rooms[i + 1..] {
+            if held_a.is_empty() || held_b.is_empty() {
+                continue;
+            }
+            let common = held_a.iter().filter(|m| held_b.contains(m)).count();
+            let overlap = common as f64 / (held_a.len() + held_b.len() - common) as f64;
+            if overlap >= options.overlap {
+                proposals.push(Proposal::MergeRooms {
+                    rooms: [a.id, b.id],
+                    names: [name_of(a), name_of(b)],
+                    overlap: (overlap * 100.0).round() / 100.0,
+                });
+            }
+        }
+    }
+    // Communities of memories with no room in this palace.
+    if communities {
+        let mut unplaced = Vec::new();
+        for id in read.nodes_with_label(ns, crate::communities::COMMUNITY)? {
+            let Some(group) = read.node(ns, id)? else {
+                continue;
+            };
+            let mut memories = Vec::new();
+            let mut any_placed = false;
+            for (_, member) in
+                read.edges_of(ns, id, Direction::In, crate::communities::MEMBER_OF)?
+            {
+                let Some(node) = read.node(ns, member)? else {
+                    continue;
+                };
+                if is_structure(&node) || node.has_label(crate::communities::COMMUNITY) {
+                    continue;
+                }
+                if placed.contains_key(&member) {
+                    any_placed = true;
+                    break;
+                }
+                memories.push(member);
+            }
+            if !any_placed && memories.len() >= options.new_room_min {
+                memories.sort();
+                unplaced.push(Proposal::NewRoom {
+                    community: id,
+                    name: name_of(&group),
+                    memories,
+                });
+            }
+        }
+        unplaced.sort_by_key(|proposal| match proposal {
+            Proposal::NewRoom {
+                memories,
+                community,
+                ..
+            } => (std::cmp::Reverse(memories.len()), *community),
+            _ => (std::cmp::Reverse(0), NodeId::from_u128(0)),
+        });
+        unplaced.truncate(options.new_rooms);
+        proposals.extend(unplaced);
+    }
+    Ok(Review {
+        palace,
+        proposals,
+        communities,
+    })
+}

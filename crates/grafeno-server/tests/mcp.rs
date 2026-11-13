@@ -100,7 +100,8 @@ fn handshake_and_tool_list() {
             "palace_anchor",
             "palace_map",
             "palace_walk",
-            "palace_enter"
+            "palace_enter",
+            "palace_review"
         ]
     );
     for tool in response["result"]["tools"].as_array().unwrap() {
@@ -1391,7 +1392,10 @@ fn a_read_only_server_reads_palaces_and_writes_none() {
         .map(|tool| tool["name"].as_str().unwrap())
         .filter(|name| name.starts_with("palace_"))
         .collect();
-    assert_eq!(names, ["palace_map", "palace_walk", "palace_enter"]);
+    assert_eq!(
+        names,
+        ["palace_map", "palace_walk", "palace_enter", "palace_review"]
+    );
 
     let map = call(&reader, "palace_map", json!({ "room": "Storage" }));
     assert_eq!(structured(&map)["room"]["id"], room.as_str());
@@ -1774,4 +1778,158 @@ fn walks_join_memories_follow_doors_and_leave_out_repeats() {
         json!({ "topic": "invoices", "order": "random" }),
     );
     assert!(failure(&bad).contains("unknown order"));
+}
+
+/// Phase 4 over MCP: a review proposes and changes nothing; forgetting a
+/// room takes its structure and no memory, said first with dry_run;
+/// maintain lists newer memories that may overtake older ones; a
+/// consolidation is undone.
+#[test]
+fn palaces_are_reviewed_rooms_removed_and_consolidations_undone() {
+    let server = server();
+    structured(&call(&server, "palace_create", json!({ "name": "Work" })));
+    let mut rooms = Vec::new();
+    for name in ["Billing", "Copy", "Empty"] {
+        let made = call(
+            &server,
+            "palace_create_room",
+            json!({ "palace": "Work", "name": name }),
+        );
+        rooms.push(structured(&made)["id"].as_str().unwrap().to_owned());
+    }
+    let mut notes = Vec::new();
+    for i in 0..4 {
+        let id = remembered(
+            &server,
+            json!({ "text": format!("Billing retry note {i}"), "labels": ["Note"] }),
+        );
+        for room in ["Billing", "Copy"] {
+            structured(&call(
+                &server,
+                "palace_anchor",
+                json!({ "memory": id, "room": room }),
+            ));
+        }
+        notes.push(id);
+    }
+    let count = |label: &str| {
+        let result = call(
+            &server,
+            "query",
+            json!({ "query": format!("MATCH (n:{label}) RETURN count(n)") }),
+        );
+        result.to_string()
+    };
+    let before = (count("Note"), count("Room"), count("Locus"));
+
+    let review = call(
+        &server,
+        "palace_review",
+        json!({ "palace": "Work", "crowded": 3 }),
+    );
+    let review = structured(&review).clone();
+    let kinds: Vec<&str> = review["proposals"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["kind"].as_str().unwrap())
+        .collect();
+    for kind in ["empty_room", "merge_rooms", "split_room"] {
+        assert!(kinds.contains(&kind), "{kind} not in {review}");
+    }
+    assert!(review["proposals"][0]["how"].is_string());
+    assert!(
+        review["hint"]
+            .as_str()
+            .unwrap()
+            .contains("summarize_communities")
+    );
+    assert_eq!((count("Note"), count("Room"), count("Locus")), before);
+
+    // Forgetting a room: said, then done; its notes stay.
+    let said = call(
+        &server,
+        "forget",
+        json!({ "id": rooms[1], "dry_run": true }),
+    );
+    let said = structured(&said).clone();
+    assert_eq!(said["anchors"], 4);
+    assert_eq!(
+        said["left_in_no_place"],
+        json!([]),
+        "they are in Billing too"
+    );
+    assert_eq!((count("Note"), count("Room"), count("Locus")), before);
+    structured(&call(&server, "forget", json!({ "id": rooms[1] })));
+    assert_eq!(count("Note"), before.0);
+    let map = call(&server, "palace_map", json!({ "palace": "Work" }));
+    let names: Vec<&str> = structured(&map)["palace"]["rooms"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|room| room["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["Billing", "Empty"]);
+    let refused = call(
+        &server,
+        "forget",
+        json!({ "id": rooms[0], "mode": "retract" }),
+    );
+    assert!(failure(&refused).contains("only be forgotten with mode"));
+
+    // A newer memory that may overtake an older one about the same person.
+    let ana = remembered(
+        &server,
+        json!({ "name": "Ana", "text": "A person", "labels": ["Person"] }),
+    );
+    let old = remembered(
+        &server,
+        json!({ "text": "Ana works at Acme as a backend engineer in Lima",
+                "links": [{ "label": "about", "to": ana }] }),
+    );
+    std::thread::sleep(std::time::Duration::from_millis(2));
+    let new = remembered(
+        &server,
+        json!({ "text": "Ana works at Globex as a backend engineer in Lima now",
+                "links": [{ "label": "about", "to": ana }] }),
+    );
+    let health = call(&server, "maintain", json!({}));
+    let superseded = structured(&health)["superseded"]
+        .as_array()
+        .unwrap()
+        .clone();
+    assert!(
+        superseded
+            .iter()
+            .any(|pair| pair["older"]["id"] == old.as_str() && pair["newer"]["id"] == new.as_str()),
+        "{superseded:?}"
+    );
+
+    // A consolidation, and undoing it.
+    let made = call(
+        &server,
+        "consolidate",
+        json!({ "summary": "Billing retries, in short", "sources": notes }),
+    );
+    let summary = structured(&made)["id"].as_str().unwrap().to_owned();
+    let found = call(&server, "recall", json!({ "query": "billing retry note" }));
+    assert!(
+        structured(&found)["results"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|hit| !notes.contains(&hit["id"].as_str().unwrap().to_owned()))
+    );
+    let undone = call(&server, "consolidate", json!({ "undo": summary }));
+    assert_eq!(structured(&undone)["restored"].as_array().unwrap().len(), 4);
+    let found = call(&server, "recall", json!({ "query": "billing retry note" }));
+    assert!(
+        structured(&found)["results"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|hit| notes.contains(&hit["id"].as_str().unwrap().to_owned()))
+    );
+    let wrong = call(&server, "consolidate", json!({ "undo": notes[0] }));
+    assert!(failure(&wrong).contains("not a summary"));
 }
