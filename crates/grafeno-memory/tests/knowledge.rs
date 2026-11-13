@@ -397,3 +397,31 @@ fn certainty_and_origin_survive_a_restart() {
     drop(db);
     let _ = std::fs::remove_file(&path);
 }
+
+#[test]
+fn facts_stored_twice_are_found() {
+    let db = Grafeno::in_memory().unwrap();
+    let (a, b) = db
+        .write(|tx| {
+            let a = tx.create_node(NS, NewNode::new("Note").text("a"))?;
+            let b = tx.create_node(NS, NewNode::new("Note").text("b"))?;
+            tx.create_edge(NS, NewEdge::new(a, "depends_on", b))?;
+            tx.create_edge(NS, NewEdge::new(a, "depends_on", b))?;
+            // Other dates: another fact.
+            tx.create_edge(
+                NS,
+                NewEdge::new(a, "depends_on", b).valid_from(Timestamp::from_secs(1)),
+            )?;
+            Ok((a, b))
+        })
+        .unwrap();
+    let found = grafeno_memory::duplicate_facts(&db.begin_read().unwrap(), NS, 10).unwrap();
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert_eq!((found[0].from, found[0].to), (a, b));
+    assert_eq!(found[0].duplicates.len(), 1);
+    // A cause needs evidence.
+    assert!(grafeno_memory::knowledge::check_fact("caused_by", &[]).is_err());
+    assert!(grafeno_memory::knowledge::check_fact("caused_by", &[a]).is_ok());
+    assert!(grafeno_memory::knowledge::check_fact("related_to", &[]).is_ok());
+    assert!(grafeno_memory::knowledge::method(Some(&"x".repeat(65))).is_err());
+}

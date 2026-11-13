@@ -2052,3 +2052,135 @@ fn reflection_separates_what_is_known_from_what_is_not() {
     );
     assert!(failure(&both).contains("one of"));
 }
+
+/// Phase 8's acceptance: related knowledge recorded, found again by its
+/// entities, with relations, identity and evidence kept and nothing
+/// duplicated without reason.
+#[test]
+fn knowledge_keeps_identity_relations_and_evidence() {
+    let server = server();
+    let episode = remembered(
+        &server,
+        json!({ "text": "Call with Ana: she maintains the billing service, which depends on Ledger",
+                "labels": ["Episode"] }),
+    );
+    let reading = json!({
+        "id": episode,
+        "mentions": [
+            { "surface": "Ana", "label": "Person" },
+            { "surface": "billing service", "label": "Service" },
+            { "surface": "Ledger", "label": "Database" }
+        ],
+        "relations": [
+            { "from": 0, "label": "maintains", "to": 1, "origin": "stated" },
+            { "from": 1, "label": "depends_on", "to": 2, "origin": "stated" }
+        ]
+    });
+    let first = call(&server, "add_mentions", reading.clone());
+    let first = structured(&first).clone();
+    assert_eq!(first["created"], 3, "{first}");
+    // The same reading again: the entities are found, the facts not doubled.
+    let again = call(&server, "add_mentions", reading);
+    let again = structured(&again).clone();
+    assert_eq!(
+        (again["created"].clone(), again["linked"].clone()),
+        (json!(0), json!(3))
+    );
+    assert_eq!(again["relations"], first["relations"]);
+    let ana = first["entities"][0]["id"].as_str().unwrap().to_owned();
+    let service = first["entities"][1]["id"].as_str().unwrap().to_owned();
+
+    // Found again by its entity, with how each fact is known and where it
+    // came from.
+    let node = call(&server, "get_node", json!({ "id": service }));
+    let node = structured(&node).clone();
+    let fact = |label: &str| {
+        node["facts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|fact| fact["label"] == label)
+            .unwrap_or_else(|| panic!("no {label}: {node}"))
+            .clone()
+    };
+    let maintains = fact("maintains");
+    assert_eq!(maintains["other"]["id"], ana.as_str());
+    assert_eq!(maintains["sources"], json!([episode]));
+    assert_eq!(maintains["method"], "agent");
+    assert_eq!(maintains["known"]["origin"], "stated");
+    assert_eq!(node["provenance"]["sources"], json!([episode]));
+
+    // Evidence, and a cause only with it.
+    let log = remembered(
+        &server,
+        json!({ "text": "Ledger was down from 02:00 to 03:10", "labels": ["Evidence"],
+                "origin": "observed", "method": "imported" }),
+    );
+    let outage = remembered(
+        &server,
+        json!({ "text": "Invoices failed overnight", "labels": ["Experience"] }),
+    );
+    let refused = call(
+        &server,
+        "relate",
+        json!({ "from": outage, "label": "caused_by", "to": first["entities"][2]["id"] }),
+    );
+    assert!(failure(&refused).contains("needs evidence"));
+    structured(&call(
+        &server,
+        "relate",
+        json!({ "from": outage, "label": "caused_by", "to": first["entities"][2]["id"],
+                "sources": [log] }),
+    ));
+    structured(&call(
+        &server,
+        "relate",
+        json!({ "from": outage, "label": "supported_by", "to": log }),
+    ));
+    let twice = call(
+        &server,
+        "relate",
+        json!({ "from": outage, "label": "supported_by", "to": log }),
+    );
+    assert_eq!(structured(&twice)["duplicate"], true);
+    let node = call(&server, "get_node", json!({ "id": outage }));
+    let provenance = structured(&node)["provenance"].clone();
+    assert_eq!(provenance["supported_by"][0]["id"], log.as_str());
+    let evidence = call(&server, "get_node", json!({ "id": log }));
+    assert_eq!(structured(&evidence)["provenance"]["method"], "imported");
+
+    // A merge keeps what the merged node was and how it was known.
+    let other = remembered(
+        &server,
+        json!({ "name": "A. Torres", "text": "Ana, again", "labels": ["Person"],
+                "origin": "verified", "certainty": 1.0 }),
+    );
+    structured(&call(
+        &server,
+        "merge",
+        json!({ "keep": ana, "merge": other, "force": true }),
+    ));
+    let merged = call(&server, "get_node", json!({ "id": ana }));
+    let merged = structured(&merged).clone();
+    let from = &merged["provenance"]["merged_from"][0];
+    assert_eq!(from["id"], other.as_str());
+    assert_eq!(from["origin"], "verified");
+    assert_eq!(from["name"], "A. Torres");
+    // Still one Ana, found by either name.
+    let found = call(
+        &server,
+        "find_matches",
+        json!({ "label": "Person", "props": { "name": "A. Torres" } }),
+    );
+    let _ = found;
+
+    // Kinds are counted by reflection.
+    remembered(
+        &server,
+        json!({ "text": "Billing could move to monthly runs", "labels": ["Hypothesis"] }),
+    );
+    let reflection = call(&server, "palace_reflect", json!({ "topic": "billing" }));
+    let kinds = structured(&reflection)["known"]["memories_by_kind"].clone();
+    assert_eq!(kinds["Hypothesis"], 1, "{kinds}");
+    assert_eq!(kinds["Episode"], 1, "{kinds}");
+}

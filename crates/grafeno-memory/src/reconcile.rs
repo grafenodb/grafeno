@@ -965,8 +965,24 @@ pub fn ingest_reading(
             ));
             continue;
         };
-        let mut edge = NewEdge::new(from, relation.label.trim(), to).source(source);
+        let label = relation.label.trim();
+        // The same current fact again: the one there is stands.
+        if let Some(existing) = crate::knowledge::existing_fact(
+            tx,
+            ns,
+            from,
+            label,
+            to,
+            relation.valid_from,
+            relation.valid_to,
+        )? {
+            reading.relations.push(existing);
+            continue;
+        }
+        let mut edge = NewEdge::new(from, label, to).source(source);
         edge.props = props;
+        edge.props
+            .insert(crate::knowledge::METHOD.into(), Value::from("agent"));
         edge.valid_from = relation.valid_from;
         edge.valid_to = relation.valid_to;
         reading.relations.push(tx.create_edge(ns, edge)?);

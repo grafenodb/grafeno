@@ -672,10 +672,10 @@ herramientas:
 | `remember` | Guarda un recuerdo (texto, nombre opcional, etiquetas, importancia y enlaces). Un `name` conocido actualiza esa entidad. |
 | `recall`   | Búsqueda híbrida; devuelve ids, nombres, fragmentos y por qué coincidió cada resultado. Registra accesos. |
 | `context`  | Recuerdos y hechos relevantes como texto compacto dentro de un presupuesto de tokens, después de los resúmenes de comunidades que coinciden. |
-| `relate`   | Registra un hecho (arista) entre dos nodos, con fechas de validez opcionales; indica qué hechos contradijo bajo una restricción (y terminó). |
+| `relate`   | Registra un hecho (arista) entre dos nodos, con fechas de validez, `origin`, `certainty` y `method` opcionales; dice qué hechos contradijo bajo una restricción (y terminó). El mismo hecho vigente se registra una vez; `caused_by` necesita `sources`. |
 | `update`   | Reemplaza el texto de un nodo, lo renombra, combina propiedades (un `null` se guarda), quita propiedades por nombre (`remove_props`), cambia etiquetas o importancia. |
 | `forget`   | Invalida (por defecto), retracta o elimina un hecho; elimina un nodo; elimina un palacio, sala o locus con lo que hay debajo, nunca un recuerdo. `dry_run` dice qué se iría. |
-| `get_node` | Un nodo con su texto, propiedades y los hechos que lo conectan.               |
+| `get_node` | Un nodo con su texto, propiedades y hechos que lo conectan, y su procedencia (fuentes, quién y cómo, qué lo respalda, qué trajeron las fusiones). |
 | `query`    | Una sentencia [GQ](../../docs/query-language.md) de solo lectura; 200 filas como máximo. |
 | `merge`    | Fusiona un nodo duplicado en otro; se rechaza cuando discrepan salvo con `force`. Devuelve un `merge_id`. |
 | `undo_merge` | Deshace una fusión por su `merge_id`: el nodo fusionado y sus hechos vuelven. |

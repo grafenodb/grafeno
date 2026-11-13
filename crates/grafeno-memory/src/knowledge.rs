@@ -43,9 +43,242 @@ pub const TASK: &str = "Task";
 pub const QUESTION: &str = "Question";
 /// A memory → the question it answers.
 pub const ANSWERS: &str = "answers";
+/// Raw material as it came: a conversation, a session, a document read.
+/// Facts drawn from it name it in their `sources`.
+pub const EPISODE: &str = "Episode";
+/// An idea, not a thing in the world: "eventual consistency".
+pub const CONCEPT: &str = "Concept";
+/// Something proposed and not settled. Reflection lists hypotheses that
+/// nothing supports.
+pub const HYPOTHESIS: &str = "Hypothesis";
+/// What supports a claim: an output, a page, a measurement. Linked with
+/// [`SUPPORTED_BY`].
+pub const EVIDENCE: &str = "Evidence";
+/// A rule of the domain, written by an agent ("a service has one owner").
+/// The engine's constraints, which decide on writes, are something else.
+pub const CONSTRAINT: &str = "Constraint";
+/// What a task is for.
+pub const GOAL: &str = "Goal";
 /// The kinds of memory with a meaning. A memory may have any other label
 /// too; these are the ones an agent can count on.
-pub const KINDS: [&str; 4] = [FACT, DECISION, EXPERIENCE, TASK];
+pub const KINDS: [&str; 11] = [
+    FACT, DECISION, EXPERIENCE, TASK, QUESTION, EPISODE, CONCEPT, HYPOTHESIS, EVIDENCE, CONSTRAINT,
+    GOAL,
+];
+
+/// Relations with a meaning. Any other label stays allowed: these add
+/// meaning, they do not close the list.
+pub const RELATED_TO: &str = "related_to";
+/// Needs the other to work, to happen or to be true.
+pub const DEPENDS_ON: &str = "depends_on";
+/// Is a piece of the other. (Between communities, the same label joins a
+/// summary to the one above it.)
+pub const PART_OF: &str = "part_of";
+/// Was made from the other: a summary from notes, a figure from a table.
+pub const DERIVED_FROM: &str = "derived_from";
+/// Is supported by the other, as evidence.
+pub const SUPPORTED_BY: &str = "supported_by";
+/// Says the opposite of the other, where no constraint can tell.
+pub const CONTRADICTS: &str = "contradicts";
+/// Replaces the other, which was true or decided before.
+pub const SUPERSEDES: &str = "supersedes";
+/// Happened because of the other. Recorded only with evidence: the
+/// `sources` of the fact.
+pub const CAUSED_BY: &str = "caused_by";
+/// The relations with a meaning.
+pub const RELATIONS: [&str; 8] = [
+    RELATED_TO,
+    DEPENDS_ON,
+    PART_OF,
+    DERIVED_FROM,
+    SUPPORTED_BY,
+    CONTRADICTS,
+    SUPERSEDES,
+    CAUSED_BY,
+];
+
+/// How a memory or a fact was obtained: `agent` (an agent's own reading),
+/// `rule` (extraction's rules), `stated` (told), `imported`, or any other
+/// word. Free, as long as it is short.
+pub const METHOD: &str = "method";
+
+/// On a node that took others in by a merge: what each one was and how it
+/// was known, so a merge loses no provenance.
+pub const MERGED_FROM: &str = "merged_from";
+
+/// Checks a fact before it is recorded: a causal claim needs evidence.
+pub fn check_fact(label: &str, sources: &[NodeId]) -> Result<()> {
+    if label == CAUSED_BY && sources.is_empty() {
+        return Err(Error::Invalid(
+            "a caused_by fact needs evidence: name in `sources` what shows the cause \
+             (or record it as related_to, or as a Hypothesis)"
+                .into(),
+        ));
+    }
+    Ok(())
+}
+
+/// The `method` property, checked: a short word or phrase.
+pub fn method(method: Option<&str>) -> Result<Props> {
+    let mut props = Props::new();
+    if let Some(method) = method.map(str::trim).filter(|m| !m.is_empty()) {
+        if method.chars().count() > 64 {
+            return Err(Error::Invalid(
+                "a method is a short word, 64 characters at most".into(),
+            ));
+        }
+        props.insert(METHOD.into(), json!(method));
+    }
+    Ok(props)
+}
+
+/// Before `merged` is merged into `kept`: what `merged` was and how it was
+/// known, appended to `kept`'s [`MERGED_FROM`]. Undoing the merge brings
+/// both back as they were, this list included.
+pub fn note_merge(tx: &mut WriteTx, ns: &str, kept: NodeId, merged: NodeId) -> Result<()> {
+    let keep = tx.node(ns, kept)?.ok_or(Error::NodeNotFound(kept))?;
+    let gone = tx.node(ns, merged)?.ok_or(Error::NodeNotFound(merged))?;
+    let assessed = of_node(&gone);
+    let mut entry = json!({
+        "id": merged.to_string(),
+        "name": gone.display_name(),
+        "labels": gone.labels,
+        "created": gone.created_at.date(),
+    });
+    for (key, value) in [
+        (ORIGIN, assessed.origin.map(|o| json!(o.as_str()))),
+        (CERTAINTY, assessed.certainty.map(|c| json!(c))),
+        (
+            VERIFIED_BY,
+            assessed.verified_by.map(|id| json!(id.to_string())),
+        ),
+        (METHOD, gone.prop(METHOD).cloned()),
+        ("recorded_by", gone.recorded_by.clone().map(|by| json!(by))),
+    ] {
+        if let Some(value) = value {
+            entry[key] = value;
+        }
+    }
+    let mut list = keep
+        .prop(MERGED_FROM)
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    list.push(entry);
+    let mut props = Props::new();
+    props.insert(MERGED_FROM.into(), Value::Array(list));
+    tx.set_node_props(ns, kept, props)
+}
+
+/// The same current fact recorded more than once: same ends, label and
+/// valid times, neither retracted nor expired.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct DuplicateFacts {
+    /// The first one recorded.
+    pub kept: EdgeId,
+    pub duplicates: Vec<EdgeId>,
+    pub from: NodeId,
+    pub label: String,
+    pub to: NodeId,
+}
+
+fn same_fact(a: &Edge, b: &Edge) -> bool {
+    a.label == b.label && a.valid_from == b.valid_from && a.valid_to == b.valid_to
+}
+
+/// The current fact `from -label-> to` with these valid times, if it is
+/// already recorded.
+pub fn existing_fact(
+    tx: &WriteTx,
+    ns: &str,
+    from: NodeId,
+    label: &str,
+    to: NodeId,
+    valid_from: Option<Timestamp>,
+    valid_to: Option<Timestamp>,
+) -> Result<Option<EdgeId>> {
+    let probe = Edge {
+        id: EdgeId::from_u128(0),
+        label: label.to_owned(),
+        from,
+        to,
+        props: Props::new(),
+        sources: Vec::new(),
+        valid_from,
+        valid_to,
+        recorded_at: Timestamp::from_micros(0),
+        expired_at: None,
+        recorded_by: None,
+    };
+    for (id, other) in tx.neighbor_ids(
+        ns,
+        from,
+        grafeno::Direction::Out,
+        &grafeno::EdgeFilter::any().label(label),
+    )? {
+        if other != to {
+            continue;
+        }
+        if let Some(edge) = tx.edge(ns, id)?
+            && edge.expired_at.is_none()
+            && same_fact(&edge, &probe)
+        {
+            return Ok(Some(id));
+        }
+    }
+    Ok(None)
+}
+
+/// What makes two facts the same one: ends, label and valid times.
+type FactKey = (NodeId, String, NodeId, Option<i64>, Option<i64>);
+
+/// Facts recorded more than once in `ns`, the first of each kept.
+pub fn duplicate_facts(
+    read: &grafeno::ReadTx,
+    ns: &str,
+    limit: usize,
+) -> Result<Vec<DuplicateFacts>> {
+    let mut groups: std::collections::BTreeMap<FactKey, Vec<Edge>> = Default::default();
+    let mut after = None;
+    loop {
+        let page = read.edges_page(ns, None, after, 5_000)?;
+        let Some(last) = page.last() else { break };
+        after = Some(last.id);
+        for edge in page {
+            if edge.expired_at.is_some() || edge.is_retracted() {
+                continue;
+            }
+            groups
+                .entry((
+                    edge.from,
+                    edge.label.clone(),
+                    edge.to,
+                    edge.valid_from.map(Timestamp::as_micros),
+                    edge.valid_to.map(Timestamp::as_micros),
+                ))
+                .or_default()
+                .push(edge);
+        }
+    }
+    let mut out = Vec::new();
+    for ((from, label, to, _, _), mut edges) in groups {
+        if edges.len() < 2 {
+            continue;
+        }
+        edges.sort_by_key(|edge| (edge.recorded_at, edge.id));
+        out.push(DuplicateFacts {
+            kept: edges[0].id,
+            duplicates: edges[1..].iter().map(|edge| edge.id).collect(),
+            from,
+            label,
+            to,
+        });
+        if out.len() >= limit {
+            break;
+        }
+    }
+    Ok(out)
+}
 
 /// How a memory or a fact came to be known.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize)]

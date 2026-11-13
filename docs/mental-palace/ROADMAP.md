@@ -20,7 +20,17 @@ engine a general graph database.
 - [Phase 13: the graph engine on its own](#phase-13-the-graph-engine-on-its-own)
 - [Order](#order)
 
-## Phase 8: a model of knowledge
+## Phase 8: a model of knowledge (done)
+
+Built as planned below; what it does is in
+[cognitive-memory.md](cognitive-memory.md#relations-with-a-meaning).
+Tests: `knowledge_keeps_identity_relations_and_evidence` in
+`crates/grafeno-server/tests/mcp.rs` (the acceptance) and
+`facts_stored_twice_are_found` in `crates/grafeno-memory/tests/knowledge.rs`.
+`Question` joined the kinds as well. A merge already joined `sources`; what
+it dropped was the merged node's origin, certainty and method when the kept
+node had its own, now kept in `merged_from`.
+
 
 **Kinds of knowledge**
 

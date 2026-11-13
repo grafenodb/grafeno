@@ -652,10 +652,10 @@ another group's file. See [docs/cluster-runbooks.md](../../docs/cluster-runbooks
 | `remember` | Stores a memory (text, optional name, labels, importance and links). A known `name` updates that entity instead. |
 | `recall`   | Hybrid search; returns ids, names, snippets and why each result matched. Records accesses. |
 | `context`  | Relevant memories and facts as compact text within a token budget, after the community summaries that match. |
-| `relate`   | Records a fact (edge) between two nodes, with optional valid dates; says which facts it contradicted under a constraint (and ended). |
+| `relate`   | Records a fact (edge) between two nodes, with optional valid dates, `origin`, `certainty` and `method`; says which facts it contradicted under a constraint (and ended). The same current fact is recorded once; `caused_by` needs `sources`. |
 | `update`   | Replaces a node's text, renames it, merges properties (a `null` is stored), removes properties by name (`remove_props`), changes labels or importance. |
 | `forget`   | Invalidates (default), retracts or deletes a fact; deletes a node; deletes a palace, room or locus with what is under it, never a memory. `dry_run` says what would go. |
-| `get_node` | A node with its text, properties and connecting facts.                        |
+| `get_node` | A node with its text, properties and connecting facts, and its provenance (sources, who and how, what supports it, what merges brought in). |
 | `query`    | A read-only [GQ](../../docs/query-language.md) statement; at most 200 rows.   |
 | `merge`    | Folds a duplicate node into another one; refused when they disagree unless `force`. Returns a `merge_id`. |
 | `undo_merge` | Undoes a merge by its `merge_id`: the merged node and its facts come back.   |

@@ -13,6 +13,15 @@ version (now 18) is upgraded in place, with a copy kept first.
 
 ## Unreleased
 
+- **Added**: a model of knowledge (phase 8). Kinds of memory with a
+  meaning: Episode, Concept, Hypothesis, Evidence, Constraint and Goal
+  beside Fact, Decision, Experience, Task and Question. Relations with a
+  meaning: related_to, depends_on, part_of, derived_from, supported_by,
+  contradicts, supersedes and caused_by, which `relate` refuses without
+  `sources`. `remember` and `relate` take `method`; `get_node` answers a
+  provenance block. `relate` and an agent's reading record the same
+  current fact once; `maintain` lists facts stored twice. A merge keeps
+  what the merged node was and how it was known in `merged_from`.
 - **Added**: metacognition (phase 6 of the Mental Palace plan).
   `palace_reflect` says what is known about a topic, a room or a node and
   what is not, each item with its record: what is known (by kind and by

@@ -55,7 +55,8 @@ pub use documents::{
     CHUNK, DEFAULT_CHUNK_CHARS, Ingested, Kind, NewDocument, Piece, cut, ingest_document,
 };
 pub use knowledge::{
-    ANSWERS, Assessment, CERTAINTY, KINDS, ORIGIN, Origin, QUESTION, Record, verify,
+    ANSWERS, Assessment, CERTAINTY, DuplicateFacts, KINDS, ORIGIN, Origin, QUESTION, RELATIONS,
+    Record, duplicate_facts, verify,
 };
 pub use maintenance::{
     ConsolidationGroup, ConsolidationOptions, DISTINCT_FROM, DecayOptions, Duplicate,

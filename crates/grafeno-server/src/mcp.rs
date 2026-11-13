@@ -452,12 +452,15 @@ impl McpServer {
             #[serde(default)]
             origin: Option<String>,
             #[serde(default)]
+            method: Option<String>,
+            #[serde(default)]
             namespace: Option<String>,
         }
         let args: Args = parse_args(arguments)?;
         let ns = self.ns(&args.namespace);
-        let known = grafeno_memory::knowledge::stated(args.origin.as_deref(), args.certainty)
+        let mut known = grafeno_memory::knowledge::stated(args.origin.as_deref(), args.certainty)
             .map_err(describe)?;
+        known.extend(grafeno_memory::knowledge::method(args.method.as_deref()).map_err(describe)?);
         let mut new = NewNode {
             labels: if args.labels.is_empty() {
                 vec!["Memory".into()]
@@ -668,12 +671,15 @@ impl McpServer {
             #[serde(default)]
             origin: Option<String>,
             #[serde(default)]
+            method: Option<String>,
+            #[serde(default)]
             namespace: Option<String>,
         }
         let args: Args = parse_args(arguments)?;
         let ns = self.ns(&args.namespace);
-        let known = grafeno_memory::knowledge::stated(args.origin.as_deref(), args.certainty)
+        let mut known = grafeno_memory::knowledge::stated(args.origin.as_deref(), args.certainty)
             .map_err(describe)?;
+        known.extend(grafeno_memory::knowledge::method(args.method.as_deref()).map_err(describe)?);
         let mut edge = NewEdge::new(
             parse_id(&args.from).map_err(describe)?,
             args.label,
@@ -694,12 +700,32 @@ impl McpServer {
             .map(TimeInput::resolve)
             .transpose()
             .map_err(describe)?;
-        let (id, events) = self
+        grafeno_memory::knowledge::check_fact(&edge.label, &edge.sources).map_err(describe)?;
+        let (id, events, duplicate) = self
             .write(|tx| {
+                // The same current fact is recorded once.
+                if let Some(existing) = grafeno_memory::knowledge::existing_fact(
+                    tx,
+                    ns,
+                    edge.from,
+                    &edge.label,
+                    edge.to,
+                    edge.valid_from,
+                    edge.valid_to,
+                )? {
+                    return Ok((existing, Vec::new(), true));
+                }
                 let id = tx.create_edge(ns, edge)?;
-                Ok((id, tx.take_constraint_events()))
+                Ok((id, tx.take_constraint_events(), false))
             })
             .map_err(describe)?;
+        if duplicate {
+            return Ok(ToolOutput::Json(json!({
+                "id": id,
+                "duplicate": true,
+                "result": "this fact is already recorded, with the same dates: nothing was added",
+            })));
+        }
         if events.is_empty() {
             return Ok(ToolOutput::Json(json!({ "id": id })));
         }
@@ -969,7 +995,37 @@ impl McpServer {
             if !edge.sources.is_empty() {
                 fact["sources"] = json!(edge.sources);
             }
+            if let Some(method) = edge.props.get(grafeno_memory::knowledge::METHOD) {
+                fact["method"] = method.clone();
+            }
+            if let Some(by) = &edge.recorded_by {
+                fact["recorded_by"] = json!(by);
+            }
             facts.push(fact);
+        }
+        // Where it comes from, in one place: what it was made from, what
+        // supports it, who recorded it, how, and what merges brought in.
+        let related = |label: &str| -> Result<Vec<Value>, String> {
+            Ok(read
+                .neighbor_ids(ns, id, Direction::Out, &EdgeFilter::any().label(label))
+                .map_err(describe)?
+                .into_iter()
+                .map(|(_, other)| json!({ "id": other, "name": name_of(&read, ns, other) }))
+                .collect())
+        };
+        let mut provenance = json!({
+            "sources": node.sources,
+            "recorded_by": node.recorded_by,
+            "recorded": node.created_at.date(),
+            "known": grafeno_memory::knowledge::of_node(&node).to_json(),
+            "supported_by": related(grafeno_memory::knowledge::SUPPORTED_BY)?,
+            "derived_from": related(grafeno_memory::knowledge::DERIVED_FROM)?,
+        });
+        if let Some(method) = node.prop(grafeno_memory::knowledge::METHOD) {
+            provenance["method"] = method.clone();
+        }
+        if let Some(merged) = node.prop(grafeno_memory::knowledge::MERGED_FROM) {
+            provenance["merged_from"] = merged.clone();
         }
         Ok(ToolOutput::Json(json!({
             "id": node.id,
@@ -985,6 +1041,7 @@ impl McpServer {
             "accesses": memory.accesses,
             "last_access": memory.last_access.date(),
             "facts": facts,
+            "provenance": provenance,
         })))
     }
 
@@ -1011,7 +1068,12 @@ impl McpServer {
             ..grafeno::MergeOptions::default()
         };
         let report = self
-            .write(|tx| tx.merge_nodes_with(ns, keep, merged, &options))
+            .write(|tx| {
+                // What the merged node was and how it was known stays on the
+                // kept one: properties of the kept one win in a merge.
+                grafeno_memory::knowledge::note_merge(tx, ns, keep, merged)?;
+                tx.merge_nodes_with(ns, keep, merged, &options)
+            })
             .map_err(describe)?;
         let conflicts: Vec<String> = report
             .conflicts
@@ -1591,6 +1653,20 @@ impl McpServer {
             "superseded": superseded,
             "health": health,
             "duplicates": duplicates,
+            "duplicate_facts": grafeno_memory::duplicate_facts(&read, ns, limit)
+                .map_err(describe)?
+                .iter()
+                .map(|group| json!({
+                    "fact": format!(
+                        "{} {} {}",
+                        name_of(&read, ns, group.from),
+                        group.label,
+                        name_of(&read, ns, group.to)
+                    ),
+                    "kept": group.kept,
+                    "duplicates": group.duplicates,
+                }))
+                .collect::<Vec<_>>(),
             "weak": weak,
             "consolidation": consolidation,
             "hint": "Merge true duplicates with `merge`; relate different ones with \
@@ -2748,9 +2824,11 @@ fn tools() -> Value {
                 common when labels are given), the existing node is updated instead and `reused` is true. \
                 Label what kind of memory it is when you can: Fact (something that is the case), \
                 Decision (a choice and its reasons), Experience (something that happened: an attempt, \
-                an incident), Task (something to do) or Question (something not known yet, open until \
-                a memory is related to it with `answers`); and say how it is known with `origin` and \
-                `certainty`.",
+                an incident), Task (something to do), Question (something not known yet, open until \
+                a memory is related to it with `answers`), Episode (raw material as it came), Concept \
+                (an idea), Hypothesis (proposed, not settled), Evidence (what supports a claim), \
+                Constraint (a rule of the domain) or Goal (what a task is for); and say how it is \
+                known with `origin`, `certainty` and `method`.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -2763,6 +2841,7 @@ fn tools() -> Value {
                     "importance": importance.clone(),
                     "certainty": certainty.clone(),
                     "origin": origin.clone(),
+                    "method": { "type": "string", "description": "How it was obtained: agent (your own reading), rule, stated, imported, or a word of your own." },
                     "links": {
                         "type": "array",
                         "description": "Facts from the new node to existing nodes.",
@@ -2827,7 +2906,10 @@ fn tools() -> Value {
             "name": "relate",
             "title": "Relate",
             "description": "Record a fact between two existing nodes, such as Ana works_on Grafeno, \
-                optionally with the dates it holds.",
+                optionally with the dates it holds. Any label goes; these have a meaning: related_to, \
+                depends_on, part_of, derived_from, supported_by (evidence), contradicts, supersedes \
+                (a newer memory replacing an older one) and caused_by, which needs `sources` (the \
+                evidence of the cause). The same current fact with the same dates is recorded once.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -2840,6 +2922,7 @@ fn tools() -> Value {
                     "sources": { "type": "array", "items": { "type": "string" }, "description": "Ids of the nodes this fact comes from." },
                     "certainty": certainty.clone(),
                     "origin": origin.clone(),
+                    "method": { "type": "string", "description": "How it was obtained: agent (your own reading), rule, stated, imported, or a word of your own." },
                     "namespace": namespace
                 },
                 "required": ["from", "label", "to"]

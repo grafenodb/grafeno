@@ -353,7 +353,6 @@ pub fn reflect(
     for memory in &memories {
         let kind = knowledge::KINDS
             .iter()
-            .chain(std::iter::once(&QUESTION))
             .find(|kind| memory.has_label(kind))
             .map_or("other", |kind| *kind);
         *known.memories_by_kind.entry(kind.into()).or_default() += 1;

@@ -53,6 +53,47 @@ Four labels have a meaning, beside any other a memory has:
 | `Experience` | Something that happened: an attempt, an incident. |
 | `Task` | Something to do. |
 | `Question` | Something not known yet: open until a memory is related to it with `answers` (phase 6). |
+| `Episode` | Raw material as it came: a conversation, a session, a document read. Facts drawn from it name it in their `sources`. |
+| `Concept` | An idea, not a thing in the world. |
+| `Hypothesis` | Something proposed and not settled. |
+| `Evidence` | What supports a claim: an output, a page, a measurement. |
+| `Constraint` | A rule of the domain, written by an agent. The engine's constraints, which decide on writes, are something else. |
+| `Goal` | What a task is for. |
+
+## Relations with a meaning
+
+Added in phase 8 of the [roadmap](ROADMAP.md). Any label stays allowed;
+these have a meaning the tools and the documentation share:
+
+| Relation | Meaning |
+| --- | --- |
+| `related_to` | Related, with no more said. |
+| `depends_on` | Needs the other to work, to happen or to be true. |
+| `part_of` | A piece of the other. |
+| `derived_from` | Made from the other. |
+| `supported_by` | Supported by the other, as evidence. `get_node` lists it under provenance. |
+| `contradicts` | Says the opposite of the other, where no constraint can tell. |
+| `supersedes` | Replaces the other, true or decided before. |
+| `caused_by` | Happened because of the other. Refused without `sources`: a causal claim needs its evidence named. |
+
+## Provenance, identity and duplicates
+
+- **`method`**, on `remember` and `relate`: how a memory or fact was
+  obtained (`agent`, `rule`, `stated`, `imported`, or a word of the
+  agent's own). Relations from an agent's reading (`add_mentions`) are
+  marked `agent`.
+- **`get_node`** answers a `provenance` block: sources, who recorded it
+  and when, how it is known, its method, what supports it, what it was
+  derived from, and what merges brought in. Each fact says its method and
+  who recorded it.
+- **Merges keep provenance.** Properties of the kept node win in a merge,
+  so what the merged one was and how it was known (origin, certainty,
+  verification, method, who recorded it) is kept in `merged_from` on the
+  kept node. `undo_merge` brings both back as they were.
+- **A fact is recorded once.** `relate`, and the relations of
+  `add_mentions`, find the same current fact (same ends, label and valid
+  times) and answer it instead of adding a second; `maintain` lists
+  duplicates already stored (`duplicate_facts`), for `forget` to remove.
 
 They are labels, so `remember` takes them in `labels` and `recall` and
 `context` filter by them, as by any label. Nothing classifies a memory on
