@@ -180,7 +180,7 @@ pub fn find_duplicates(
     let nodes: Vec<Node> = read
         .nodes_page(ns, options.label.as_deref(), None, usize::MAX)?
         .into_iter()
-        .filter(|node| !node.has_label(ARCHIVED))
+        .filter(|node| !node.has_label(ARCHIVED) && !crate::palace::is_structure(node))
         .collect();
     let by_id: HashMap<NodeId, &Node> = nodes.iter().map(|node| (node.id, node)).collect();
     let names: HashMap<NodeId, BTreeSet<String>> =
@@ -362,6 +362,7 @@ pub fn weak_memories(read: &ReadTx, ns: &str, options: &DecayOptions) -> Result<
     let mut out = Vec::new();
     for node in read.nodes_page(ns, None, None, usize::MAX)? {
         if node.has_label(ARCHIVED)
+            || crate::palace::is_structure(&node)
             || (!options.labels.is_empty()
                 && !options.labels.iter().any(|label| node.has_label(label)))
         {
@@ -467,7 +468,10 @@ pub fn consolidation_groups(
                 let Some(entity) = read.node(ns, neighbor.node)? else {
                     continue;
                 };
-                if is_memory(&entity) || entity.has_label(ARCHIVED) {
+                if is_memory(&entity)
+                    || entity.has_label(ARCHIVED)
+                    || crate::palace::is_structure(&entity)
+                {
                     continue;
                 }
                 let members = groups.entry(entity.id).or_default();

@@ -212,6 +212,11 @@ pub fn plan(read: &ReadTx, ns: &str, options: &ExtractOptions) -> Result<Plan> {
         };
         after = Some(last.id);
         for node in page {
+            // A room named as an entity is not that entity, and its text is
+            // not a memory to read.
+            if crate::palace::is_structure(&node) {
+                continue;
+            }
             let entity = if options.entity_labels.is_empty() {
                 !is_source(&node, options)
             } else {
@@ -519,6 +524,18 @@ pub fn extract_batch(
                         tx.find_by_name(ns, &found.value)?
                     };
                     candidates.retain(|id| *id != source);
+                    if found.kind != Kind::Name {
+                        let mut entities = Vec::with_capacity(candidates.len());
+                        for id in candidates {
+                            if tx
+                                .node(ns, id)?
+                                .is_some_and(|node| !crate::palace::is_structure(&node))
+                            {
+                                entities.push(id);
+                            }
+                        }
+                        candidates = entities;
+                    }
                     if let Some(decided) = decision(tx, ns, &found.value)? {
                         candidates = vec![decided];
                     }

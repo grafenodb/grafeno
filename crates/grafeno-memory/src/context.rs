@@ -152,7 +152,6 @@ pub fn context_for(
     query: &RecallQuery,
     options: &ContextOptions,
 ) -> Result<Context> {
-    let count = options.count_tokens;
     let fact_reserve = (options.budget as f32 * options.fact_share.clamp(0.0, 1.0)) as usize;
     let item_budget = options.budget.saturating_sub(fact_reserve);
     let mut context = Context::default();
@@ -161,9 +160,43 @@ pub fn context_for(
     {
         add_overview(read, ns, text, options, item_budget, &mut context)?;
     }
+    let nodes = recall(read, ns, query)?
+        .into_iter()
+        .map(|recalled| (recalled.node, recalled.score))
+        .collect();
+    add_items(read, ns, nodes, options, item_budget, &mut context)?;
+    add_facts(read, ns, options, &mut context)?;
+    Ok(context)
+}
 
-    for recalled in recall(read, ns, query)? {
-        let node = &recalled.node;
+/// Packs these nodes, in the order given, with the facts that connect
+/// them, into at most `options.budget` tokens: [`context_for`] for nodes
+/// chosen some other way than by a recall. Each comes with its score.
+pub fn context_of(
+    read: &ReadTx,
+    ns: &str,
+    nodes: Vec<(Node, f32)>,
+    options: &ContextOptions,
+) -> Result<Context> {
+    let fact_reserve = (options.budget as f32 * options.fact_share.clamp(0.0, 1.0)) as usize;
+    let item_budget = options.budget.saturating_sub(fact_reserve);
+    let mut context = Context::default();
+    add_items(read, ns, nodes, options, item_budget, &mut context)?;
+    add_facts(read, ns, options, &mut context)?;
+    Ok(context)
+}
+
+/// The items, each whole or cut to what is left of `item_budget`.
+fn add_items(
+    read: &ReadTx,
+    ns: &str,
+    nodes: Vec<(Node, f32)>,
+    options: &ContextOptions,
+    item_budget: usize,
+    context: &mut Context,
+) -> Result<()> {
+    let count = options.count_tokens;
+    for (node, score) in &nodes {
         let mut text = item_body(read, ns, node)?;
         let name = readable_name(node, &text);
         // An unnamed item's name is the start of its own text: don't repeat it.
@@ -217,14 +250,12 @@ pub fn context_for(
             name,
             labels: node.labels.clone(),
             text,
-            score: recalled.score,
+            score: *score,
             sources: node.sources.clone(),
             truncated,
         });
     }
-
-    add_facts(read, ns, options, &mut context)?;
-    Ok(context)
+    Ok(())
 }
 
 /// The community summaries that match the query, before the memories.
@@ -297,6 +328,10 @@ fn add_facts(
     for item in &context.items {
         for neighbor in read.neighbors(ns, item.node, Direction::Both, &options.facts)? {
             if !seen.insert(neighbor.edge.id) {
+                continue;
+            }
+            // Where a memory is anchored is not a fact about it.
+            if neighbor.edge.label == crate::palace::ANCHORED_AT {
                 continue;
             }
             let both = names.contains_key(&neighbor.node);

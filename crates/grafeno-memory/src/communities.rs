@@ -320,6 +320,7 @@ pub fn plan_communities(
         .filter(|node| {
             !node.has_label(COMMUNITY)
                 && !node.has_label(ARCHIVED)
+                && !crate::palace::is_structure(node)
                 && (options.labels.is_empty()
                     || options.labels.iter().any(|label| node.has_label(label)))
         })

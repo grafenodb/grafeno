@@ -233,6 +233,21 @@ pub fn recall(read: &ReadTx, ns: &str, query: &RecallQuery) -> Result<Vec<Recall
         scores.entry(node).or_default().0 = score;
     }
 
+    // A palace's rooms and loci arrange memories and are not memories:
+    // unless asked for by label, they are neither returned nor a way from
+    // one memory to another, so recall answers the same with a palace as
+    // without one.
+    let hidden = if query
+        .labels
+        .iter()
+        .any(|label| crate::palace::STRUCTURE_LABELS.contains(&label.as_str()))
+    {
+        HashSet::new()
+    } else {
+        crate::palace::structure(read, ns)?
+    };
+    scores.retain(|id, _| !hidden.contains(id));
+
     if let Some(expansion) = &query.expand {
         let direct: HashMap<NodeId, f32> = scores
             .iter()
@@ -247,7 +262,9 @@ pub fn recall(read: &ReadTx, ns: &str, query: &RecallQuery) -> Result<Vec<Recall
         // several matches is a reason to rank it, and damping keeps a hub
         // near all of them from collecting more than its share.
         for (seed, seed_score) in seeds {
-            for (node, hops, share) in spread(read, ns, seed, expansion, &direct, &mut degrees)? {
+            for (node, hops, share) in
+                spread(read, ns, seed, expansion, &direct, &hidden, &mut degrees)?
+            {
                 let entry = scores.entry(node).or_default();
                 entry.0 += seed_score * share;
                 entry.1.push(Signal::Graph { seed, hops });
@@ -323,6 +340,7 @@ fn spread(
     seed: NodeId,
     expansion: &Expansion,
     direct: &HashMap<NodeId, f32>,
+    hidden: &HashSet<NodeId>,
     degrees: &mut HashMap<NodeId, usize>,
 ) -> Result<Vec<(NodeId, usize, f32)>> {
     // Negative (or NaN) would amplify hubs: read as 0.
@@ -336,7 +354,8 @@ fn spread(
         if hops >= expansion.depth {
             continue;
         }
-        let entries = read.neighbor_ids(ns, current, expansion.direction, &expansion.filter)?;
+        let mut entries = read.neighbor_ids(ns, current, expansion.direction, &expansion.filter)?;
+        entries.retain(|(_, other)| !hidden.contains(other));
         degrees.insert(current, entries.len().min(DEGREE_CAP));
         let mut seen = HashSet::new();
         let mut next: Vec<NodeId> = Vec::new();
@@ -355,7 +374,7 @@ fn spread(
         let from = damping(degrees[&current]);
         for node in next {
             let to = if hubs > 0.0 {
-                damping(degree(read, ns, node, expansion, degrees)?)
+                damping(degree(read, ns, node, expansion, hidden, degrees)?)
             } else {
                 1.0
             };
@@ -379,12 +398,23 @@ fn degree(
     ns: &str,
     node: NodeId,
     expansion: &Expansion,
+    hidden: &HashSet<NodeId>,
     degrees: &mut HashMap<NodeId, usize>,
 ) -> Result<usize> {
     if let Some(degree) = degrees.get(&node) {
         return Ok(*degree);
     }
-    let degree = read.degree(ns, node, expansion.direction, &expansion.filter, DEGREE_CAP)?;
+    let degree = if hidden.is_empty() {
+        read.degree(ns, node, expansion.direction, &expansion.filter, DEGREE_CAP)?
+    } else {
+        // Anchors do not make a memory a hub: its edges to a palace are
+        // not counted.
+        read.neighbor_ids(ns, node, expansion.direction, &expansion.filter)?
+            .iter()
+            .filter(|(_, other)| !hidden.contains(other))
+            .count()
+            .min(DEGREE_CAP)
+    };
     degrees.insert(node, degree);
     Ok(degree)
 }

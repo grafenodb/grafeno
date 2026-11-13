@@ -6,7 +6,9 @@
 //! connect them, into a prompt-ready text that fits a token budget.
 //! [`refresh_communities`] summarizes the communities of the graph, at
 //! every level, without a model; [`overview`] searches those summaries
-//! for broad questions.
+//! for broad questions. A [`palace`] arranges memories into rooms and
+//! places: [`walk`] goes from a topic to the memories around it, and
+//! [`enter`] brings back a room's context and where its work was left.
 //!
 //! ```no_run
 //! use grafeno::{Grafeno, NewNode};
@@ -30,6 +32,7 @@ mod context;
 pub mod documents;
 pub mod extract;
 mod maintenance;
+pub mod palace;
 mod recall;
 mod reconcile;
 pub mod timeline;
@@ -43,7 +46,7 @@ pub use communities::{
     plan_communities, refresh_communities, set_community_text,
 };
 pub use context::{
-    Context, ContextFact, ContextItem, ContextOptions, context_for, estimate_tokens,
+    Context, ContextFact, ContextItem, ContextOptions, context_for, context_of, estimate_tokens,
 };
 pub use documents::{
     CHUNK, DEFAULT_CHUNK_CHARS, Ingested, Kind, NewDocument, Piece, cut, ingest_document,
@@ -52,6 +55,12 @@ pub use maintenance::{
     ConsolidationGroup, ConsolidationOptions, DISTINCT_FROM, DecayOptions, Duplicate,
     DuplicateOptions, Summary, WeakMemory, archive, consolidation_groups, find_duplicates,
     weak_memories, write_summary,
+};
+pub use palace::{
+    ANCHORED_AT, Anchored, AnchoredMemory, Created, EnterOptions, Entered, Hop, LOCUS, LocusMap,
+    MapOptions, NewRoom, PALACE, PalaceMap, Place, ROOM, Reached, RoomMap, Walk, WalkPlace,
+    WalkQuery, anchor, anchors_of, create_locus, create_palace, create_room, enter, find_locus,
+    find_palace, find_room, map_palace, map_room, palaces, unanchor, walk,
 };
 pub use recall::{ARCHIVED, Expansion, Ranking, RecallQuery, Recalled, Signal, recall};
 pub use reconcile::{
