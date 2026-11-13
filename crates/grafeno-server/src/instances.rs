@@ -415,6 +415,8 @@ fn make_private_dir(dir: &Path) -> Result<(), String> {
         std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o750))
             .map_err(|error| format!("cannot restrict {}: {error}", dir.display()))?;
     }
+    #[cfg(windows)]
+    crate::config::windows_acl::restrict(dir, true)?;
     Ok(())
 }
 
@@ -1153,8 +1155,14 @@ mod system {
         crate::service::windows::state()
     }
 
-    pub fn exposed(_path: &Path) -> Option<String> {
-        None
+    pub fn exposed(path: &Path) -> Option<String> {
+        let open = crate::config::windows_acl::open_to(path);
+        (!open.is_empty()).then(|| {
+            format!(
+                "is open to {} (remove the access with icacls, or reinstall)",
+                open.join(", ")
+            )
+        })
     }
 
     pub fn not_writable_by_service(_dir: &Path) -> Option<String> {

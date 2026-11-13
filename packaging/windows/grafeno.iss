@@ -97,6 +97,14 @@ Filename: "{app}\grafeno.exe"; Parameters: "config init --path ""{#ConfigFile}""
 ; password reaches it on its standard input, from a file deleted right after.
 Filename: "{cmd}"; Parameters: "/c """"{app}\grafeno.exe"" users create ""{code:AdminName}"" --superuser --db ""{code:DataDir}\grafeno.redb"" --password-stdin < ""{tmp}\admin.txt"""""; Flags: runhidden waituntilterminated; StatusMsg: "Creating the first administrator..."; Check: CreatesAdmin; BeforeInstall: WriteAdminPassword; AfterInstall: ForgetAdminPassword
 Filename: "{app}\grafeno.exe"; Parameters: "service install --no-start --config ""{#ConfigFile}"" {code:AccountArgument}"; Flags: runhidden waituntilterminated; StatusMsg: "Installing the Grafeno service..."; Tasks: service
+; Grafeno's folders are for SYSTEM, the administrators and the service
+; only: what they inherited from C:\ProgramData (every user may read it)
+; goes, on every install and upgrade. By security identifiers, so that it
+; works in every language of Windows.
+Filename: "{sys}\icacls.exe"; Parameters: """{#SettingsDir}"" /grant:r *S-1-5-18:(OI)(CI)F *S-1-5-32-544:(OI)(CI)F"; Flags: runhidden waituntilterminated
+Filename: "{sys}\icacls.exe"; Parameters: """{#SettingsDir}"" /inheritance:r"; Flags: runhidden waituntilterminated
+Filename: "{sys}\icacls.exe"; Parameters: """{code:InstalledDataDir}"" /grant:r *S-1-5-18:(OI)(CI)F *S-1-5-32-544:(OI)(CI)F"; Flags: runhidden waituntilterminated
+Filename: "{sys}\icacls.exe"; Parameters: """{code:InstalledDataDir}"" /inheritance:r"; Flags: runhidden waituntilterminated
 ; The virtual account may use Grafeno's folders, and nothing else.
 Filename: "{sys}\icacls.exe"; Parameters: """{#SettingsDir}"" /grant ""NT SERVICE\Grafeno:(OI)(CI)M"""; Flags: runhidden waituntilterminated; Tasks: service; Check: VirtualAccount
 Filename: "{sys}\icacls.exe"; Parameters: """{code:InstalledDataDir}"" /grant ""NT SERVICE\Grafeno:(OI)(CI)M"""; Flags: runhidden waituntilterminated; Tasks: service; Check: VirtualAccount

@@ -512,8 +512,14 @@ pub fn write_new(path: &Path, mut config: Config, force: bool) -> Result<Config,
             .map_err(|error| format!("cannot create {}: {error}", parent.display()))?;
     }
     if let Some(parent) = config.db.as_deref().and_then(Path::parent) {
+        let made = !parent.exists();
         std::fs::create_dir_all(parent)
             .map_err(|error| format!("cannot create {}: {error}", parent.display()))?;
+        // A folder made here for the data is the server's alone; one that
+        // was there already is left as its owner set it.
+        if made {
+            restrict_dir(parent);
+        }
     }
     if config.token.is_none() {
         config.token = Some(new_token()?);
@@ -537,12 +543,152 @@ fn restrict(path: &Path) {
     let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o640));
 }
 
-#[cfg(not(unix))]
+#[cfg(unix)]
+fn restrict_dir(path: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o750));
+}
+
+/// Makes the file readable by SYSTEM, the administrators and its creator
+/// only: what it inherited from its folder (`C:\ProgramData` lets every
+/// user read) is removed.
+#[cfg(windows)]
+fn restrict(path: &Path) {
+    if let Err(error) = windows_acl::restrict(path, false) {
+        eprintln!("warning: {error}");
+    }
+}
+
+#[cfg(windows)]
+fn restrict_dir(path: &Path) {
+    if let Err(error) = windows_acl::restrict(path, true) {
+        eprintln!("warning: {error}");
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
 fn restrict(_path: &Path) {}
+
+#[cfg(not(any(unix, windows)))]
+fn restrict_dir(_path: &Path) {}
+
+/// Access lists on Windows, through `icacls` (part of Windows), by security
+/// identifiers so that it works in every language of the system.
+#[cfg(windows)]
+pub mod windows_acl {
+    use std::path::Path;
+    use std::process::Command;
+
+    /// SYSTEM and the Administrators group.
+    const KEPT: [&str; 2] = ["*S-1-5-18", "*S-1-5-32-544"];
+    /// Everyone, Authenticated Users and Users.
+    const OPEN: [(&str, &str); 3] = [
+        ("*S-1-1-0", "Everyone"),
+        ("*S-1-5-11", "Authenticated Users"),
+        ("*S-1-5-32-545", "Users"),
+    ];
+
+    fn icacls(args: &[&std::ffi::OsStr]) -> Result<String, String> {
+        let output = Command::new("icacls")
+            .args(args)
+            .output()
+            .map_err(|error| format!("cannot run icacls: {error}"))?;
+        let text = String::from_utf8_lossy(&output.stdout).into_owned();
+        if output.status.success() {
+            Ok(text)
+        } else {
+            Err(format!(
+                "icacls failed: {}{}",
+                text.trim(),
+                String::from_utf8_lossy(&output.stderr).trim()
+            ))
+        }
+    }
+
+    /// The security identifier of the account running this process.
+    fn current_user() -> Option<String> {
+        let output = Command::new("whoami")
+            .args(["/user", "/fo", "csv", "/nh"])
+            .output()
+            .ok()?;
+        let line = String::from_utf8_lossy(&output.stdout);
+        let sid = line.trim().rsplit(',').next()?.trim_matches('"').to_owned();
+        sid.starts_with("S-1-").then(|| format!("*{sid}"))
+    }
+
+    /// Only SYSTEM, the administrators and the current account may use
+    /// `path` (and, for a folder, what is made in it); explicit grants to
+    /// others (the service's account) are kept, inherited ones removed.
+    pub fn restrict(path: &Path, folder: bool) -> Result<(), String> {
+        let inherit = if folder { "(OI)(CI)" } else { "" };
+        let mut grants: Vec<String> = KEPT.iter().map(|sid| format!("{sid}:{inherit}F")).collect();
+        if let Some(user) = current_user() {
+            grants.push(format!("{user}:{inherit}F"));
+        }
+        let mut args: Vec<&std::ffi::OsStr> = vec![path.as_os_str(), "/grant:r".as_ref()];
+        args.extend(
+            grants
+                .iter()
+                .map(|grant| std::ffi::OsStr::new(grant.as_str())),
+        );
+        icacls(&args).map_err(|error| format!("cannot restrict {}: {error}", path.display()))?;
+        icacls(&[path.as_os_str(), "/inheritance:r".as_ref()])
+            .map_err(|error| format!("cannot restrict {}: {error}", path.display()))?;
+        Ok(())
+    }
+
+    /// Which of Everyone, Authenticated Users and Users may use `path`.
+    pub fn open_to(path: &Path) -> Vec<&'static str> {
+        // Names are in the system's language: their identifiers are asked
+        // for one by one.
+        OPEN.iter()
+            .filter(|(sid, _)| {
+                Command::new("icacls")
+                    .arg(path)
+                    .args(["/findsid", sid])
+                    .output()
+                    .map(|output| {
+                        let text = String::from_utf8_lossy(&output.stdout).to_lowercase();
+                        let name = path.to_string_lossy().to_lowercase();
+                        text.contains(&name)
+                    })
+                    .unwrap_or(false)
+            })
+            .map(|(_, name)| *name)
+            .collect()
+    }
+}
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Found by an outside review: on Windows the settings file, with the
+    /// owner's token, and the data kept what they inherited from
+    /// `C:\ProgramData`, which every user may read.
+    #[cfg(windows)]
+    #[test]
+    fn on_windows_settings_and_data_are_not_open_to_every_user() {
+        let dir = std::env::temp_dir().join(format!("grafeno-acl-{}", grafeno::NodeId::new()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // A folder every user may read, as C:\ProgramData is.
+        let open = std::process::Command::new("icacls")
+            .arg(&dir)
+            .args(["/grant", "*S-1-5-32-545:(OI)(CI)RX"])
+            .output()
+            .unwrap();
+        assert!(open.status.success());
+        assert!(!windows_acl::open_to(&dir).is_empty());
+        let path = dir.join("grafeno.toml");
+        let data = dir.join("data").join("g.redb");
+        init(&path, &data, "127.0.0.1:7900".parse().unwrap(), false).unwrap();
+        assert_eq!(windows_acl::open_to(&path), Vec::<&str>::new());
+        assert_eq!(windows_acl::open_to(&dir.join("data")), Vec::<&str>::new());
+        // Still readable by whoever made it.
+        assert!(Config::load(&path).is_ok());
+        std::fs::write(dir.join("data").join("probe"), b"x").unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn init_writes_a_loadable_config_with_a_token() {
