@@ -404,7 +404,12 @@ pub async fn signin(
     Body(input): Body<Credentials>,
 ) -> ApiResult<Json<Value>> {
     let throttle = state.throttle.clone();
-    if let Err(message) = throttle.check(state.auth.lockout, &input.name, address.as_deref()) {
+    if input.name.len() > auth::MAX_NAME_BYTES || input.password.len() > auth::MAX_PASSWORD_BYTES {
+        return Err(unauthorized("unauthorized", "wrong name or password"));
+    }
+    // Counted before the password is checked, so that attempts in parallel
+    // cannot all pass the limit.
+    if let Err(message) = throttle.attempt(state.auth.lockout, &input.name, address.as_deref()) {
         failed_signin(&state, &input.name, &address, "locked", Outcome::Refused).await;
         return Err(ApiError::with_status(
             StatusCode::TOO_MANY_REQUESTS,
@@ -415,6 +420,10 @@ pub async fn signin(
     let db = state.db.clone();
     let name = input.name.clone();
     let password = input.password;
+    let _turn = auth::password_checks()
+        .acquire()
+        .await
+        .map_err(|e| ApiError::internal(e.to_string()))?;
     let account = tokio::task::spawn_blocking(move || -> grafeno::Result<Option<Account>> {
         let account = db.begin_read()?.account(&name)?;
         // A wrong name costs as much as a wrong password.
@@ -429,8 +438,8 @@ pub async fn signin(
     })
     .await
     .map_err(|e| ApiError::internal(e.to_string()))??;
+    drop(_turn);
     let Some(account) = account else {
-        throttle.failed(&input.name, address.as_deref());
         failed_signin(
             &state,
             &input.name,
@@ -460,7 +469,7 @@ pub async fn signin(
         failed_signin(&state, &input.name, &address, "expired", Outcome::Refused).await;
         return Err(unauthorized("account_expired", "the account expired"));
     }
-    throttle.succeeded(&account.name);
+    throttle.succeeded(&account.name, address.as_deref());
     Ok(Json(open_session(&state, &account, address).await?))
 }
 
@@ -658,10 +667,22 @@ pub async fn change_password(
         .map_err(|message| {
             ApiError::with_status(StatusCode::TOO_MANY_REQUESTS, "locked", message)
         })?;
+    if input.current_password.len() > auth::MAX_PASSWORD_BYTES {
+        state.throttle.failed(&account.name, address.as_deref());
+        return Err(unauthorized(
+            "unauthorized",
+            "the current password is wrong",
+        ));
+    }
+    let _turn = auth::password_checks()
+        .acquire()
+        .await
+        .map_err(|e| ApiError::internal(e.to_string()))?;
     let ok = account
         .password_hash
         .as_deref()
         .is_some_and(|hash| auth::verify_password(hash, &input.current_password));
+    drop(_turn);
     if !ok {
         state.throttle.failed(&account.name, address.as_deref());
         return Err(unauthorized(
@@ -1079,15 +1100,30 @@ pub async fn create_key(
             ));
         }
     }
+    let asked = input
+        .scope
+        .clone()
+        .filter(|s| !s.namespaces.is_empty() || s.read_only);
+    // A key made with a scoped key reaches no further than it: with no
+    // scope asked it takes the caller's, and a wider one is refused. A
+    // superuser's account would otherwise hand an unscoped key, and all
+    // its power, to a key that was meant to read one namespace.
+    let scope = match &caller {
+        auth::Caller::Account {
+            scope: Some(outer), ..
+        } => Some(outer.narrowed(asked.as_ref()).ok_or_else(|| {
+            ApiError::forbidden_message(
+                "a key made with a scoped key cannot reach further than it: ask for a scope inside the caller's",
+            )
+        })?),
+        _ => asked,
+    };
     let secret = auth::new_secret();
     let key = ApiKey {
         name: input.name.clone(),
         account: account_name.clone(),
         secret_hash: auth::hash_secret(&secret),
-        scope: input
-            .scope
-            .clone()
-            .filter(|s| !s.namespaces.is_empty() || s.read_only),
+        scope,
         expires_at: input
             .expires_in_days
             .map(|days| later(Duration::from_secs(u64::from(days) * 24 * 3600))),

@@ -172,6 +172,48 @@ impl KeyScope {
             other => other,
         }
     }
+
+    /// The scope a key made by a key of scope `self` may have, given the
+    /// scope asked for (`None`: no narrowing asked). A key never reaches
+    /// further than the key that made it: no scope asked gives `self`, and
+    /// a scope that reaches a namespace `self` does not, or writes where
+    /// `self` only reads, is refused (`None`).
+    pub fn narrowed(&self, wanted: Option<&KeyScope>) -> Option<KeyScope> {
+        let Some(wanted) = wanted else {
+            return Some(self.clone());
+        };
+        if self.read_only && !wanted.read_only {
+            return None;
+        }
+        let namespaces = if self.namespaces.is_empty() {
+            wanted.namespaces.clone()
+        } else if wanted.namespaces.is_empty() {
+            // All of the account's, which this key does not reach.
+            self.namespaces.clone()
+        } else {
+            for pattern in &wanted.namespaces {
+                let inside = self.namespaces.iter().any(|outer| {
+                    outer == pattern
+                        || match pattern.strip_suffix('*') {
+                            // A wider pattern is inside only a pattern
+                            // that starts the same way or earlier.
+                            Some(prefix) => outer
+                                .strip_suffix('*')
+                                .is_some_and(|outer| prefix.starts_with(outer)),
+                            None => covers(outer, pattern),
+                        }
+                });
+                if !inside {
+                    return None;
+                }
+            }
+            wanted.namespaces.clone()
+        };
+        Some(KeyScope {
+            namespaces,
+            read_only: self.read_only || wanted.read_only,
+        })
+    }
 }
 
 /// An API key of an account.
@@ -604,6 +646,52 @@ pub(crate) fn upgrade_principals(tx: &redb::WriteTransaction) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use super::KeyScope;
+
+    fn scope(namespaces: &[&str], read_only: bool) -> KeyScope {
+        KeyScope {
+            namespaces: namespaces.iter().map(|ns| ns.to_string()).collect(),
+            read_only,
+        }
+    }
+
+    #[test]
+    fn a_key_made_by_a_scoped_key_reaches_no_further() {
+        let outer = scope(&["public", "team-*"], true);
+        // Nothing asked: the same scope, not the account's whole reach.
+        assert_eq!(outer.narrowed(None), Some(outer.clone()));
+        // Narrower: kept.
+        assert_eq!(
+            outer.narrowed(Some(&scope(&["team-a"], true))),
+            Some(scope(&["team-a"], true))
+        );
+        assert_eq!(
+            outer.narrowed(Some(&scope(&["team-a*"], true))),
+            Some(scope(&["team-a*"], true))
+        );
+        // An empty list of namespaces means all: the outer ones.
+        assert_eq!(
+            outer.narrowed(Some(&scope(&[], true))),
+            Some(scope(&["public", "team-*"], true))
+        );
+        // Wider: refused.
+        assert_eq!(outer.narrowed(Some(&scope(&["secret"], true))), None);
+        assert_eq!(outer.narrowed(Some(&scope(&["*"], true))), None);
+        assert_eq!(outer.narrowed(Some(&scope(&["te*"], true))), None);
+        assert_eq!(outer.narrowed(Some(&scope(&["public"], false))), None);
+        // An outer key that writes may make one that only reads.
+        let writer = scope(&["public"], false);
+        assert_eq!(
+            writer.narrowed(Some(&scope(&["public"], true))),
+            Some(scope(&["public"], true))
+        );
+        let everywhere_read = scope(&[], true);
+        assert_eq!(everywhere_read.narrowed(Some(&scope(&["x"], false))), None);
+        assert_eq!(
+            everywhere_read.narrowed(Some(&scope(&["x"], true))),
+            Some(scope(&["x"], true))
+        );
+    }
     use super::*;
 
     fn account(grants: &[(&str, Role)]) -> Account {

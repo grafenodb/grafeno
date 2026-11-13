@@ -198,63 +198,191 @@ impl Default for Lockout {
     }
 }
 
-fn recent(map: &Mutex<HashMap<String, Vec<Instant>>>, key: &str, window: Duration) -> usize {
-    let mut map = map.lock().unwrap_or_else(|e| e.into_inner());
-    let now = Instant::now();
-    let entry = map.entry(key.to_owned()).or_default();
-    entry.retain(|at| now.duration_since(*at) < window);
-    entry.len()
+/// Accounts and addresses a throttle remembers at most. Past it, the ones
+/// whose attempts are oldest are forgotten first, so that many made-up
+/// names cannot grow its memory without end.
+const THROTTLE_KEYS: usize = 100_000;
+
+type Attempts = HashMap<String, Vec<Instant>>;
+
+/// The attempts of `key` still inside the window (an absent key has none).
+fn recent(map: &mut Attempts, key: &str, now: Instant, window: Duration) -> usize {
+    match map.get_mut(key) {
+        Some(entry) => {
+            entry.retain(|at| now.duration_since(*at) < window);
+            if entry.is_empty() {
+                map.remove(key);
+                0
+            } else {
+                entry.len()
+            }
+        }
+        None => 0,
+    }
+}
+
+/// Records an attempt of `key`, keeping the map within [`THROTTLE_KEYS`].
+fn note(map: &mut Attempts, key: &str, now: Instant, window: Duration) {
+    if !map.contains_key(key) && map.len() >= THROTTLE_KEYS {
+        map.retain(|_, entry| {
+            entry.retain(|at| now.duration_since(*at) < window);
+            !entry.is_empty()
+        });
+        while map.len() >= THROTTLE_KEYS {
+            let oldest = map
+                .iter()
+                .min_by_key(|(_, entry)| entry.last().copied())
+                .map(|(key, _)| key.clone());
+            match oldest {
+                Some(oldest) => map.remove(&oldest),
+                None => break,
+            };
+        }
+    }
+    map.entry(key.to_owned()).or_default().push(now);
 }
 
 impl Throttle {
-    /// Why a sign-in is refused before its password is checked: the
-    /// account is locked, or the address made too many attempts.
+    /// Why a sign-in would be refused now: the account is locked, or the
+    /// address made too many attempts. Records nothing.
     pub fn check(
         &self,
         lockout: Lockout,
         account: &str,
         address: Option<&str>,
     ) -> Result<(), String> {
-        if let Some(address) = address
-            && recent(&self.addresses, address, lockout.window) >= lockout.address_attempts
-        {
-            return Err("too many failed sign-ins from this address: try again later".into());
-        }
-        if recent(&self.accounts, account, lockout.window) >= lockout.account_attempts {
-            return Err(format!(
-                "the account is locked after {} failed sign-ins: try again in {} minutes",
-                lockout.account_attempts,
-                lockout.window.as_secs().div_ceil(60)
-            ));
+        let now = Instant::now();
+        let mut accounts = self.accounts.lock().unwrap_or_else(|e| e.into_inner());
+        let mut addresses = self.addresses.lock().unwrap_or_else(|e| e.into_inner());
+        refusal(
+            &mut accounts,
+            &mut addresses,
+            lockout,
+            account,
+            address,
+            now,
+        )
+    }
+
+    /// Begins an attempt: refused as [`Throttle::check`] says, or counted
+    /// at once as a failure, so that many attempts in parallel cannot all
+    /// pass the check before any of them fails. [`Throttle::succeeded`]
+    /// takes a successful one back.
+    pub fn attempt(
+        &self,
+        lockout: Lockout,
+        account: &str,
+        address: Option<&str>,
+    ) -> Result<(), String> {
+        let now = Instant::now();
+        let mut accounts = self.accounts.lock().unwrap_or_else(|e| e.into_inner());
+        let mut addresses = self.addresses.lock().unwrap_or_else(|e| e.into_inner());
+        refusal(
+            &mut accounts,
+            &mut addresses,
+            lockout,
+            account,
+            address,
+            now,
+        )?;
+        note(&mut accounts, account, now, lockout.window);
+        if let Some(address) = address {
+            note(&mut addresses, address, now, lockout.window);
         }
         Ok(())
     }
 
+    /// A failure outside [`Throttle::attempt`] (a wrong current password).
     pub fn failed(&self, account: &str, address: Option<&str>) {
         let now = Instant::now();
-        self.accounts
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .entry(account.to_owned())
-            .or_default()
-            .push(now);
+        let window = Lockout::default().window.max(Duration::from_secs(3_600));
+        note(
+            &mut self.accounts.lock().unwrap_or_else(|e| e.into_inner()),
+            account,
+            now,
+            window,
+        );
         if let Some(address) = address {
-            self.addresses
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .entry(address.to_owned())
-                .or_default()
-                .push(now);
+            note(
+                &mut self.addresses.lock().unwrap_or_else(|e| e.into_inner()),
+                address,
+                now,
+                window,
+            );
         }
     }
 
-    pub fn succeeded(&self, account: &str) {
+    /// The attempt succeeded: the account's failures are forgotten, and
+    /// the address's attempt taken back.
+    pub fn succeeded(&self, account: &str, address: Option<&str>) {
         self.accounts
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .remove(account);
+        if let Some(address) = address {
+            let mut addresses = self.addresses.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(entry) = addresses.get_mut(address) {
+                entry.pop();
+                if entry.is_empty() {
+                    addresses.remove(address);
+                }
+            }
+        }
+    }
+
+    /// How many accounts and addresses it remembers.
+    pub fn remembered(&self) -> (usize, usize) {
+        (
+            self.accounts
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .len(),
+            self.addresses
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .len(),
+        )
     }
 }
+
+fn refusal(
+    accounts: &mut Attempts,
+    addresses: &mut Attempts,
+    lockout: Lockout,
+    account: &str,
+    address: Option<&str>,
+    now: Instant,
+) -> Result<(), String> {
+    if let Some(address) = address
+        && recent(addresses, address, now, lockout.window) >= lockout.address_attempts
+    {
+        return Err("too many failed sign-ins from this address: try again later".into());
+    }
+    if recent(accounts, account, now, lockout.window) >= lockout.account_attempts {
+        return Err(format!(
+            "the account is locked after {} failed sign-ins: try again in {} minutes",
+            lockout.account_attempts,
+            lockout.window.as_secs().div_ceil(60)
+        ));
+    }
+    Ok(())
+}
+
+/// Password checks running at once at most: each takes tens of
+/// milliseconds and megabytes, so many sign-ins at once wait their turn
+/// instead of taking every processor and the memory with them.
+pub fn password_checks() -> &'static tokio::sync::Semaphore {
+    static CHECKS: std::sync::OnceLock<tokio::sync::Semaphore> = std::sync::OnceLock::new();
+    CHECKS.get_or_init(|| {
+        let processors = std::thread::available_parallelism().map_or(2, |n| n.get());
+        tokio::sync::Semaphore::new(processors.clamp(1, 8))
+    })
+}
+
+/// The longest name and password a sign-in reads; longer ones are refused
+/// before any work is done on them.
+pub const MAX_NAME_BYTES: usize = 256;
+pub const MAX_PASSWORD_BYTES: usize = 1_024;
 
 // ------------------------------------------------------------ credentials
 
@@ -736,6 +864,31 @@ fn namespace_actions(method: &str, rest: &[&str]) -> &'static [Act] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_throttle_remembers_a_bounded_number_of_names() {
+        let throttle = Throttle::default();
+        let lockout = Lockout::default();
+        // Many names, each from an address of its own, as a spread-out
+        // attack would send them.
+        for i in 0..THROTTLE_KEYS + 50 {
+            let address = format!("10.{}.{}.{}", i >> 16 & 255, i >> 8 & 255, i & 255);
+            throttle
+                .attempt(lockout, &format!("made-up-{i}"), Some(&address))
+                .unwrap();
+        }
+        let (accounts, addresses) = throttle.remembered();
+        assert!(accounts <= THROTTLE_KEYS, "{accounts}");
+        assert!(addresses <= THROTTLE_KEYS, "{addresses}");
+        // The newest names are the ones kept.
+        assert!(
+            throttle
+                .accounts
+                .lock()
+                .unwrap()
+                .contains_key(&format!("made-up-{}", THROTTLE_KEYS + 49))
+        );
+    }
 
     #[test]
     fn routes_need_roles() {

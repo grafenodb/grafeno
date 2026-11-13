@@ -619,3 +619,224 @@ async fn keys_belong_to_accounts_and_are_scoped() {
         (StatusCode::UNAUTHORIZED, Some("key_expired"))
     );
 }
+
+/// Found by an outside review: a key scoped to reading one namespace, of a
+/// superuser's account, made a new key with no scope, and with it every
+/// right of the account.
+#[tokio::test]
+async fn a_key_made_with_a_scoped_key_reaches_no_further() {
+    let app = world(Duration::from_secs(900)).await;
+    let (code, _) = call(
+        &app,
+        Some(OWNER),
+        "POST",
+        "/v1/accounts",
+        Some(json!({ "name": "boss", "kind": "service", "superuser": true })),
+    )
+    .await;
+    assert_eq!(code, StatusCode::CREATED);
+    let (code, made) = call(
+        &app,
+        Some(OWNER),
+        "POST",
+        "/v1/keys",
+        Some(json!({ "name": "narrow", "account": "boss",
+                     "scope": { "namespaces": ["a"], "read_only": true } })),
+    )
+    .await;
+    assert_eq!(code, StatusCode::CREATED, "{made}");
+    let narrow = made["secret"].as_str().unwrap().to_owned();
+    let (code, _) = call(&app, Some(&narrow), "GET", "/v1/accounts", None).await;
+    assert_eq!(code, StatusCode::FORBIDDEN);
+
+    // No scope asked: the new key takes the caller's, not the account's.
+    let (code, made) = call(
+        &app,
+        Some(&narrow),
+        "POST",
+        "/v1/keys",
+        Some(json!({ "name": "escaped", "account": "boss" })),
+    )
+    .await;
+    assert_eq!(code, StatusCode::CREATED, "{made}");
+    assert_eq!(made["key"]["scope"]["namespaces"], json!(["a"]), "{made}");
+    assert_eq!(made["key"]["scope"]["read_only"], true);
+    let escaped = made["secret"].as_str().unwrap().to_owned();
+    let (code, _) = call(&app, Some(&escaped), "GET", "/v1/accounts", None).await;
+    assert_eq!(code, StatusCode::FORBIDDEN);
+    let (code, _) = call(&app, Some(&escaped), "GET", "/v1/b/stats", None).await;
+    assert_eq!(code, StatusCode::FORBIDDEN);
+    let (code, _) = call(&app, Some(&escaped), "GET", "/v1/a/stats", None).await;
+    assert_eq!(code, StatusCode::OK);
+
+    // A wider scope is refused, and so is writing where it only reads.
+    for scope in [
+        json!({ "namespaces": ["b"], "read_only": true }),
+        json!({ "namespaces": ["*"], "read_only": true }),
+        json!({ "namespaces": ["a"], "read_only": false }),
+    ] {
+        let (code, body) = call(
+            &app,
+            Some(&narrow),
+            "POST",
+            "/v1/keys",
+            Some(json!({ "name": "wider", "account": "boss", "scope": scope })),
+        )
+        .await;
+        assert_eq!(code, StatusCode::FORBIDDEN, "{scope} {body}");
+    }
+    // Rotating keeps the scope, as it did.
+    let (code, rotated) = call(&app, Some(&narrow), "POST", "/v1/keys/narrow/rotate", None).await;
+    assert_eq!(code, StatusCode::OK, "{rotated}");
+    assert_eq!(rotated["key"]["scope"]["namespaces"], json!(["a"]));
+}
+
+/// Found by an outside review: forty wrong passwords in parallel all got
+/// past a limit of five, since each was counted only after its check.
+#[tokio::test]
+async fn attempts_in_parallel_count_before_their_passwords_are_checked() {
+    let app = world(Duration::from_secs(900)).await;
+    let mut tries = Vec::new();
+    for _ in 0..40 {
+        let app = app.clone();
+        tries.push(tokio::spawn(async move {
+            call_from(
+                &app,
+                None,
+                "POST",
+                "/v1/auth/signin",
+                Some(json!({ "name": "ana", "password": "not the password" })),
+                Some("10.1.1.1"),
+            )
+            .await
+            .0
+        }));
+    }
+    let mut unauthorized = 0;
+    let mut refused = 0;
+    for attempt in tries {
+        match attempt.await.unwrap() {
+            StatusCode::UNAUTHORIZED => unauthorized += 1,
+            StatusCode::TOO_MANY_REQUESTS => refused += 1,
+            other => panic!("{other}"),
+        }
+    }
+    assert_eq!(unauthorized, 5, "only the account's five tries are checked");
+    assert_eq!(refused, 35);
+
+    // A right password after a few wrong ones still signs in, and clears
+    // the account's count.
+    let app = world(Duration::from_secs(900)).await;
+    for _ in 0..3 {
+        signin(&app, "ana", "not the password").await;
+    }
+    let (code, _) = signin(&app, "ana", "her long passphrase").await;
+    assert_eq!(code, StatusCode::OK);
+    for _ in 0..4 {
+        let (code, _) = signin(&app, "ana", "not the password").await;
+        assert_eq!(code, StatusCode::UNAUTHORIZED);
+    }
+
+    // Names, passwords and bodies past their size are refused before any
+    // work is done on them.
+    let (code, _) = signin(&app, &"n".repeat(300), "whatever it is").await;
+    assert_eq!(code, StatusCode::UNAUTHORIZED);
+    let (code, _) = signin(&app, "ana", &"p".repeat(2_000)).await;
+    assert_eq!(code, StatusCode::UNAUTHORIZED);
+    let (code, body) = call(
+        &app,
+        None,
+        "POST",
+        "/v1/auth/signin",
+        Some(json!({ "name": "ana", "password": "x".repeat(40_000) })),
+    )
+    .await;
+    assert_eq!(code, StatusCode::BAD_REQUEST, "{body}");
+    assert!(body.to_string().contains("length limit exceeded"), "{body}");
+}
+
+/// Found by an outside review: an account that may only read began a
+/// writing transaction, which holds the one writer until it ends.
+#[tokio::test]
+async fn a_reader_begins_only_a_reading_transaction() {
+    let app = world(Duration::from_secs(900)).await;
+    let (code, _) = call(
+        &app,
+        Some(OWNER),
+        "POST",
+        "/v1/accounts",
+        Some(
+            json!({ "name": "reader", "kind": "user", "password": "quiet orchard lamp",
+                     "grants": [{ "namespace": "a", "role": "read" }] }),
+        ),
+    )
+    .await;
+    assert_eq!(code, StatusCode::CREATED);
+    let (_, session) = signin(&app, "reader", "quiet orchard lamp").await;
+    let reader = session["access_token"].as_str().unwrap().to_owned();
+
+    let (code, body) = call(&app, Some(&reader), "POST", "/v1/a/transactions", None).await;
+    assert_eq!(code, StatusCode::FORBIDDEN, "{body}");
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("read_only")
+    );
+    let (code, body) = call(
+        &app,
+        Some(&reader),
+        "POST",
+        "/v1/a/transactions",
+        Some(json!({ "read_only": true })),
+    )
+    .await;
+    assert_eq!(code, StatusCode::CREATED, "{body}");
+
+    // The writer is free: the owner writes at once.
+    let (code, _) = call(
+        &app,
+        Some(OWNER),
+        "POST",
+        "/v1/a/nodes",
+        Some(json!({ "labels": ["Doc"] })),
+    )
+    .await;
+    assert_eq!(code, StatusCode::CREATED);
+    // Who may write still begins a writing one.
+    let (_, session) = signin(&app, "ana", "her long passphrase").await;
+    let ana = session["access_token"].as_str().unwrap().to_owned();
+    let (code, body) = call(&app, Some(&ana), "POST", "/v1/a/transactions", None).await;
+    assert_eq!(code, StatusCode::CREATED, "{body}");
+}
+
+/// Found by an outside review: exporting every namespace needed only the
+/// right to read them, though exporting one by name needs the right to
+/// export it.
+#[tokio::test]
+async fn exporting_everything_needs_the_right_to_export() {
+    let app = world(Duration::from_secs(900)).await;
+    let (code, _) = call(
+        &app,
+        Some(OWNER),
+        "POST",
+        "/v1/accounts",
+        Some(
+            json!({ "name": "reader", "kind": "user", "password": "quiet orchard lamp",
+                     "grants": [{ "namespace": "a", "role": "read" }] }),
+        ),
+    )
+    .await;
+    assert_eq!(code, StatusCode::CREATED);
+    let (_, session) = signin(&app, "reader", "quiet orchard lamp").await;
+    let reader = session["access_token"].as_str().unwrap().to_owned();
+    let (code, _) = call(&app, Some(&reader), "GET", "/v1/a/stats", None).await;
+    assert_eq!(code, StatusCode::OK);
+    // A namespace by name and everything agree.
+    let (named, _) = call(&app, Some(&reader), "GET", "/v1/export?ns=a", None).await;
+    let (all, body) = call(&app, Some(&reader), "GET", "/v1/export", None).await;
+    assert_eq!(all, named, "{body}");
+    // An owner exports everything.
+    let (code, _) = call(&app, Some(OWNER), "GET", "/v1/export", None).await;
+    assert_eq!(code, StatusCode::OK);
+}

@@ -28,6 +28,8 @@ use crate::api::{
 use crate::auth::{self, Caller, Need};
 
 const BODY_LIMIT: usize = 32 * 1024 * 1024;
+/// Sign-in, first account and password changes: a name and a password, never more.
+const AUTH_BODY_LIMIT: usize = 16 * 1024;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -496,11 +498,20 @@ pub fn router_with(state: AppState, options: &Options) -> Router {
         .route("/settings", get(crate::about::settings))
         // Accounts and sign-in (14.1).
         .route("/auth/status", get(crate::accounts::status))
-        .route("/auth/setup", post(crate::accounts::setup))
-        .route("/auth/signin", post(crate::accounts::signin))
+        .route(
+            "/auth/setup",
+            post(crate::accounts::setup).layer(DefaultBodyLimit::max(AUTH_BODY_LIMIT)),
+        )
+        .route(
+            "/auth/signin",
+            post(crate::accounts::signin).layer(DefaultBodyLimit::max(AUTH_BODY_LIMIT)),
+        )
         .route("/auth/refresh", post(crate::accounts::refresh))
         .route("/auth/signout", post(crate::accounts::signout))
-        .route("/auth/password", post(crate::accounts::change_password))
+        .route(
+            "/auth/password",
+            post(crate::accounts::change_password).layer(DefaultBodyLimit::max(AUTH_BODY_LIMIT)),
+        )
         .route("/auth/sessions", get(crate::accounts::sessions))
         .route(
             "/auth/sessions/{id}",
@@ -2321,11 +2332,12 @@ async fn export(
                 .namespaces()?
                 .into_iter()
                 .map(|info| info.name)
-                .filter(|ns| caller.may(ns, Role::Read))
+                // Exporting is a right of its own, as with a namespace named.
+                .filter(|ns| caller.can(grafeno::Act::Export, ns))
                 .collect();
             if readable.is_empty() {
                 return Err(Error::Forbidden(format!(
-                    "the key {:?} may read no namespace",
+                    "the key {:?} may export no namespace",
                     caller.name()
                 )));
             }
@@ -2550,7 +2562,7 @@ async fn run_query_keyed(
 /// `POST /v1/{ns}/transactions`: begins an explicit transaction (16.4).
 async fn begin_transaction(
     State(state): State<AppState>,
-    Path(_ns): Path<String>,
+    Path(ns): Path<String>,
     body: axum::body::Bytes,
 ) -> ApiResult<(StatusCode, Json<Value>)> {
     let input: crate::transactions::BeginInput = if body.iter().all(u8::is_ascii_whitespace) {
@@ -2558,6 +2570,26 @@ async fn begin_transaction(
     } else {
         serde_json::from_slice(&body).map_err(|e| ApiError::bad_request(e.to_string()))?
     };
+    // A transaction that may write holds the one writer until it ends: only
+    // a caller that may write somewhere in the namespace begins one. A
+    // reader begins a reading one (`read_only: true`).
+    if !input.read_only {
+        use grafeno::Act;
+        let caller = auth::current();
+        let writes = [
+            Act::Create,
+            Act::Update,
+            Act::Delete,
+            Act::Merge,
+            Act::Retract,
+        ];
+        if !writes.iter().any(|act| caller.can(*act, &ns)) {
+            return Err(ApiError::forbidden(format!(
+                "{} may not write in {ns:?}: begin a reading transaction (read_only: true)",
+                caller.name()
+            )));
+        }
+    }
     let begun = crate::transactions::begin(&state, input).await?;
     Ok((StatusCode::CREATED, Json(begun)))
 }
