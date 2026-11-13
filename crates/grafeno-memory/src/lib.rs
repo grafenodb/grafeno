@@ -24,13 +24,19 @@
 //! # Ok::<(), grafeno::Error>(())
 //! ```
 
+pub mod checkpoint;
 pub mod communities;
 mod context;
+pub mod documents;
 pub mod extract;
 mod maintenance;
 mod recall;
 mod reconcile;
+pub mod timeline;
 
+pub use checkpoint::{
+    CHECKPOINT, Checkpoint, NewCheckpoint, ResumeQuery, checkpoints, resume, save_checkpoint, tasks,
+};
 pub use communities::{
     COMMUNITY, CommunityHit, CommunityMembers, CommunityOptions, CommunityPlan, CommunityReport,
     MEMBER_OF, OverviewOptions, PART_OF, apply_communities, community_members, overview,
@@ -38,6 +44,9 @@ pub use communities::{
 };
 pub use context::{
     Context, ContextFact, ContextItem, ContextOptions, context_for, estimate_tokens,
+};
+pub use documents::{
+    CHUNK, DEFAULT_CHUNK_CHARS, Ingested, Kind, NewDocument, Piece, cut, ingest_document,
 };
 pub use maintenance::{
     ConsolidationGroup, ConsolidationOptions, DISTINCT_FROM, DecayOptions, Duplicate,
@@ -49,3 +58,4 @@ pub use reconcile::{
     AgentMention, ExtractOptions, ExtractReport, MENTIONS, Occurrence, Plan, Resolution,
     ReviewItem, SOURCE_LABELS, extract, extract_batch, ingest, plan, resolve, review_queue,
 };
+pub use timeline::{Moment, timeline};
