@@ -37,9 +37,11 @@ The `grafeno` binary serves and manages a Grafeno database (installers:
   `grafeno check` verifies every page of the file against its checksum
   before checking the indexes: run it on a file that may be damaged.
   `grafeno check --recall 100` also estimates the recall of vector
-  searches, and `grafeno compact -n NS` (or `--all`) rebuilds a
-  namespace's vector graph when the check reports vectors searches
-  cannot reach.
+  searches, and reports how many vectors were removed since each vector
+  graph was built; `grafeno compact -n NS` (or `--all`) rebuilds a
+  namespace's vector graph and each of its vector indexes. The server
+  also compacts on its own a graph worn past `compact_vectors_at` (see
+  `[background]` in [docs/install.md](../../docs/install.md#settings)).
 
 ```bash
 cargo install --path crates/grafeno-server
@@ -372,7 +374,8 @@ requests accept either that or an ISO 8601 string (`2024-05-01`,
 | `GET`    | `/v1/export`                          | `?ns=a,b` (all by default)                              | JSON Lines                    |
 | `POST`   | `/v1/import`                          | JSON Lines (up to 1 GiB); `?bulk=true` loads in chunks between other writes | `{namespaces, nodes, edges}`  |
 | `GET`    | `/v1/{ns}/stats`                      |                                                         | statistics                    |
-| `POST`   | `/v1/{ns}/compact`                    |                                                         | rebuilds the vector graph (admin): `{vectors, dangling_before, unreachable_before, unreachable_after}` |
+| `POST`   | `/v1/{ns}/compact`                    | `?index=` (a vector index; the namespace's own vectors without it) | rebuilds that vector graph (admin): `{vectors, dangling_before, unreachable_before, unreachable_after}` |
+| `GET`    | `/v1/{ns}/vectors/health`             |                                                         | `[{index, dimension, vectors, removed, repaired, churn, building}]`: each vector graph's removals since it was built (`churn` = removed / vectors), from its metadata alone |
 | `GET`    | `/v1/{ns}/vectors/recall`             | `?sample=100&ef=64`                                     | `{sample, ef, recall}`: estimated recall@10 |
 | `GET`    | `/v1/{ns}/check`                      |                                                         | `{…, problems}`               |
 | `POST`   | `/v1/{ns}/rebuild`                    |                                                         | rebuild report                |
@@ -566,6 +569,7 @@ engine lacks instead of failing. The capabilities:
 | `null_values` | a `null` property is stored as a value; `remove_props` removes keys (16.2) |
 | `search.text`, `search.vector` | full-text and vector search |
 | `algorithms.analysis`, `algorithms.simulation` | `algo.kCore`, `leiden`, `hits`, `eigenvector`, `harmonic`, `articulationPoints`, `bridges`, `spanningTree`, `maxFlow`, `bipartiteMatching`, `topologicalOrder`, `cycle`, `randomWalks`, `clustering`, `conductance`; `algo.distanceField`, `influence`, `floodFill`, `diffusion`, `automaton`, `assignment`, `minCostFlow` (16.8) |
+| `vectors.health` | `GET /v1/{ns}/vectors/health`, `POST /v1/{ns}/compact?index=`, and vector graphs compacted on their own past `compact_vectors_at` (#12) |
 | `search.vector.indexes` | named vector indexes (similarity, `m`, `ef`), filtered and several-vector searches, `/similar`, background builds (16.7) |
 | `search.fulltext`, `search.hybrid` | full-text indexes with a query language and fragments; `POST /v1/{ns}/search` with a mode (16.6) |
 | `recall`, `context`, `memory` | hybrid recall, context for a prompt, importance and accesses |

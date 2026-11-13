@@ -575,6 +575,11 @@ extract = ["notes"]         # link what new and changed texts mention
 communities = ["notes"]     # keep community summaries fresh
 communities_every_secs = 300
 communities_min_changes = 50
+compact_vectors_at = 0.5    # rebuild a vector graph once removals reach this share of its vectors (0: never)
+compact_vectors_min = 1000  # leave smaller graphs alone
+compact_vectors_max = 50000 # and larger ones: compacting holds the writer (see below)
+compact_vectors_below_recall = 0  # also when sampled recall@10 falls below this (0: never measure)
+compact_vectors_every_secs = 300
 
 [transactions]              # BEGIN … COMMIT across requests
 idle_timeout_secs = 30      # rolled back after this long without a request
@@ -586,6 +591,31 @@ max_open = 256
 Los flags y las variables de entorno (`GRAFENO_DB`, `GRAFENO_ADDR`,
 `GRAFENO_TOKEN`) tienen prioridad sobre el archivo. Expón el puerto más allá
 de `127.0.0.1` solo detrás de TLS (un proxy inverso) y con un token.
+
+### Grafos vectoriales
+
+Cada búsqueda vectorial recorre un grafo (HNSW). Eliminar o reemplazar un
+vector repara los enlaces de sus vecinos en lugar de elegirlos de nuevo,
+así que tras muchas eliminaciones (deduplicación, fusiones, olvido,
+consolidación) algunos vectores pueden quedar inalcanzables y las
+búsquedas pueden empeorar. `GET /v1/{ns}/vectors/health` cuenta las
+eliminaciones desde que se construyó cada grafo (el del propio namespace
+y el de cada índice vectorial), y `grafeno check` las muestra;
+`grafeno check --recall 100` mide el recall@10 contra la búsqueda exacta.
+
+El servidor compacta (vuelve a construir) un grafo cuando sus
+eliminaciones llegan a `compact_vectors_at` de sus vectores, y lo revisa
+cada `compact_vectors_every_secs`; en un clúster lo hace el líder y los
+miembros lo repiten. Compactar retiene al escritor más o menos lo que
+tardaría insertar de nuevo cada vector (unos 6 s para 20 000 vectores de
+128 dimensiones), mientras las búsquedas siguen usando el grafo anterior
+hasta que confirma: los grafos de más de `compact_vectors_max` quedan
+para un momento tranquilo (`grafeno compact -n NS`, o
+`POST /v1/{ns}/compact?index=…`). Lo que hizo aparece en
+`GET /v1/background`. En un clúster, actualiza todos los miembros antes
+de que se compacten índices vectoriales: un miembro más antiguo que
+repite la compactación de un índice vectorial lo reconstruye con la
+similitud por defecto.
 
 ### Memoria
 

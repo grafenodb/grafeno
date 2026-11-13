@@ -908,6 +908,29 @@ pub struct CompactReport {
     pub unreachable_after: u64,
 }
 
+/// How worn a vector graph is: removals since it was built leave
+/// neighbors repaired rather than chosen afresh, and search quality can
+/// slip as they pile up. [`WriteTx::compact_vectors`] (or
+/// [`WriteTx::compact_vector_index`]) builds it again and starts the
+/// counts over.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct VectorHealth {
+    /// `None` for the namespace's own vectors, or a vector index's name.
+    pub index: Option<String>,
+    pub dimension: usize,
+    /// Vectors in the graph.
+    pub vectors: u64,
+    /// Vectors removed or replaced since the graph was built or compacted
+    /// (files written by older versions start counting at 0).
+    pub removed: u64,
+    /// Link lists those removals rewrote.
+    pub repaired: u64,
+    /// `removed` over `vectors` (0 when empty).
+    pub churn: f64,
+    /// A vector index still being built in the background.
+    pub building: bool,
+}
+
 impl ReadTx {
     /// Estimates the recall@10 of vector searches with `ef` (see
     /// [`ReadTx::search_vector_with`]) from `sample` of the namespace's own
@@ -926,6 +949,44 @@ impl ReadTx {
     }
 }
 
+impl ReadTx {
+    /// The health of each vector graph of `ns`: its own vectors first (when
+    /// it has any), then each vector index. Reads only their metadata.
+    pub fn vector_health(&self, ns: &str) -> Result<Vec<VectorHealth>> {
+        let health =
+            |index: Option<String>, meta: &vector::VectorMeta, building: bool| VectorHealth {
+                index,
+                dimension: meta.dimension(),
+                vectors: meta.count(),
+                removed: meta.removed(),
+                repaired: meta.repaired(),
+                churn: if meta.count() == 0 {
+                    0.0
+                } else {
+                    meta.removed() as f64 / meta.count() as f64
+                },
+                building,
+            };
+        let mut out = Vec::new();
+        if let Some(meta) = vector::read_meta(&self.vector_meta, ns)? {
+            out.push(health(None, &meta, false));
+        }
+        for def in self.index_defs(ns)? {
+            let Some(spec) = &def.vector else { continue };
+            if let Some(meta) =
+                vector::read_meta(&self.vector_meta, &crate::vindex::space_of(ns, &def.name))?
+            {
+                out.push(health(
+                    Some(def.name.clone()),
+                    &meta,
+                    spec.building.is_some(),
+                ));
+            }
+        }
+        Ok(out)
+    }
+}
+
 impl WriteTx {
     /// Builds the namespace's vector graph again from its vectors: every
     /// link is chosen afresh, dangling links go and every vector is
@@ -936,6 +997,21 @@ impl WriteTx {
             crate::replication::Bulk::CompactVectors { ns: ns.to_owned() },
             |tx| tx.compact_vectors_inner(ns),
         )
+    }
+
+    /// [`WriteTx::compact_vectors`] for a vector index of `ns`: its graph
+    /// built again with the index's own similarity and `m`.
+    pub fn compact_vector_index(&mut self, ns: &str, name: &str) -> Result<CompactReport> {
+        let read = self.index_defs(ns)?;
+        if !read
+            .iter()
+            .any(|def| def.name == name && def.vector.is_some())
+        {
+            return Err(grafeno_core::Error::Invalid(format!(
+                "{ns:?} has no vector index {name:?}"
+            )));
+        }
+        self.compact_vectors(&crate::vindex::space_of(ns, name))
     }
 
     fn compact_vectors_inner(&mut self, ns: &str) -> Result<CompactReport> {
@@ -984,11 +1060,18 @@ impl WriteTx {
             .map_err(storage)?
             .retain_in((ns, 0u128, 0u8).., |key, _| other(key.0))
             .map_err(storage)?;
-        self.tx
-            .open_table(VECTOR_META)
-            .map_err(storage)?
-            .remove(ns)
+        // The graph starts over with the space's own parameters (a named
+        // index keeps its similarity and `m`) and no removals behind it.
+        {
+            let mut meta = self.tx.open_table(VECTOR_META).map_err(storage)?;
+            let fresh = vector::read_meta(&meta, ns)?
+                .map(|old| vector::VectorMeta::new(old.dimension(), old.params()));
+            match fresh {
+                Some(fresh) => meta.insert(ns, crate::store::encode(&fresh)?.as_slice()),
+                None => meta.remove(ns),
+            }
             .map_err(storage)?;
+        }
         self.vectors.forget(ns);
         for (id, vector) in &all {
             vector::insert(&self.tx, &mut self.vectors, ns, *id, vector)?;

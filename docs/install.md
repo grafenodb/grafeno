@@ -556,6 +556,11 @@ extract = ["notes"]         # link what new and changed texts mention
 communities = ["notes"]     # keep community summaries fresh
 communities_every_secs = 300
 communities_min_changes = 50
+compact_vectors_at = 0.5    # rebuild a vector graph once removals reach this share of its vectors (0: never)
+compact_vectors_min = 1000  # leave smaller graphs alone
+compact_vectors_max = 50000 # and larger ones: compacting holds the writer (see below)
+compact_vectors_below_recall = 0  # also when sampled recall@10 falls below this (0: never measure)
+compact_vectors_every_secs = 300
 
 [transactions]              # BEGIN … COMMIT across requests
 idle_timeout_secs = 30      # rolled back after this long without a request
@@ -567,6 +572,29 @@ max_open = 256
 Flags and environment variables (`GRAFENO_DB`, `GRAFENO_ADDR`,
 `GRAFENO_TOKEN`) take precedence over the file. Expose the port beyond
 `127.0.0.1` only behind TLS (a reverse proxy) and with a token.
+
+### Vector graphs
+
+Each vector search walks a graph (HNSW). Removing or replacing a vector
+repairs its neighbors' links rather than choosing them afresh, so after
+many removals (deduplication, merges, forgetting, consolidation) a few
+vectors can become unreachable and searches can slip. `GET
+/v1/{ns}/vectors/health` counts the removals since each graph was built
+(the namespace's own and each vector index), and `grafeno check` prints
+them; `grafeno check --recall 100` measures recall@10 against exact
+search.
+
+The server compacts (builds again) a graph once its removals reach
+`compact_vectors_at` of its vectors, looking every
+`compact_vectors_every_secs`; on a cluster, the leader does, and the
+members replay it. Compacting holds the writer about as long as
+inserting every vector again (about 6 s for 20 000 vectors of 128
+dimensions), while searches keep the old graph until it commits: graphs
+over `compact_vectors_max` are left for a quiet time
+(`grafeno compact -n NS`, or `POST /v1/{ns}/compact?index=…`). What it
+did is in `GET /v1/background`. In a cluster, upgrade every member before
+vector indexes are compacted: an older member replaying the compaction of
+a vector index rebuilds it with the default similarity.
 
 ### Memory
 

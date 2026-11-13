@@ -47,6 +47,9 @@ pub const CAPABILITIES: &[&str] = &[
     // Named vector indexes, filtered and several-vector searches, similar
     // nodes, background builds (16.7).
     "search.vector.indexes",
+    // Removals counted per vector graph, compacting an index, compacting
+    // on its own.
+    "vectors.health",
     // Memory (phase 5) and recall.
     "recall",
     "context",

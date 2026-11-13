@@ -31,6 +31,27 @@ version (now 18) is upgraded in place, with a copy kept first.
   outside English; contexts hold a little less and stay within budgets
   (#16).
 
+- **Added**: vector graph health. Each vector graph (a namespace's own,
+  and each vector index) counts the vectors removed or replaced since it
+  was built and the link lists those removals repaired:
+  `GET /v1/{ns}/vectors/health`, `ReadTx::vector_health`, and in
+  `grafeno check`; capability `vectors.health`. The counts live in the graph's metadata, so the file
+  layout stays 18 (graphs start counting at 0 after the upgrade) (#12).
+- **Added**: the server compacts a vector graph on its own once its
+  removals reach half its vectors (`compact_vectors_at` in
+  `[background]`, 0 to turn it off), for graphs of 1 000 to 50 000
+  vectors (`compact_vectors_min`, `compact_vectors_max`), and optionally
+  when the sampled recall@10 falls below `compact_vectors_below_recall`.
+  A compaction holds the writer about as long as inserting every vector
+  (6 s for 20 000 of 128 dimensions); searches use the old graph until it
+  commits. On a cluster the leader compacts and members replay it (#12).
+- **Added**: `POST /v1/{ns}/compact?index=` and
+  `WriteTx::compact_vector_index` compact a vector index;
+  `grafeno compact` compacts a namespace's indexes too. Compacting keeps
+  the index's similarity and `m`. In a cluster, upgrade every member
+  before vector indexes are compacted: older members rebuild them with
+  the default similarity when they replay it.
+
 ## 0.2.1 (2026-11-11)
 
 The same database layout (18), HTTP API (version 1) and log entry format

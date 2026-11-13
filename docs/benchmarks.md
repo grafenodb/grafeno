@@ -148,6 +148,26 @@ of a namespace, which takes about as long as inserting every vector.
 `grafeno check --recall 100` estimates recall@10 from the namespace's own
 vectors.
 
+The same run with the removals each graph counts since it was built
+(`vector_health`, what automatic compaction looks at), unreachable
+vectors, and a compaction at the end; release build, 2026-11-12:
+
+| State | Removed since built | recall@10 ef 16 / 32 / 64 | Unreachable |
+| --- | --- | --- | --- |
+| built | 0 | 0.957 / 0.996 / 1.000 | 0 |
+| 10% deleted | 2 000 | 0.974 / 0.997 / 1.000 | 1 |
+| 30% inserted back | 8 000 | 0.947 / 0.989 / 0.999 | 2 |
+| 50% inserted back | 18 000 | 0.954 / 0.990 / 0.995 | 3 |
+| churn round 4 (20% updated) | 34 000 | 0.961 / 0.987 / 0.990 | 8 |
+| churn round 5 | 38 000 | 0.965 / 0.992 / 0.995 | 8 |
+| compacted (6.4 s) | 0 | 0.963 / 0.998 / 1.000 | 0 |
+
+Repairs hold recall@10 at `ef` 64 at 0.99 or above through 38 000
+removals (almost twice the graph), while the vectors no search reaches
+creep up; compacting brings both back to a fresh graph's. The server
+compacts at half by default (`compact_vectors_at`), which this run passes
+at the 30% round.
+
 ## Property indexes (`crates/grafeno-query/examples/index_bench.rs`)
 
 One GQ query on 100,000 `:Person` nodes (ages 0 to 99), in memory, release

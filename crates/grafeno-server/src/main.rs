@@ -1298,14 +1298,34 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         } => {
             let db = db.open()?;
             for ns in namespaces_or_all(&db, namespaces)? {
-                let report = db.write(|tx| tx.compact_vectors(&ns))?;
-                println!(
-                    "{ns}: {} vectors; {} unreachable and {} dangling links before, {} unreachable after",
-                    report.vectors,
-                    report.unreachable_before,
-                    report.dangling_before,
-                    report.unreachable_after
-                );
+                // The namespace's own graph, then each vector index.
+                let graphs = db.begin_read()?.vector_health(&ns)?;
+                let graphs: Vec<Option<String>> = if graphs.is_empty() {
+                    vec![None]
+                } else {
+                    graphs
+                        .into_iter()
+                        .filter(|h| !h.building)
+                        .map(|h| h.index)
+                        .collect()
+                };
+                for index in graphs {
+                    let report = match &index {
+                        Some(name) => db.write(|tx| tx.compact_vector_index(&ns, name))?,
+                        None => db.write(|tx| tx.compact_vectors(&ns))?,
+                    };
+                    let what = match &index {
+                        Some(name) => format!("{ns} (vector index {name})"),
+                        None => ns.clone(),
+                    };
+                    println!(
+                        "{what}: {} vectors; {} unreachable and {} dangling links before, {} unreachable after",
+                        report.vectors,
+                        report.unreachable_before,
+                        report.dangling_before,
+                        report.unreachable_after
+                    );
+                }
             }
         }
         Command::Check {
@@ -1338,6 +1358,23 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 } else {
                     summary
                 };
+                // Removals since each graph was built: past about half,
+                // searches can slip and compacting is worth its time.
+                let mut summary = summary;
+                for health in read.vector_health(&ns)? {
+                    if health.removed > 0 {
+                        let graph = match &health.index {
+                            Some(name) => format!("vector index {name}"),
+                            None => "the vector graph".to_owned(),
+                        };
+                        summary = format!(
+                            "{summary}, {} removals since {graph} was built ({:.0}% of its {} vectors)",
+                            health.removed,
+                            health.churn * 100.0,
+                            health.vectors
+                        );
+                    }
+                }
                 let summary = match recall {
                     Some(sample) if report.vectors > 0 => {
                         match read.vector_recall(&ns, sample, 64)? {

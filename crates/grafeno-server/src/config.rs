@@ -56,6 +56,11 @@
 //! communities = ["notes"]  # keep community summaries fresh (11.3)
 //! communities_every_secs = 300
 //! communities_min_changes = 50
+//! compact_vectors_at = 0.5    # rebuild a vector graph worn past this
+//! compact_vectors_min = 1000  # share of removals, if it holds 1 000 to
+//! compact_vectors_max = 50000 # 50 000 vectors
+//! compact_vectors_below_recall = 0  # or whose recall falls below (0: off)
+//! compact_vectors_every_secs = 300
 //!
 //! [transactions]         # explicit transactions (16.4)
 //! idle_timeout_secs = 30 # rolled back after this long without a request

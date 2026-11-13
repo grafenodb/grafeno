@@ -148,6 +148,13 @@ pub(crate) struct VectorMeta {
     m: usize,
     #[serde(default = "default_ef_construction")]
     ef_construction: usize,
+    /// Vectors removed or replaced since the graph was built (or last
+    /// compacted): each leaves its neighbors repaired, not rebuilt.
+    #[serde(default)]
+    removed: u64,
+    /// Link lists those removals rewrote.
+    #[serde(default)]
+    repaired: u64,
 }
 
 impl VectorMeta {
@@ -159,7 +166,25 @@ impl VectorMeta {
             similarity: params.similarity,
             m: params.m,
             ef_construction: params.ef_construction,
+            removed: 0,
+            repaired: 0,
         }
+    }
+
+    pub(crate) fn params(&self) -> Params {
+        Params {
+            similarity: self.similarity,
+            m: self.m,
+            ef_construction: self.ef_construction,
+        }
+    }
+
+    pub(crate) fn removed(&self) -> u64 {
+        self.removed
+    }
+
+    pub(crate) fn repaired(&self) -> u64 {
+        self.repaired
     }
 
     pub(crate) fn dimension(&self) -> usize {
@@ -802,6 +827,7 @@ pub(crate) fn remove(
     let cache = cache.namespace(ns);
     cache.vectors.insert(id, None);
     let mut links = tx.open_table(HNSW_LINKS).map_err(storage)?;
+    let mut repaired = 0u64;
     for layer in 0..=level_of(node, m) {
         let own = links
             .remove((ns, id, layer))
@@ -921,6 +947,7 @@ pub(crate) fn remove(
             updates.retain(|(node, _)| *node != closest);
             updates.push((closest, list));
         }
+        repaired += updates.len() as u64;
         for (neighbor, list) in updates {
             links
                 .insert((ns, neighbor, layer), links_bytes(&list).as_slice())
@@ -933,6 +960,8 @@ pub(crate) fn remove(
     let mut meta = read_meta(&meta_table, ns)?
         .ok_or_else(|| Error::Storage(format!("vector metadata missing for {ns:?}")))?;
     meta.count = meta.count.saturating_sub(1);
+    meta.removed += 1;
+    meta.repaired += repaired;
     if meta.entry == Some(node) {
         meta.entry = highest_node(&vectors, ns, m)?;
     }

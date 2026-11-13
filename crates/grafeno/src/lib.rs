@@ -60,7 +60,7 @@ pub use access::{
 };
 pub use backup::BackupStats;
 pub use changes::{Change, ChangeOp, ChangePage, Part, Retention};
-pub use check::{CheckReport, CompactReport, RebuildReport};
+pub use check::{CheckReport, CompactReport, RebuildReport, VectorHealth};
 pub use constraints::{
     Action, Constraint, ConstraintEvent, HistoryEntry, OnConflict, PropertyType, Scope,
 };

@@ -39,9 +39,12 @@ El binario `grafeno` sirve y administra una base de datos Grafeno
   existente). `grafeno check` verifica cada página del archivo contra su
   suma de comprobación antes de revisar los índices: ejecútalo sobre un
   archivo que pueda estar dañado. `grafeno check --recall 100` además estima
-  el recall de las búsquedas vectoriales, y `grafeno compact -n NS` (o
-  `--all`) reconstruye el grafo vectorial de un namespace cuando la revisión
-  informa de vectores que las búsquedas no alcanzan.
+  el recall de las búsquedas vectoriales e informa cuántos vectores se
+  eliminaron desde que se construyó cada grafo vectorial; `grafeno compact
+  -n NS` (o `--all`) reconstruye el grafo vectorial de un namespace y el de
+  cada uno de sus índices vectoriales. El servidor además compacta por su
+  cuenta un grafo desgastado más allá de `compact_vectors_at` (ver
+  `[background]` en [docs/instalacion.md](../../docs/instalacion.md#configuración)).
 
 ```bash
 cargo install --path crates/grafeno-server
@@ -381,7 +384,8 @@ Los ids son UUID. Los tiempos en las respuestas son microsegundos desde la
 | `GET`    | `/v1/export`                          | `?ns=a,b` (todos por defecto)                           | JSON Lines                    |
 | `POST`   | `/v1/import`                          | JSON Lines (hasta 1 GiB); `?bulk=true` carga por tramos entre otras escrituras | `{namespaces, nodes, edges}`  |
 | `GET`    | `/v1/{ns}/stats`                      |                                                         | estadísticas                  |
-| `POST`   | `/v1/{ns}/compact`                    |                                                         | reconstruye el grafo vectorial (admin): `{vectors, dangling_before, unreachable_before, unreachable_after}` |
+| `POST`   | `/v1/{ns}/compact`                    | `?index=` (un índice vectorial; sin él, los vectores del propio namespace) | reconstruye ese grafo vectorial (admin): `{vectors, dangling_before, unreachable_before, unreachable_after}` |
+| `GET`    | `/v1/{ns}/vectors/health`             |                                                         | `[{index, dimension, vectors, removed, repaired, churn, building}]`: las eliminaciones de cada grafo vectorial desde que se construyó (`churn` = removed / vectors), solo de su metadata |
 | `GET`    | `/v1/{ns}/vectors/recall`             | `?sample=100&ef=64`                                     | `{sample, ef, recall}`: recall@10 estimado |
 | `GET`    | `/v1/{ns}/check`                      |                                                         | `{…, problems}`               |
 | `POST`   | `/v1/{ns}/rebuild`                    |                                                         | informe de la reconstrucción  |
@@ -582,6 +586,7 @@ lo que le falta a un motor más antiguo en lugar de fallar. Las capacidades:
 | `null_values` | una propiedad `null` se guarda como valor; `remove_props` quita claves (16.2) |
 | `search.text`, `search.vector` | búsqueda de texto completo y vectorial |
 | `algorithms.analysis`, `algorithms.simulation` | `algo.kCore`, `leiden`, `hits`, `eigenvector`, `harmonic`, `articulationPoints`, `bridges`, `spanningTree`, `maxFlow`, `bipartiteMatching`, `topologicalOrder`, `cycle`, `randomWalks`, `clustering`, `conductance`; `algo.distanceField`, `influence`, `floodFill`, `diffusion`, `automaton`, `assignment`, `minCostFlow` (16.8) |
+| `vectors.health` | `GET /v1/{ns}/vectors/health`, `POST /v1/{ns}/compact?index=`, y grafos vectoriales compactados por su cuenta más allá de `compact_vectors_at` (#12) |
 | `search.vector.indexes` | índices vectoriales con nombre (similitud, `m`, `ef`), búsquedas filtradas y de varios vectores, `/similar`, construcciones en segundo plano (16.7) |
 | `search.fulltext`, `search.hybrid` | índices de texto completo con un lenguaje de consulta y fragmentos; `POST /v1/{ns}/search` con un modo (16.6) |
 | `recall`, `context`, `memory` | recall híbrido, contexto para un prompt, importancia y accesos |

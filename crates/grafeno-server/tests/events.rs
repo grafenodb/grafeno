@@ -293,6 +293,7 @@ async fn background_work_runs_from_the_log() {
         communities: vec!["k".into()],
         communities_every_secs: Some(0),
         communities_min_changes: Some(5),
+        ..BackgroundConfig::default()
     });
     db.write(|tx| {
         let ana = tx.create_node("k", NewNode::new("Person").prop("name", "Ana Torres"))?;

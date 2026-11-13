@@ -137,8 +137,10 @@ fn main() {
         "{count} vectors of dimension {dimension}, built in {:.1} s\n",
         started.elapsed().as_secs_f64()
     );
-    println!("| State | Vectors | recall@10 ef 16 | ef 32 | ef 64 | Dangling links |");
-    println!("| --- | --- | --- | --- | --- | --- |");
+    println!(
+        "| State | Vectors | Removed since built | recall@10 ef 16 | ef 32 | ef 64 | Dangling links | Unreachable |"
+    );
+    println!("| --- | --- | --- | --- | --- | --- | --- | --- |");
     let report = |state: &str, live: &HashMap<NodeId, Vec<f32>>| {
         let values = recall(&db, live, &tests, &efs);
         let checked = db.begin_read().unwrap().check(NS).unwrap();
@@ -146,8 +148,11 @@ fn main() {
             eprintln!("  problems: {:?}", checked.problems);
         }
         let dangling = checked.dangling_links;
+        let unreachable = checked.unreachable_vectors;
+        let health = db.begin_read().unwrap().vector_health(NS).unwrap();
+        let removed = health.first().map_or(0, |h| h.removed);
         println!(
-            "| {state} | {} | {:.3} | {:.3} | {:.3} | {dangling} |",
+            "| {state} | {} | {removed} | {:.3} | {:.3} | {:.3} | {dangling} | {unreachable} |",
             live.len(),
             values[0],
             values[1],
@@ -227,4 +232,12 @@ fn main() {
         }
         report(&format!("churn round {round} (20% updated)"), &live);
     }
+
+    // What automatic compaction does once removals pass its threshold.
+    let health = db.begin_read().unwrap().vector_health(NS).unwrap();
+    eprintln!("health: {}", serde_json::to_string(&health).unwrap());
+    let started = Instant::now();
+    db.write(|tx| tx.compact_vectors(NS)).unwrap();
+    let took = started.elapsed().as_secs_f64();
+    report(&format!("compacted ({took:.1} s)"), &live);
 }

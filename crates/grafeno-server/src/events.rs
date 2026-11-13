@@ -551,12 +551,101 @@ pub struct BackgroundConfig {
     /// Graph changes since the last refresh that call for another (50).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub communities_min_changes: Option<u64>,
+    /// Removals since a vector graph was built, as a share of its vectors,
+    /// that make the server compact it (0.5; 0 never does).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compact_vectors_at: Option<f64>,
+    /// Vector graphs with fewer vectors are left alone (1 000).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compact_vectors_min: Option<u64>,
+    /// Nor are graphs with more (50 000): compacting holds the writer
+    /// about as long as inserting every vector again (seconds for tens of
+    /// thousands, an hour for a million), so a large one is better
+    /// compacted at a quiet time with `grafeno compact` or
+    /// `POST /v1/{ns}/compact`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compact_vectors_max: Option<u64>,
+    /// Also compact a namespace's own vector graph when its estimated
+    /// recall@10 (`ef` 64, 50 queries) falls below this (0, the default,
+    /// does not measure: each measure reads every vector).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compact_vectors_below_recall: Option<f64>,
+    /// How often vector graphs are looked at (300 seconds).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compact_vectors_every_secs: Option<u64>,
 }
 
 impl BackgroundConfig {
     pub fn is_empty(&self) -> bool {
-        self.extract.is_empty() && self.communities.is_empty()
+        self.extract.is_empty()
+            && self.communities.is_empty()
+            && self.communities_every_secs.is_none()
+            && self.communities_min_changes.is_none()
+            && self.compact_vectors_at.is_none()
+            && self.compact_vectors_min.is_none()
+            && self.compact_vectors_max.is_none()
+            && self.compact_vectors_below_recall.is_none()
+            && self.compact_vectors_every_secs.is_none()
     }
+
+    fn compact_at(&self) -> f64 {
+        self.compact_vectors_at.unwrap_or(0.5)
+    }
+
+    fn below_recall(&self) -> f64 {
+        self.compact_vectors_below_recall.unwrap_or(0.0)
+    }
+}
+
+/// One look at every vector graph: compacts those worn past
+/// `compact_vectors_at`, or (when asked) whose sampled recall fell below
+/// `compact_vectors_below_recall`. A compaction holds the writer while it
+/// builds the graph again (about as long as inserting every vector);
+/// searches keep the old graph until it commits. Returns what it did.
+pub fn compact_vectors_step(state: &AppState) -> grafeno::Result<Option<Value>> {
+    let config = &state.background;
+    let (at, min, max, below) = (
+        config.compact_at(),
+        config.compact_vectors_min.unwrap_or(1_000),
+        config.compact_vectors_max.unwrap_or(50_000),
+        config.below_recall(),
+    );
+    if at <= 0.0 && below <= 0.0 {
+        return Ok(None);
+    }
+    let mut done = Vec::new();
+    let read = state.db.begin_read()?;
+    for info in read.namespaces()? {
+        let ns = info.name;
+        for health in read.vector_health(&ns)? {
+            if health.building || health.vectors < min || health.vectors > max {
+                continue;
+            }
+            let mut why = None;
+            if at > 0.0 && health.churn >= at {
+                why = Some(json!({ "churn": health.churn }));
+            } else if below > 0.0 && health.index.is_none() {
+                let recall = read.vector_recall(&ns, 50, 64)?;
+                if let Some(recall) = recall.filter(|recall| *recall < below) {
+                    why = Some(json!({ "recall": recall }));
+                }
+            }
+            let Some(why) = why else { continue };
+            let (ns2, index) = (ns.clone(), health.index.clone());
+            let report = state.writer.write_bulk(move |tx| match &index {
+                Some(name) => tx.compact_vector_index(&ns2, name),
+                None => tx.compact_vectors(&ns2),
+            })?;
+            done.push(json!({
+                "namespace": ns,
+                "index": health.index,
+                "because": why,
+                "removed": health.removed,
+                "report": report,
+            }));
+        }
+    }
+    Ok((!done.is_empty()).then(|| json!({ "compacted": done })))
 }
 
 /// What a background task has done.
@@ -720,6 +809,51 @@ pub fn start(state: &AppState) {
                 tokio::select! {
                     changed = commits.changed() => if changed.is_err() { return },
                     _ = tokio::time::sleep(Duration::from_secs(2)) => {}
+                }
+            }
+        });
+    }
+    // Vector graphs worn by removals are built again, on the leader.
+    if state.background.compact_at() > 0.0 || state.background.below_recall() > 0.0 {
+        let state = state.clone();
+        let index = {
+            let mut runners = state.runners.lock().unwrap_or_else(|e| e.into_inner());
+            runners.push(RunnerStatus {
+                namespace: "*".into(),
+                task: "compact_vectors".into(),
+                ..RunnerStatus::default()
+            });
+            runners.len() - 1
+        };
+        let every = Duration::from_secs(
+            state
+                .background
+                .compact_vectors_every_secs
+                .unwrap_or(300)
+                .max(1),
+        );
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(every).await;
+                if !state.leading() {
+                    continue;
+                }
+                let state2 = state.clone();
+                let outcome =
+                    tokio::task::spawn_blocking(move || compact_vectors_step(&state2)).await;
+                if let Ok(report) = outcome {
+                    let mut runners = state.runners.lock().unwrap_or_else(|e| e.into_inner());
+                    let status = &mut runners[index];
+                    match report {
+                        Ok(Some(report)) => {
+                            status.runs += 1;
+                            status.last_run = Some(Timestamp::now());
+                            status.last_report = Some(report);
+                            status.last_error = None;
+                        }
+                        Ok(None) => {}
+                        Err(error) => status.last_error = Some(error.to_string()),
+                    }
                 }
             }
         });

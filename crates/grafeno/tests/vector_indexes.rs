@@ -263,3 +263,92 @@ fn background_builds_and_replicas() {
     let entries = read.log_entries(0, usize::MAX).unwrap();
     assert!(entries.iter().any(|(_, entry)| entry.format == 7));
 }
+
+#[test]
+fn health_counts_removals_and_compacting_starts_over() {
+    let db = Grafeno::in_memory().unwrap();
+    let ids = docs(&db);
+    db.write(|tx| {
+        for (i, id) in ids.iter().enumerate() {
+            let angle = (i as f32).to_radians();
+            tx.set_embedding(NS, *id, &[angle.cos(), angle.sin(), 0.5])?;
+        }
+        tx.create_index(
+            NS,
+            index(
+                "by_place",
+                "Doc",
+                "v3",
+                VectorSpec {
+                    similarity: Similarity::Euclidean,
+                    m: 8,
+                    ..VectorSpec::new(3)
+                },
+            ),
+        )
+    })
+    .unwrap();
+    let health = |db: &Grafeno| db.begin_read().unwrap().vector_health(NS).unwrap();
+    let fresh = health(&db);
+    assert_eq!(fresh.len(), 2);
+    assert_eq!(fresh[0].index, None);
+    assert_eq!(fresh[1].index.as_deref(), Some("by_place"));
+    assert!(
+        fresh
+            .iter()
+            .all(|h| h.vectors == 400 && h.removed == 0 && h.churn == 0.0)
+    );
+
+    // 100 embeddings removed and 50 nodes deleted: both graphs lose them.
+    db.write(|tx| {
+        for id in &ids[..100] {
+            tx.remove_embedding(NS, *id)?;
+        }
+        for id in &ids[100..150] {
+            tx.delete_node(NS, *id)?;
+        }
+        Ok(())
+    })
+    .unwrap();
+    let worn = health(&db);
+    assert_eq!((worn[0].vectors, worn[0].removed), (250, 150));
+    assert!(worn[0].repaired > 0);
+    assert!((worn[0].churn - 0.6).abs() < 1e-9);
+    assert_eq!((worn[1].vectors, worn[1].removed), (350, 50));
+
+    // Compacting the index starts its count over and keeps its similarity.
+    let report = db
+        .write(|tx| tx.compact_vector_index(NS, "by_place"))
+        .unwrap();
+    assert_eq!(report.vectors, 350);
+    let after = health(&db);
+    assert_eq!(
+        (after[1].vectors, after[1].removed, after[1].repaired),
+        (350, 0, 0)
+    );
+    assert_eq!(after[0].removed, 150, "the namespace's own graph untouched");
+    let hit = db
+        .begin_read()
+        .unwrap()
+        .vector_search(
+            NS,
+            &[0.0, 2.0, 1.0],
+            &VectorSearch {
+                index: Some("by_place".into()),
+                limit: 1,
+                ..VectorSearch::default()
+            },
+        )
+        .unwrap();
+    assert!(
+        (hit[0].score - 1.0).abs() < 1e-3,
+        "still Euclidean: distance 0 scores 1"
+    );
+    assert!(
+        db.write(|tx| tx.compact_vector_index(NS, "missing"))
+            .is_err()
+    );
+
+    db.write(|tx| tx.compact_vectors(NS)).unwrap();
+    assert_eq!(health(&db)[0].removed, 0);
+}

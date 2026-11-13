@@ -415,6 +415,7 @@ pub fn router_with(state: AppState, options: &Options) -> Router {
         .route("/{ns}/rebuild", post(rebuild))
         .route("/{ns}/compact", post(compact))
         .route("/{ns}/vectors/recall", get(vector_recall))
+        .route("/{ns}/vectors/health", get(vector_health))
         .route("/{ns}/nodes", get(list_nodes).post(create_node))
         .route(
             "/{ns}/nodes/{id}",
@@ -2225,12 +2226,34 @@ async fn rebuild(
 }
 
 /// Builds the namespace's vector graph again (admin).
+#[derive(Deserialize)]
+struct CompactParams {
+    /// A vector index; the namespace's own vectors without it.
+    index: Option<String>,
+}
+
 async fn compact(
     State(state): State<AppState>,
     Path(ns): Path<String>,
+    Params(params): Params<CompactParams>,
 ) -> ApiResult<Json<grafeno::CompactReport>> {
-    let report = write_bulk(&state, move |tx| tx.compact_vectors(&ns)).await?;
+    let report = write_bulk(&state, move |tx| match &params.index {
+        Some(index) => tx.compact_vector_index(&ns, index),
+        None => tx.compact_vectors(&ns),
+    })
+    .await?;
     Ok(Json(report))
+}
+
+/// How worn each vector graph of the namespace is (removals since it was
+/// built); reads only their metadata.
+async fn vector_health(
+    State(state): State<AppState>,
+    Path(ns): Path<String>,
+) -> ApiResult<Json<Vec<grafeno::VectorHealth>>> {
+    whole_namespace(&ns, "vector health")?;
+    let health = blocking(&state, move |db| db.begin_read()?.vector_health(&ns)).await?;
+    Ok(Json(health))
 }
 
 #[derive(Deserialize)]
