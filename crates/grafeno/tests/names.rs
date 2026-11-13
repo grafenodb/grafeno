@@ -40,6 +40,12 @@ const DENIED: &[&str] = &[
     "elasticsearch",
     "mongodb",
     "rimworld",
+    "mem0",
+    "graphiti",
+    "memgpt",
+    "letta",
+    "mempalace",
+    "cognee",
     "minecraft",
 ];
 

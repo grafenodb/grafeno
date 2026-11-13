@@ -3,6 +3,10 @@
 **Status:** every phase, 0 to 6, is done. What is left of each is said
 under it.
 
+What comes after, phases 7 to 13, starts from an audit of what these
+phases built: [SPECIALIZATION_AUDIT.md](SPECIALIZATION_AUDIT.md),
+[ARCHITECTURE.md](ARCHITECTURE.md) and [ROADMAP.md](ROADMAP.md).
+
 The aim is for Grafeno to be the persistent memory and knowledge of any
 agent, through six phases of the Mental Palace, and to stay independent
 of any agent, model or provider. An agent that uses it as its memory is a
