@@ -127,8 +127,13 @@ are keyed by a space: a namespace (its node embeddings) or `ns\0index`
   `u128`.
 - Adjacency lists keyed by `(node, label)` make "neighbors of X through
   `mentions`" one contiguous range.
-- Records are serialized as JSON for now. Moving to a binary format is an
-  internal change with no effect on the API.
+- Records are serialized as JSON. Measured against CBOR and a binary
+  header (docs/benchmarks.md, *Record encodings*), the cost of reading a
+  record is mostly building its properties, not the format: a binary
+  encoding would save little and cost a layout migration, while decoding
+  the properties only when they are read would save most of it with the
+  same bytes on disk. Traversals that need only ids never decode records:
+  they read the adjacency, which is binary.
 
 ### Time semantics
 

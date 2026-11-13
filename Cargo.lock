@@ -660,6 +660,7 @@ dependencies = [
 name = "grafeno"
 version = "0.2.1"
 dependencies = [
+ "ciborium",
  "criterion",
  "flate2",
  "grafeno-core",

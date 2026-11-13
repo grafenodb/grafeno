@@ -947,6 +947,57 @@ or group when a cluster has several, and give write-heavy vector indexes a
 lower `ef_construction` (64 kept recall@10 at the same level on 20 000
 vectors, above).
 
+## Record encodings (`crates/grafeno/examples/record_formats.rs`)
+
+Nodes and edges are stored as JSON. A database file with 50 000 nodes (two
+labels, seven properties: strings, numbers, a boolean, a list, a date
+string) and 200 000 edges (a label, two properties, a valid time), its
+pages cached; release build, 2026-11-12. Allocations come from a counting
+allocator.
+
+| path | µs each | allocations each |
+| --- | --- | --- |
+| a node by id (`ReadTx::node`) | 2.21 | 18 |
+| its bytes alone, fetched from the file without decoding | 1.22 | |
+| an edge by id | 2.14 | 6 |
+| its bytes alone | 1.32 | |
+| neighbors with their edge records, per neighbor | 3.24 | 8 |
+| neighbor ids (adjacency only), per neighbor | 0.48 | 1 |
+| k-hop depth 2 (adjacency only), per node reached | 2.08 | |
+| k-hop depth 2, each node reached read too | 3.65 | 20 |
+
+So decoding is about half of reading a record by id, and nothing at all
+for the paths that only need ids. The same records, decoded and encoded
+in four ways:
+
+| records | encoding | bytes each | decode µs | decode allocations | encode µs |
+| --- | --- | --- | --- | --- | --- |
+| nodes | JSON (today) | 294 | 1.47 | 17 | 0.97 |
+| nodes | CBOR (serde, field names kept) | 197 | 2.46 | 17 | 1.02 |
+| nodes | binary header for the fixed fields + JSON properties | 187 | 1.26 | 17 | 0.66 |
+| nodes | JSON, fixed fields only (properties skipped) | 294 | 0.58 | 3 | |
+| edges | JSON (today) | 306 | 0.93 | 5 | 0.77 |
+| edges | CBOR | 184 | 1.17 | 5 | 0.82 |
+| edges | JSON, fixed fields only | 306 | 0.62 | 1 | |
+
+- **The format is not where the time goes.** CBOR is a third smaller but
+  slower to decode with the serde implementation at hand, and a binary
+  header for the ids, labels and times saves 0.2 µs a node: ids and
+  timestamps are cheap in either form.
+- **Building the properties is.** Skipping them cuts a node's decode from
+  1.47 to 0.58 µs and its allocations from 17 to 3: every property becomes
+  a heap string key and a heap value in a map.
+- **Recommendation: keep JSON, and decode properties lazily** — keep a
+  record's properties as their raw JSON until something reads them, and
+  then only the keys it reads (most traversals and many queries touch
+  none or one). The bytes on disk stay the same, so no layout migration or
+  rollback path is needed, and the gain is about the 0.9 µs a node the
+  table shows, half of a read by id. A binary encoding is worth
+  revisiting only together with reading single properties without
+  building the map, which JSON does not allow cheaply; it would need a new
+  layout version, a migration that rewrites every record (with the copy
+  kept before an upgrade) and decoding both formats during the change.
+
 ## Remaining limits
 
 - **Vector search reads each visited vector from redb** (about 0.4 µs per
