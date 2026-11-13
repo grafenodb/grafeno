@@ -117,7 +117,7 @@ for, its name or its id will do.
 | `palace_create_room` | yes | Makes a room in a palace, with its entrance and the loci asked for; or returns the one of that name. |
 | `palace_anchor` | yes | Puts an existing memory at a locus of a room (the entrance by default), with an optional note; makes the locus when it is missing. With `remove`, takes the anchor away. Returns every place the memory is at. |
 | `palace_map` | no | With no arguments, every palace with its rooms, loci and counts. With `palace`, that palace. With `room`, that room and the memories at each locus. |
-| `palace_walk` | no | From a `topic` or a node (`from`): the rooms and loci that match, the memories anchored there, the anchored memories that match, and what the graph's relations lead to from those, up to `hops` (2 by default, 3 at most). |
+| `palace_walk` | no | From a `topic` or a node (`from`): the rooms and loci that match, the memories anchored there, the anchored memories that match, the rooms their doors lead to, and what the graph's relations lead to from those, up to `hops` (2 by default, 3 at most). `order`: `distance` (default) or `relevance`; `budget`: also the memories reached and the facts joining them as text within that many tokens. |
 | `palace_enter` | no | A room's context for the start of a session: its loci, its memories (strongest first) and the facts that connect them as text within a token `budget`, and the latest checkpoint about the room. |
 
 A read-only server (`--read-only`) offers only the three that read.
@@ -290,6 +290,29 @@ What was not checked: the Studio's own screen. It is a separate product
 in its own repository, and this work did not open it. There is no view
 made for palaces; they appear in the graph views there are.
 
+## Doors, relevance and contexts
+
+Added in phase 3 of the [plan](mental-palace/IMPLEMENTATION_PLAN.md).
+
+- **Doors.** A `leads_to` fact from one room to another, recorded with
+  `relate` like any fact, is a door. `palace_map` lists a room's doors;
+  `palace_walk` goes through the doors of the rooms it found, one door,
+  and what is anchored beyond is one step away, with the door in its way
+  (`via`) and the room it came from (`origin`, and `through` on the
+  place). A walk inside one palace does not take a door to another. A
+  `leads_to` between memories is an ordinary fact.
+- **Relevance.** With `order: "relevance"`, a walk gathers up to ten times
+  its limit, ranks what it reached by how well its words match the topic
+  (the full-text score), then by distance, and keeps the best. Each
+  memory says its `relevance`.
+- **A context.** With `budget`, a walk also packs the memories it reached,
+  in its order, and the facts that join them, into that many tokens: a
+  question that needs several memories joined is answered by the text,
+  with the way that joined them in `via`.
+- **Repeats.** `context`, `palace_enter` and a walk's context leave out a
+  memory whose words are nearly those of one already packed (85 % in
+  common), and say how many they left out.
+
 ## Known limits
 
 - **Deleting is not recursive.** `forget` on a room deletes the room and
@@ -361,7 +384,6 @@ cargo test --workspace
 None of this exists yet.
 
 - Routes: ordered paths between loci and between rooms, and walking one.
-- Doors: links between rooms of different palaces.
 - Deleting a room or a palace with what is under it, in one call.
 - Suggested placement: proposing a room for a new memory, for the agent
   to accept or not.

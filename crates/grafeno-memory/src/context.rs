@@ -87,7 +87,16 @@ pub struct ContextOptions {
     /// Community summaries matching the query put first, as an overview
     /// (0, the default, for none). They share the items' budget.
     pub communities: usize,
+    /// Leave out an item whose words are nearly those of one already
+    /// packed: two chunks of one text ingested twice, a memory stored
+    /// again in other words. The share of words two items must have in
+    /// common (Jaccard, from 0 to 1) to be one; `None`, the default, keeps
+    /// every item. The tools use [`REDUNDANT`].
+    pub redundancy: Option<f64>,
 }
+
+/// The share of common words past which the tools take two items for one.
+pub const REDUNDANT: f64 = 0.85;
 
 impl Default for ContextOptions {
     fn default() -> Self {
@@ -104,6 +113,7 @@ impl ContextOptions {
             facts: EdgeFilter::any(),
             count_tokens: estimate_tokens,
             communities: 0,
+            redundancy: None,
         }
     }
 }
@@ -142,6 +152,27 @@ pub struct Context {
     /// (the sum of its pieces).
     pub tokens: usize,
     pub rendered: String,
+    /// Items left out as nearly the same as one packed: (left out, kept).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub redundant: Vec<(NodeId, NodeId)>,
+}
+
+/// The words of a text, normalized, for comparing items.
+fn words(text: &str) -> HashSet<String> {
+    grafeno::normalize_name(text)
+        .split(' ')
+        .filter(|word| !word.is_empty())
+        .map(str::to_owned)
+        .collect()
+}
+
+/// The share of words two sets have in common (1 for two empty ones).
+fn overlap(a: &HashSet<String>, b: &HashSet<String>) -> f64 {
+    if a.is_empty() && b.is_empty() {
+        return 1.0;
+    }
+    let common = a.intersection(b).count();
+    common as f64 / (a.len() + b.len() - common) as f64
 }
 
 /// Recalls nodes for `query` and packs them, best first, with the facts
@@ -196,8 +227,21 @@ fn add_items(
     context: &mut Context,
 ) -> Result<()> {
     let count = options.count_tokens;
+    // The words of what is packed, to leave out what repeats it.
+    let mut packed: Vec<(NodeId, HashSet<String>)> = Vec::new();
     for (node, score) in &nodes {
         let mut text = item_body(read, ns, node)?;
+        // Compared with what was packed, not with what did not fit.
+        let mine = options.redundancy.map(|_| words(&text));
+        if let (Some(threshold), Some(mine)) = (options.redundancy, &mine)
+            && !mine.is_empty()
+            && let Some((kept, _)) = packed
+                .iter()
+                .find(|(_, theirs)| overlap(mine, theirs) >= threshold)
+        {
+            context.redundant.push((node.id, *kept));
+            continue;
+        }
         let name = readable_name(node, &text);
         // An unnamed item's name is the start of its own text: don't repeat it.
         let heading = if node.explicit_name().is_some() || text.is_empty() {
@@ -261,6 +305,9 @@ fn add_items(
             sources: node.sources.clone(),
             truncated,
         });
+        if let Some(mine) = mine {
+            packed.push((node.id, mine));
+        }
     }
     Ok(())
 }

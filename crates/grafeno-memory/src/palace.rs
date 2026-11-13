@@ -36,6 +36,10 @@ pub const HAS_LOCUS: &str = "has_locus";
 pub const ANCHORED_AT: &str = "anchored_at";
 /// The locus every room is created with.
 pub const ENTRANCE: &str = "entrance";
+/// A room → a room it leads to: a door, made with `relate` like any fact.
+/// Walks go through doors; other relations of that label, between
+/// memories, are ordinary facts.
+pub const DOOR: &str = "leads_to";
 
 /// The labels of the nodes a palace is made of.
 pub const STRUCTURE_LABELS: [&str; 3] = [PALACE, ROOM, LOCUS];
@@ -508,6 +512,34 @@ pub struct RoomMap {
     pub memories: usize,
     /// In the order they were made, the entrance first.
     pub loci: Vec<LocusMap>,
+    /// The rooms its doors lead to ([`DOOR`]).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub doors: Vec<Door>,
+}
+
+/// A room a door leads to.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct Door {
+    pub room: NodeId,
+    pub name: String,
+    /// Where it is, as `Palace / Room`.
+    pub path: String,
+    pub edge: EdgeId,
+}
+
+/// The rooms `room`'s doors lead to, by name.
+fn doors_of(read: &ReadTx, ns: &str, room: NodeId) -> Result<Vec<(EdgeId, Node)>> {
+    let mut out = Vec::new();
+    for (edge, other) in read.edges_of(ns, room, Direction::Out, DOOR)? {
+        if other != room
+            && let Some(node) = read.node(ns, other)?
+            && node.has_label(ROOM)
+        {
+            out.push((edge, node));
+        }
+    }
+    out.sort_by_key(|(_, node)| normalize_name(&name_of(node)));
+    Ok(out)
 }
 
 /// A locus and what is anchored at it.
@@ -612,6 +644,16 @@ fn room_map(read: &ReadTx, ns: &str, room: &Node, options: &MapOptions) -> Resul
         );
         loci.push(map);
     }
+    let mut doors = Vec::new();
+    for (edge, other) in doors_of(read, ns, room.id)? {
+        let (place, _) = walk_place(read, ns, &other, 0.0)?;
+        doors.push(Door {
+            room: other.id,
+            name: name_of(&other),
+            path: place.path,
+            edge,
+        });
+    }
     Ok(RoomMap {
         id: room.id,
         name: name_of(room),
@@ -619,6 +661,7 @@ fn room_map(read: &ReadTx, ns: &str, room: &Node, options: &MapOptions) -> Resul
         description: string(room, "description"),
         memories: memories.len(),
         loci,
+        doors,
     })
 }
 
@@ -689,6 +732,23 @@ pub struct WalkQuery {
     pub hops: usize,
     /// Memories returned at most.
     pub limit: usize,
+    /// How the memories reached are ordered.
+    pub order: WalkOrder,
+    /// Also pack the memories reached, in their order, and the facts that
+    /// join them, into a context of this many tokens.
+    pub budget: Option<usize>,
+}
+
+/// How a walk orders the memories it reached.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum WalkOrder {
+    /// The nearest first: what is in the palace, then one relation away,
+    /// and so on; within a distance, the strongest first.
+    #[default]
+    Distance,
+    /// The ones whose words match the topic best first, wherever they
+    /// are; then by distance. Without a topic, by distance.
+    Relevance,
 }
 
 impl Default for WalkQuery {
@@ -699,6 +759,8 @@ impl Default for WalkQuery {
             palace: None,
             hops: 2,
             limit: 20,
+            order: WalkOrder::Distance,
+            budget: None,
         }
     }
 }
@@ -732,6 +794,16 @@ impl WalkQuery {
         self.limit = limit;
         self
     }
+
+    pub fn order(mut self, order: WalkOrder) -> Self {
+        self.order = order;
+        self
+    }
+
+    pub fn budget(mut self, budget: usize) -> Self {
+        self.budget = Some(budget);
+        self
+    }
 }
 
 /// A palace, room or locus a walk went through.
@@ -742,8 +814,12 @@ pub struct WalkPlace {
     pub kind: String,
     /// Where it is, as `Palace / Room / Locus`.
     pub path: String,
-    /// How well it matched the topic; 0 when it was the node given.
+    /// How well it matched the topic; 0 when it was the node given, or
+    /// reached through a door.
     pub score: f32,
+    /// The room whose door led here, when a door did.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub through: Option<NodeId>,
 }
 
 /// One relation followed by a walk.
@@ -766,8 +842,13 @@ pub struct Reached {
     /// Relations between it and a memory found in the palace: 0 for the
     /// ones found there.
     pub hops: usize,
-    /// The memory found in the palace the walk came from; itself at 0 hops.
+    /// The memory found in the palace the walk came from (itself at 0
+    /// hops), or the room whose door led to it.
     pub origin: NodeId,
+    /// How well its words match the topic, when the walk was ordered by
+    /// relevance (0: not at all).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub relevance: Option<f32>,
     /// The relations followed from `origin`, in order.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub via: Vec<Hop>,
@@ -781,8 +862,12 @@ pub struct Reached {
 pub struct Walk {
     /// The places the topic led to, best first.
     pub places: Vec<WalkPlace>,
-    /// The memories reached: the nearest first, then the strongest.
+    /// The memories reached, in the order asked for.
     pub memories: Vec<Reached>,
+    /// Those memories and the facts that join them, packed into the
+    /// budget asked for.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context: Option<Context>,
 }
 
 /// A place as a walk shows it, and the palace it is in.
@@ -824,6 +909,7 @@ fn walk_place(
             kind: kind.to_owned(),
             path: path.join(" / "),
             score,
+            through: None,
         },
         palace.map(|palace| palace.id),
     ))
@@ -917,6 +1003,41 @@ pub fn walk(read: &ReadTx, ns: &str, query: &WalkQuery) -> Result<Walk> {
         }
     }
 
+    // Doors of the rooms found: the rooms they lead to, one door away.
+    // What is anchored there is one step from where the walk began.
+    let mut beyond: Vec<(NodeId, NodeId, Hop)> = Vec::new();
+    if hops > 0 {
+        let rooms: Vec<NodeId> = places
+            .iter()
+            .filter(|place| place.has_label(ROOM))
+            .map(|place| place.id)
+            .collect();
+        for room in rooms {
+            for (edge, other) in doors_of(read, ns, room)? {
+                let (mut place, palace) = walk_place(read, ns, &other, 0.0)?;
+                if !inside(palace) || !seen_places.insert(other.id) {
+                    continue;
+                }
+                place.through = Some(room);
+                walk.places.push(place);
+                let door = Hop {
+                    edge,
+                    label: DOOR.to_owned(),
+                    forward: true,
+                    node: other.id,
+                    name: name_of(&other),
+                };
+                for locus in loci_under(read, ns, &other)? {
+                    for (_, node) in anchored(read, ns, locus)? {
+                        if !node.has_label(ARCHIVED) {
+                            beyond.push((node.id, room, door.clone()));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     // What is anchored at the places found comes first, place by place.
     let mut level: Vec<NodeId> = Vec::new();
     let mut reached: HashMap<NodeId, (usize, NodeId, Vec<Hop>)> = HashMap::new();
@@ -940,6 +1061,14 @@ pub fn walk(read: &ReadTx, ns: &str, query: &WalkQuery) -> Result<Walk> {
     let now = Timestamp::now();
     let hidden = structure(read, ns)?;
     let mut order: Vec<NodeId> = Vec::new();
+    // Ordered by relevance, a walk gathers more than it returns, and keeps
+    // the best of them.
+    let by_relevance = query.order == WalkOrder::Relevance && topic.is_some();
+    let gather = if by_relevance {
+        query.limit.saturating_mul(10).max(200)
+    } else {
+        query.limit
+    };
     for distance in 0..=hops {
         // What was found in the palace keeps its order; what was reached
         // from it is ordered by strength within its distance.
@@ -956,10 +1085,18 @@ pub fn walk(read: &ReadTx, ns: &str, query: &WalkQuery) -> Result<Walk> {
             });
         }
         order.extend(level.iter().copied());
-        if order.len() >= query.limit || distance == hops {
+        if order.len() >= gather || distance == hops {
             break;
         }
         let mut next = Vec::new();
+        if distance == 0 {
+            for (id, room, door) in beyond.drain(..) {
+                if let std::collections::hash_map::Entry::Vacant(slot) = reached.entry(id) {
+                    slot.insert((1, room, vec![door]));
+                    next.push(id);
+                }
+            }
+        }
         for id in &level {
             let (_, origin, via) = reached[id].clone();
             let neighbors = read.neighbors(ns, *id, Direction::Both, &EdgeFilter::any())?;
@@ -994,23 +1131,61 @@ pub fn walk(read: &ReadTx, ns: &str, query: &WalkQuery) -> Result<Walk> {
         level = next;
     }
 
+    // By relevance: how well each one's words match the topic, then where
+    // it was in the walk.
+    let mut relevance: HashMap<NodeId, f32> = HashMap::new();
+    if by_relevance && let Some(topic) = topic {
+        let wanted: HashSet<NodeId> = order.iter().copied().collect();
+        for hit in read.search_text(ns, topic, RELEVANCE_CANDIDATES)? {
+            if wanted.contains(&hit.node) {
+                relevance.insert(hit.node, hit.score);
+            }
+        }
+        let position: HashMap<NodeId, usize> =
+            order.iter().enumerate().map(|(at, id)| (*id, at)).collect();
+        order.sort_by(|a, b| {
+            let score = |id: &NodeId| relevance.get(id).copied().unwrap_or(0.0);
+            score(b)
+                .total_cmp(&score(a))
+                .then(position[a].cmp(&position[b]))
+        });
+    }
+
+    let mut packed: Vec<(Node, f32)> = Vec::new();
     for id in order.into_iter().take(query.limit) {
         let Some(node) = read.node(ns, id)? else {
             continue;
         };
         let (hops, origin, via) = reached.remove(&id).unwrap_or((0, id, Vec::new()));
+        let score = relevance.get(&id).copied();
         walk.memories.push(Reached {
             id,
             name: title(read, ns, &node)?,
             labels: node.labels.clone(),
             hops,
             origin,
+            relevance: by_relevance.then(|| score.unwrap_or(0.0)),
             via,
             places: anchors_of(read, ns, id)?,
         });
+        if query.budget.is_some() {
+            let weight = match score {
+                Some(score) => score,
+                None => strength(read, ns, &node, now)?,
+            };
+            packed.push((node, weight));
+        }
+    }
+    if let Some(budget) = query.budget {
+        let mut options = ContextOptions::with_budget(budget);
+        options.redundancy = Some(crate::context::REDUNDANT);
+        walk.context = Some(context_of(read, ns, packed, &options)?);
     }
     Ok(walk)
 }
+
+/// Text matches a walk ordered by relevance looks among.
+const RELEVANCE_CANDIDATES: usize = 1_000;
 
 /// How a room is entered.
 #[derive(Clone, Debug)]

@@ -676,7 +676,7 @@ another group's file. See [docs/cluster-runbooks.md](../../docs/cluster-runbooks
 | `palace_create` / `palace_create_room` | Makes a palace, or a room in one with its loci (places inside it); returns the one there is when it exists. |
 | `palace_anchor` | Puts an existing memory at a locus of a room, without copying or changing it; with `remove`, takes the anchor away. |
 | `palace_map` | The palaces with their rooms, loci and counts; with `room`, the memories at each locus. |
-| `palace_walk` | From a topic or a node to the memories around it: the rooms that match, what is anchored there, and what the graph's relations lead to from those. |
+| `palace_walk` | From a topic or a node to the memories around it: the rooms that match, what is anchored there, the rooms their doors lead to (a `leads_to` fact between rooms), and what the graph's relations lead to from those. By distance or by relevance; with `budget`, also as text with the facts joining them. |
 | `palace_enter` | A room's context for the start of a session: its memories and facts as text within a token budget, and the latest checkpoint about the room. |
 
 The `palace_*` tools arrange memories that already exist into places and

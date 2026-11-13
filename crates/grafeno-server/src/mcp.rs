@@ -588,6 +588,8 @@ impl McpServer {
         let mut options = ContextOptions::with_budget(args.budget.unwrap_or(1_500));
         // Community summaries that match go first, as an overview.
         options.communities = 3;
+        // What repeats a memory already packed is left out.
+        options.redundancy = Some(grafeno_memory::REDUNDANT);
         let read = self.db.begin_read().map_err(describe)?;
         let context = context_for(&read, ns, &query, &options).map_err(describe)?;
         drop(read);
@@ -595,8 +597,14 @@ impl McpServer {
         self.touch(ns, &ids)?;
         Ok(ToolOutput::Text(if context.items.is_empty() {
             "No relevant memories found.".into()
-        } else {
+        } else if context.redundant.is_empty() {
             context.rendered
+        } else {
+            format!(
+                "{}\n({} more that repeated these left out)",
+                context.rendered.trim_end(),
+                context.redundant.len()
+            )
         }))
     }
 
@@ -2232,10 +2240,23 @@ impl McpServer {
             #[serde(default)]
             limit: Option<usize>,
             #[serde(default)]
+            order: Option<String>,
+            #[serde(default)]
+            budget: Option<usize>,
+            #[serde(default)]
             namespace: Option<String>,
         }
         let args: Args = parse_args(arguments)?;
         let ns = self.ns(&args.namespace);
+        let order = match args.order.as_deref() {
+            None | Some("distance") => grafeno_memory::WalkOrder::Distance,
+            Some("relevance") => grafeno_memory::WalkOrder::Relevance,
+            Some(other) => {
+                return Err(format!(
+                    "unknown order {other:?}: use \"distance\" or \"relevance\""
+                ));
+            }
+        };
         let read = self.db.begin_read().map_err(describe)?;
         let query = grafeno_memory::WalkQuery {
             topic: args.topic,
@@ -2252,9 +2273,18 @@ impl McpServer {
                 .transpose()?,
             hops: args.hops.unwrap_or(2),
             limit: args.limit.unwrap_or(20).clamp(1, 100),
+            order,
+            budget: args.budget.map(|budget| budget.clamp(50, 20_000)),
         };
         let walk = grafeno_memory::walk(&read, ns, &query).map_err(describe)?;
         let mut output = json!({ "places": walk.places, "memories": walk.memories });
+        if let Some(context) = &walk.context {
+            output["context"] = json!(context.rendered);
+            output["tokens"] = json!(context.tokens);
+            if !context.redundant.is_empty() {
+                output["left_out_as_repeats"] = json!(context.redundant.len());
+            }
+        }
         if walk.memories.is_empty() {
             output["hint"] = json!(
                 "Nothing in a palace matches. `recall` searches every memory, anchored or not."
@@ -2279,9 +2309,11 @@ impl McpServer {
         let ns = self.ns(&args.namespace);
         let read = self.db.begin_read().map_err(describe)?;
         let room = self.room_ref(&read, ns, args.palace.as_deref(), &args.room)?;
-        let options = grafeno_memory::EnterOptions::with_budget(
+        let mut options = grafeno_memory::EnterOptions::with_budget(
             args.budget.unwrap_or(1_500).clamp(50, 20_000),
         );
+        // A memory stored twice in other words is packed once.
+        options.context.redundancy = Some(grafeno_memory::REDUNDANT);
         let entered = grafeno_memory::enter(&read, ns, room, &options).map_err(describe)?;
         drop(read);
         let ids: Vec<NodeId> = entered.context.items.iter().map(|item| item.node).collect();
@@ -2300,6 +2332,7 @@ impl McpServer {
             "tokens": entered.context.tokens,
             "memories": memories,
             "left_out": left_out,
+            "left_out_as_repeats": entered.context.redundant.len(),
             "checkpoint": entered.checkpoint,
         });
         if entered.checkpoint.is_none() {
@@ -3055,17 +3088,21 @@ fn tools() -> Value {
             "title": "Walk the palace",
             "description": "From a topic, or from a node, to the memories around it. Finds the \
                 rooms and loci the topic names and the anchored memories that match it, then \
-                follows the graph's relations from those memories. Each memory comes with how \
-                many relations away it is, the way there, and where it is anchored. Memories that \
-                are in no palace are not returned: use `recall` for those.",
+                follows the graph's relations from those memories, and the doors of the rooms \
+                (a `leads_to` fact from one room to another, made with `relate`). Each memory comes \
+                with how many relations away it is, the way there, and where it is anchored. With \
+                `budget`, also the memories and the facts joining them as text. Memories that are \
+                in no palace are not returned: use `recall` for those.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "topic": { "type": "string", "description": "What to look for." },
                     "from": id("Id of a palace, room, locus or memory to start from, instead of or besides a topic."),
                     "palace": { "type": "string", "description": "Stay in this palace (name or id). Default: every palace of the namespace." },
-                    "hops": { "type": "integer", "minimum": 0, "maximum": 3, "description": "Relations followed from the memories found. Default: 2." },
-                    "limit": { "type": "integer", "minimum": 1, "maximum": 100, "description": "Memories returned, the nearest first. Default: 20." },
+                    "hops": { "type": "integer", "minimum": 0, "maximum": 3, "description": "Relations followed from the memories found, and doors from the rooms found. Default: 2." },
+                    "limit": { "type": "integer", "minimum": 1, "maximum": 100, "description": "Memories returned. Default: 20." },
+                    "order": { "type": "string", "enum": ["distance", "relevance"], "description": "distance: the nearest first (default). relevance: those whose words match the topic best first, wherever they are." },
+                    "budget": { "type": "integer", "minimum": 50, "description": "Also return the memories reached and the facts joining them as text within this many tokens, ready for a prompt." },
                     "namespace": namespace
                 }
             }

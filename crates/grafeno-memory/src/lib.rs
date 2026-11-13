@@ -47,7 +47,8 @@ pub use communities::{
     plan_communities, refresh_communities, set_community_text,
 };
 pub use context::{
-    Context, ContextFact, ContextItem, ContextOptions, context_for, context_of, estimate_tokens,
+    Context, ContextFact, ContextItem, ContextOptions, REDUNDANT, context_for, context_of,
+    estimate_tokens,
 };
 pub use documents::{
     CHUNK, DEFAULT_CHUNK_CHARS, Ingested, Kind, NewDocument, Piece, cut, ingest_document,
@@ -59,10 +60,10 @@ pub use maintenance::{
     weak_memories, write_summary,
 };
 pub use palace::{
-    ANCHORED_AT, Anchored, AnchoredMemory, Created, EnterOptions, Entered, Hop, LOCUS, LocusMap,
-    MapOptions, NewRoom, PALACE, PalaceMap, Place, ROOM, Reached, RoomMap, Walk, WalkPlace,
-    WalkQuery, anchor, anchors_of, create_locus, create_palace, create_room, enter, find_locus,
-    find_palace, find_room, map_palace, map_room, palaces, unanchor, walk,
+    ANCHORED_AT, Anchored, AnchoredMemory, Created, DOOR, Door, EnterOptions, Entered, Hop, LOCUS,
+    LocusMap, MapOptions, NewRoom, PALACE, PalaceMap, Place, ROOM, Reached, RoomMap, Walk,
+    WalkOrder, WalkPlace, WalkQuery, anchor, anchors_of, create_locus, create_palace, create_room,
+    enter, find_locus, find_palace, find_room, map_palace, map_room, palaces, unanchor, walk,
 };
 pub use recall::{ARCHIVED, Expansion, Ranking, RecallQuery, Recalled, Signal, recall};
 pub use reconcile::{

@@ -1653,3 +1653,125 @@ fn a_message_past_the_limit_is_skipped() {
         Some(Message::TooLong(51))
     );
 }
+
+/// Phase 3's acceptance over MCP: a question that needs three memories
+/// joined is answered by a walk with a context, with the way that joined
+/// them; doors lead from a room to another; repeats are left out.
+#[test]
+fn walks_join_memories_follow_doors_and_leave_out_repeats() {
+    let server = server();
+    structured(&call(&server, "palace_create", json!({ "name": "Work" })));
+    let room = |name: &str, topic: &str| {
+        let made = call(
+            &server,
+            "palace_create_room",
+            json!({ "palace": "Work", "name": name, "topic": topic }),
+        );
+        structured(&made)["id"].as_str().unwrap().to_owned()
+    };
+    let ops = room("Operations", "incidents");
+    let billing = room("Billing", "invoices");
+    let outage = remembered(
+        &server,
+        json!({ "text": "The night outage stopped the invoices", "labels": ["Experience"] }),
+    );
+    let service = remembered(
+        &server,
+        json!({ "name": "Billing service", "text": "Sends the invoices", "labels": ["Service"] }),
+    );
+    let ana = remembered(
+        &server,
+        json!({ "name": "Ana", "text": "Keeps the invoices running", "labels": ["Person"] }),
+    );
+    let numbering = remembered(&server, json!({ "text": "Invoices are numbered by year" }));
+    for (from, label, to) in [(&outage, "hit", &service), (&ana, "maintains", &service)] {
+        structured(&call(
+            &server,
+            "relate",
+            json!({ "from": from, "label": label, "to": to }),
+        ));
+    }
+    structured(&call(
+        &server,
+        "palace_anchor",
+        json!({ "memory": outage, "room": "Operations" }),
+    ));
+    structured(&call(
+        &server,
+        "palace_anchor",
+        json!({ "memory": numbering, "room": "Billing" }),
+    ));
+    // A door, with the tool that records any fact.
+    structured(&call(
+        &server,
+        "relate",
+        json!({ "from": ops, "label": "leads_to", "to": billing }),
+    ));
+    let map = call(&server, "palace_map", json!({ "room": "Operations" }));
+    assert_eq!(structured(&map)["room"]["doors"][0]["name"], "Billing");
+
+    // "Who keeps running what the outage hit?"
+    let walk = call(
+        &server,
+        "palace_walk",
+        json!({ "topic": "incidents", "order": "relevance", "budget": 600 }),
+    );
+    let walk = structured(&walk).clone();
+    let context = walk["context"].as_str().unwrap();
+    assert!(context.contains("hit Billing service"), "{context}");
+    assert!(
+        context.contains("Ana maintains Billing service"),
+        "{context}"
+    );
+    assert!(walk["tokens"].as_u64().unwrap() <= 600);
+    let found = |id: &str| {
+        walk["memories"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|memory| memory["id"] == id)
+            .unwrap_or_else(|| panic!("{id} not in {walk}"))
+            .clone()
+    };
+    let ana_found = found(&ana);
+    let way: Vec<&str> = ana_found["via"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|hop| hop["label"].as_str().unwrap())
+        .collect();
+    assert_eq!(way, ["hit", "maintains"]);
+    // Ordered by relevance, each says how well it matched.
+    assert!(ana_found["relevance"].is_number());
+    // Through the door: Billing's note, one step away.
+    let through = found(&numbering);
+    assert_eq!(through["hops"], 1);
+    assert_eq!(through["via"][0]["label"], "leads_to");
+    assert!(
+        walk["places"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|place| place["path"] == "Work / Billing" && place["through"] == ops.as_str())
+    );
+
+    // A memory stored again in other words is packed once.
+    remembered(
+        &server,
+        json!({ "text": "Invoices are numbered, by year." }),
+    );
+    let text = call(
+        &server,
+        "context",
+        json!({ "query": "invoices numbered year" }),
+    );
+    let text = text["content"][0]["text"].as_str().unwrap();
+    assert_eq!(text.matches("numbered").count(), 1, "{text}");
+    assert!(text.contains("repeated these left out"), "{text}");
+    let bad = call(
+        &server,
+        "palace_walk",
+        json!({ "topic": "invoices", "order": "random" }),
+    );
+    assert!(failure(&bad).contains("unknown order"));
+}

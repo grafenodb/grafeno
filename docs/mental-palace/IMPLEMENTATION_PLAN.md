@@ -1,7 +1,7 @@
 # Grafeno Cognitive Memory: implementation plan
 
-**Status:** phases 0 (this audit), 1 and 2 are done. Phases 3 to 6 are
-planned.
+**Status:** phases 0 (this audit), 1, 2 and 3 are done. Phases 4 to 6
+are planned.
 
 The aim is for Grafeno to be the persistent memory and knowledge of any
 agent, through six phases of the Mental Palace, and to stay independent
@@ -108,7 +108,7 @@ whole of it is green.
 | --- | --- | --- | --- |
 | 1. Structural palace | Everything | — | — |
 | 2. Cognitive memory | Everything, since phase 2 | — | — |
-| 3. Retrieval | Hybrid recall, graph expansion, ranking, context in a token budget, why each result matched, walks with their paths | Walks rank by strength only | Dropping near-identical results; a walk that ranks by relevance and packs a context |
+| 3. Retrieval | Everything, since phase 3 | — | — |
 | 4. Consolidation | Duplicates, contradictions under constraints, valid time, history, merges with undo, consolidation, archiving, feedback | Obsolete memories (weak ones, by use; not by age or by being superseded) | Proposals to reorganize a palace |
 | 5. Several agents | A server that owns the file, accounts, keys, roles, rights down to records, who recorded, audit, concurrency | Shared and private palaces (namespaces and grants do it; nothing says so or tests it) | MCP through the server; palaces, checkpoints, timelines and feedback over HTTP |
 | 6. Metacognition | `maintain`, `contradictions`, `timeline`, `overview`, `get_node` | What is known of a topic (recall answers it without saying what is thin) | Gaps, staleness, what to verify, the limits of an answer |
@@ -210,7 +210,25 @@ Acceptance:
 - The entities and the memory are anchored in a room and found by
   `palace_walk`.
 
-## Phase 3: retrieval
+## Phase 3: retrieval (done)
+
+Built as proposed below; what it does is in
+[../mental-palace.md](../mental-palace.md#doors-relevance-and-contexts),
+and the measures in [../benchmarks.md](../benchmarks.md). Tests:
+`crates/grafeno-memory/tests/palace_retrieval.rs` and
+`walks_join_memories_follow_doors_and_leave_out_repeats` in
+`crates/grafeno-server/tests/mcp.rs`. Decided on the way:
+
+- Repeats are told by the share of words two texts have in common (85 %,
+  normalized), not by the text similarity measures, which compare
+  characters and cost more on long chunks. Off by default in the library,
+  on in the tools.
+- Relevance is the full-text score of the topic over what the walk
+  reached, not recall's fused score: a walk has no embedding. Words are
+  compared whole, so `invoice` does not match `invoices`.
+- A door is followed one step, from the rooms the walk found, not from
+  the rooms it reached through a door.
+
 
 | Asked | Today |
 | --- | --- |

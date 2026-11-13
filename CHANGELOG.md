@@ -13,6 +13,16 @@ version (now 18) is upgraded in place, with a copy kept first.
 
 ## Unreleased
 
+- **Added**: retrieval over palaces (phase 3 of the Mental Palace plan).
+  `palace_walk` takes `order` (`distance`, the default, or `relevance`:
+  the full-text match of the topic, then distance) and `budget` (the
+  memories reached and the facts joining them as text, for a prompt). A
+  `leads_to` fact from a room to another is a door: `palace_map` lists a
+  room's doors, and walks go through them. `context`, `palace_enter` and
+  a walk's context leave out a memory nearly the same as one already
+  packed, and say how many. In `grafeno-memory`:
+  `ContextOptions::redundancy`, `WalkOrder`, `WalkQuery::budget`, `DOOR`.
+  Measured in `examples/palace_bench.rs` (docs/benchmarks.md).
 - **Added**: `grafeno mcp --listen ADDR` also serves the HTTP API on the
   agent's database, with `--token` and `--cors-origins`: Grafeno Studio and
   `grafeno shell --url` connect to it and see what the agent writes as it

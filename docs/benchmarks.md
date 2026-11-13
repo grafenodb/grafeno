@@ -886,6 +886,37 @@ notes. The multi-hop example (`examples/multi_hop.rs`, also a test) shows
 the other side: an answer three hops away still comes back, ranked above
 a near miss.
 
+## Retrieval over a palace (`crates/grafeno-memory/examples/palace_bench.rs`)
+
+Synthetic notes in 20 rooms of 5 loci, each note of about 12 words (its
+room's subject, eight common words, its neighbor room's subject), two
+`relates_to` facts per note to notes of its room or the next one, and a
+door from each room to the next. The topic is `billing timeout incident`;
+budgets are 1 500 tokens. Each line is 50 runs after one warm-up, in
+memory, release build, on one laptop (16 threads), 2026-11-13. "Returned"
+is results, walk memories or context items.
+
+| What | 1 000 notes: median / p95 ms | 5 000 notes | 20 000 notes | Returned | Tokens |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `recall`, 10 results | 0.28 / 0.34 | 0.92 / 1.10 | 4.23 / 4.83 | 10 | — |
+| `context` | 0.58 / 0.73 | 1.29 / 1.47 | 4.58 / 5.66 | 20 | 1 484–1 496 |
+| `context`, repeats left out | 0.69 / 0.84 | 1.41 / 1.69 | 4.85 / 7.12 | 20 | 1 484–1 496 |
+| `palace_walk` by distance, 2 hops | 0.95 / 1.15 | 2.62 / 3.07 | 8.17 / 9.81 | 20 | — |
+| `palace_walk` by relevance, 2 hops | 2.94 / 3.42 | 3.49 / 4.21 | 16.26 / 19.35 | 20 | — |
+| `palace_walk` by relevance, with a context | 3.41 / 4.22 | 4.08 / 4.68 | 16.99 / 24.87 | 20 | 1 486–1 497 |
+| `palace_walk` by distance, 3 hops | 0.95 / 1.17 | 2.66 / 3.26 | 8.25 / 9.42 | 20 | — |
+| `palace_enter` (a room of 50, 250, 1 000 notes) | 0.65 / 0.82 | 1.79 / 2.04 | 7.04 / 8.66 | 34–35 | 1 478–1 495 |
+
+A walk costs about two recalls by distance: it reads every note anchored
+in the rooms the topic names (1 000 a room at 20 000 notes) before it
+follows relations. By relevance it gathers up to ten times its limit and
+looks up a thousand text matches to rank them, about twice a walk by
+distance. Three hops cost what two do here: the limit of 20 is reached
+before the third. Leaving repeats out costs a tenth of a millisecond to
+half a millisecond, a comparison of word sets per packed item. Entering
+grows with the room, since every note in it is read to order them by
+strength.
+
 ## Writes with vectors on the one writer (`crates/grafeno/examples/vector_writes.rs`)
 
 A database file with immediate durability, on a laptop's NVMe SSD
