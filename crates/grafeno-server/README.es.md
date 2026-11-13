@@ -413,6 +413,8 @@ Los ids son UUID. Los tiempos en las respuestas son microsegundos desde la
 | `POST`   | `/v1/{ns}/similar`                    | `{node, limit, ef?, index?, filter?}`                   | `[{node, score}]`: los más cercanos al vector del propio nodo, sin incluirlo (16.7) |
 | `POST`   | `/v1/{ns}/recall`                     | consulta de recall                                      | `[{node, score, signals}]`    |
 | `POST`   | `/v1/{ns}/context`                    | consulta de recall + `{budget, fact_share, max_facts, facts, communities}` | `{overview, items, facts, tokens, rendered}`; `communities` antepone esa cantidad de resúmenes de comunidades que coinciden |
+| `GET`    | `/v1/{ns}/tools`                      | — | `{tools}`: las herramientas de memoria que quien llama puede usar en el namespace (las que escriben solo con derecho a escribir) |
+| `POST`   | `/v1/{ns}/tools/{name}`               | los argumentos de la herramienta, un objeto | lo que responde MCP: `{content, structuredContent, isError}`; como quien llama, en este namespace; derechos solo por namespace, no en un clúster |
 | `POST`   | `/v1/{ns}/batch`                      | `{ops}`                                                 | `{results, refs}`             |
 | `POST`   | `/v1/{ns}/query`                      | `{query, params?, trace?}` ([GQ](../../docs/query-language.md)) | `{columns, rows, stats}`, y `trace` con `trace: true` (16.9) |
 | `POST`   | `/v1/{ns}/transactions`               | `{read_only?, timeout_secs?}`                           | 201 `{id, read_only, started_at, timeout_secs, statements, failed}`: una transacción explícita (16.4) |
@@ -740,6 +742,22 @@ de cambios, y lo que se escribe allí el agente lo recuerda. `--listen`
 acepta `--token` (o `GRAFENO_TOKEN`) y `--cors-origins`; sin token,
 mantenlo en `127.0.0.1`. Un segundo proceso sobre el mismo archivo se
 rechaza con un mensaje que lo explica.
+
+Varios agentes comparten una memoria a través de un servidor dueño del
+archivo: el proceso MCP de cada agente ejecuta sus herramientas allí, con
+su propia clave, y el servidor comprueba sus derechos y registra sus
+escrituras.
+
+```bash
+grafeno mcp --url http://127.0.0.1:7810 --token "$CLAVE_DEL_AGENTE" --namespace equipo
+```
+
+Las herramientas también se ejecutan por HTTP: `GET /v1/{ns}/tools` lista
+las que puede usar quien llama, y `POST /v1/{ns}/tools/{name}` ejecuta
+una con sus argumentos y responde como MCP. Los derechos son por
+namespace (quien tiene reglas sobre etiquetas, propiedades o registros
+usa las otras rutas de la API), GQ va por `/v1/{ns}/query`, y la ruta no
+está disponible en un clúster todavía.
 
 La configuración de un cliente MCP (el archivo y su ubicación dependen del
 cliente):

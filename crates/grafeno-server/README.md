@@ -403,6 +403,8 @@ requests accept either that or an ISO 8601 string (`2024-05-01`,
 | `POST`   | `/v1/{ns}/similar`                    | `{node, limit, ef?, index?, filter?}`                   | `[{node, score}]`: nearest to the node's own vector, itself left out (16.7) |
 | `POST`   | `/v1/{ns}/recall`                     | recall query                                            | `[{node, score, signals}]`    |
 | `POST`   | `/v1/{ns}/context`                    | recall query + `{budget, fact_share, max_facts, facts, communities}` | `{overview, items, facts, tokens, rendered}`; `communities` puts that many matching community summaries first |
+| `GET`    | `/v1/{ns}/tools`                      | — | `{tools}`: the memory tools the caller may use in the namespace (those that write only with a right to write) |
+| `POST`   | `/v1/{ns}/tools/{name}`               | the tool's arguments, an object | what MCP answers: `{content, structuredContent, isError}`; run as the caller, in this namespace; rights by namespace only, not on a cluster |
 | `POST`   | `/v1/{ns}/batch`                      | `{ops}`                                                 | `{results, refs}`             |
 | `POST`   | `/v1/{ns}/query`                      | `{query, params?, trace?}` ([GQ](../../docs/query-language.md)) | `{columns, rows, stats}`, and `trace` with `trace: true` (16.9) |
 | `POST`   | `/v1/{ns}/transactions`               | `{read_only?, timeout_secs?}`                           | 201 `{id, read_only, started_at, timeout_secs, statements, failed}`: an explicit transaction (16.4) |
@@ -717,6 +719,20 @@ what is written there the agent recalls. `--listen` takes `--token` (or
 `GRAFENO_TOKEN`) and `--cors-origins`; without a token, keep it on
 `127.0.0.1`. A second process on the same file is refused with a message
 that says this.
+
+Several agents share one memory through one server that owns the file:
+each agent's MCP process runs its tools there, with its own key, and the
+server checks its rights and records its writes.
+
+```bash
+grafeno mcp --url http://127.0.0.1:7810 --token "$AGENT_KEY" --namespace team
+```
+
+The tools also run over HTTP: `GET /v1/{ns}/tools` lists those the caller
+may use, and `POST /v1/{ns}/tools/{name}` runs one with its arguments and
+answers as MCP does. Rights are by namespace (a caller with rules on
+labels, properties or records uses the API's other routes), GQ runs on
+`/v1/{ns}/query`, and the route is not available on a cluster yet.
 
 An MCP client's configuration (the file and its place depend on the
 client):

@@ -459,6 +459,8 @@ pub fn router_with(state: AppState, options: &Options) -> Router {
         .route("/{ns}/search/vector", post(search_vector))
         .route("/{ns}/recall", post(recall_handler))
         .route("/{ns}/context", post(context_handler))
+        .route("/{ns}/tools", get(memory_tools))
+        .route("/{ns}/tools/{name}", post(run_memory_tool))
         .route("/{ns}/batch", post(batch))
         .route("/{ns}/query", post(query))
         .route("/{ns}/query/part", post(query_part))
@@ -4161,6 +4163,100 @@ async fn summaries(
     })
     .await?;
     Ok((StatusCode::CREATED, Json(json!({ "id": id }))))
+}
+
+// ------------------------------------------------------------ memory tools
+
+/// Whether the caller may write in `ns`.
+fn writes_in(caller: &Caller, ns: &str) -> bool {
+    use grafeno::Act;
+    [
+        Act::Create,
+        Act::Update,
+        Act::Delete,
+        Act::Merge,
+        Act::Retract,
+    ]
+    .iter()
+    .any(|act| caller.can(*act, ns))
+}
+
+/// The memory tools, run here as the caller: `grafeno mcp --url` sends
+/// its agent's tool calls to them, so the server that owns the file checks
+/// the agent's rights and records its writes, and many agents share one
+/// memory. Rights by namespace only: a caller with rules on labels,
+/// properties or records uses the API's own routes.
+fn tool_server(state: &AppState, ns: &str) -> ApiResult<crate::mcp::McpServer> {
+    if state.writer.cluster().is_some() {
+        return Err(ApiError::bad_request(
+            "the memory tools do not run on a cluster yet: use the API's routes",
+        ));
+    }
+    let caller = auth::current();
+    if caller.view().is_some_and(|view| view.per_record(ns)) {
+        return Err(ApiError::forbidden(format!(
+            "{:?} has rights on labels, properties or records in {ns:?}: the memory tools check rights by namespace, so use the API's own routes",
+            caller.name()
+        )));
+    }
+    let access = crate::mcp::McpAccess {
+        allow: vec![ns.to_owned()],
+        read_only: !writes_in(&caller, ns),
+        actor: caller.actor(),
+    };
+    Ok(crate::mcp::McpServer::shared(state.db.clone(), ns.to_owned()).with_access(access))
+}
+
+/// `GET /v1/{ns}/tools`: the memory tools the caller may use here.
+async fn memory_tools(
+    State(state): State<AppState>,
+    Path(ns): Path<String>,
+) -> ApiResult<Json<Value>> {
+    let server = tool_server(&state, &ns)?;
+    Ok(Json(json!({ "tools": server.tool_list() })))
+}
+
+/// `POST /v1/{ns}/tools/{name}`: runs a memory tool with these arguments
+/// in `ns`, as the caller; the answer is the tool's result, as MCP gives
+/// it (`content`, `structuredContent`, `isError`).
+async fn run_memory_tool(
+    State(state): State<AppState>,
+    Path((ns, name)): Path<(String, String)>,
+    Body(arguments): Body<Value>,
+) -> ApiResult<Json<Value>> {
+    let mut arguments = match arguments {
+        Value::Null => json!({}),
+        Value::Object(object) => Value::Object(object),
+        _ => return Err(ApiError::bad_request("the arguments are a JSON object")),
+    };
+    match arguments.get("namespace").and_then(Value::as_str) {
+        Some(other) if other != ns => {
+            return Err(ApiError::bad_request(format!(
+                "the namespace is the one in the path ({ns:?}), not {other:?}"
+            )));
+        }
+        _ => {}
+    }
+    if name == "query" {
+        return Err(ApiError::bad_request(
+            "GQ runs on POST /v1/{ns}/query, which checks each statement against the caller's rights",
+        ));
+    }
+    arguments["namespace"] = json!(ns);
+    let server = tool_server(&state, &ns)?;
+    let caller = auth::current();
+    let address = auth::ADDRESS.try_with(Clone::clone).ok().flatten();
+    let result = tokio::task::spawn_blocking(move || {
+        auth::CALLER.sync_scope(caller, || {
+            auth::ADDRESS.sync_scope(address, || server.call(&name, arguments))
+        })
+    })
+    .await
+    .map_err(|error| ApiError::internal(error.to_string()))?;
+    match result {
+        Ok(result) => Ok(Json(result)),
+        Err((_, message)) => Err(ApiError::not_found_message(message)),
+    }
 }
 
 #[cfg(test)]

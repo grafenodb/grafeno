@@ -1,7 +1,7 @@
 # Grafeno Cognitive Memory: implementation plan
 
-**Status:** phases 0 (this audit) and 1 to 4 are done. Phases 5 and 6
-are planned.
+**Status:** phases 0 (this audit) and 1 to 5 are done. Phase 6 is
+planned.
 
 The aim is for Grafeno to be the persistent memory and knowledge of any
 agent, through six phases of the Mental Palace, and to stay independent
@@ -110,7 +110,7 @@ whole of it is green.
 | 2. Cognitive memory | Everything, since phase 2 | — | — |
 | 3. Retrieval | Everything, since phase 3 | — | — |
 | 4. Consolidation | Everything, since phase 4 | — | — |
-| 5. Several agents | A server that owns the file, accounts, keys, roles, rights down to records, who recorded, audit, concurrency | Shared and private palaces (namespaces and grants do it; nothing says so or tests it) | MCP through the server; palaces, checkpoints, timelines and feedback over HTTP |
+| 5. Several agents | Everything but the TypeScript client and clusters, since phase 5 | — | The tools route on a cluster; the TypeScript client |
 | 6. Metacognition | `maintain`, `contradictions`, `timeline`, `overview`, `get_node` | What is known of a topic (recall answers it without saying what is thin) | Gaps, staleness, what to verify, the limits of an answer |
 
 ## Phase 1: structural palace (done)
@@ -334,7 +334,29 @@ Acceptance:
   expected, and changes nothing.
 - No memory is deleted or archived by a tool that was not asked to.
 
-## Phase 5: memory for several agents
+## Phase 5: memory for several agents (done)
+
+Built as proposed below, with the recommended decision: one generic
+route. What it does is in
+[../mental-palace.md](../mental-palace.md#several-agents-one-memory).
+Test: `crates/grafeno-server/tests/agents.rs`, the acceptance below with
+real processes. Decided on the way:
+
+- `POST /v1/{ns}/tools/{name}` runs a memory tool as the caller, and
+  `GET /v1/{ns}/tools` lists those the caller may use. The route needs the
+  right to read the namespace; a writing tool needs a right to write
+  there, or it answers as on a read-only MCP server. The tool's
+  namespace is the path's.
+- The memory tools check rights by namespace. A caller whose rights reach
+  labels, properties or records in that namespace is refused there and
+  uses the API's own routes, which check each record.
+- GQ does not run through the tools route: `grafeno mcp --url` sends the
+  `query` tool to `POST /v1/{ns}/query`, which checks each statement.
+- The tools route is refused on a cluster for now: its writes would not
+  go through the leader.
+- Step 4, the TypeScript client, belongs to its own repository and is
+  not done.
+
 
 | Asked | Today |
 | --- | --- |
@@ -486,7 +508,7 @@ follows unless the maintainer says otherwise:
 | The four origins and a certainty from 0 to 1 | 2.1 | **Taken:** yes; a record with neither is shown as "not stated". |
 | Extending `add_mentions` or a new tool for an agent's reading | 2.3 | **Taken:** extended. |
 | Extending `feedback` or a new `palace_verify` | 2.4 | **Taken:** extended. |
-| One generic HTTP route for memory tools, or one route per feature | 5.1 | One generic route, so MCP over `--url` and the tools stay one list. |
+| One generic HTTP route for memory tools, or one route per feature | 5.1 | **Taken:** one generic route. |
 | Phase 5 before phases 2 to 4 | — | No, unless several agents are needed sooner: phase 2 is what phases 3, 4 and 6 report on. |
 | Numbered phases in `docs/phases` | — | The maintainer's alone. |
 

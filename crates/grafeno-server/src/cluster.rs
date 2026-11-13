@@ -761,7 +761,7 @@ pub struct PartRequest {
 }
 
 /// A path segment, percent-encoded.
-fn encode_segment(segment: &str) -> String {
+pub(crate) fn encode_segment(segment: &str) -> String {
     segment
         .bytes()
         .map(|b| match b {

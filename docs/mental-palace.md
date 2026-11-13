@@ -346,6 +346,44 @@ Added in phase 4 of the [plan](mental-palace/IMPLEMENTATION_PLAN.md).
   id deletes the summary and brings back the memories it archived; those
   archived before it stay archived.
 
+## Several agents, one memory
+
+Added in phase 5 of the [plan](mental-palace/IMPLEMENTATION_PLAN.md).
+
+Only one process can open a database file. For several agents to share
+a memory, one `grafeno serve` owns the file and every agent is its
+client: each agent's MCP process runs its tools on the server, with the
+key of an account of its own.
+
+```bash
+grafeno serve --config grafeno.toml
+```
+
+```bash
+grafeno mcp --url http://127.0.0.1:7810 --token "$AGENT_KEY" --namespace team
+```
+
+- **Rights.** The server checks each agent's rights by its key. An agent
+  that may only read a namespace gets the tools that read there and is
+  refused the rest; an agent with no right on a namespace is refused
+  there with 403. Private and shared palaces are namespaces: a palace in
+  a namespace only one account may use is that account's; a palace in a
+  namespace several may read is shared.
+- **Who did what.** Each write is recorded as the agent's account
+  (`@recorded_by`), and refusals are in the audit log with the account
+  they refused.
+- **At once.** The server serializes the writes of every agent on its one
+  writer; reads run beside them. In the test two agents write at once,
+  each also reading, and every write lands, with the file checked after.
+- **Over HTTP.** `GET /v1/{ns}/tools` lists the tools the caller may use
+  there; `POST /v1/{ns}/tools/{name}` runs one with a JSON object of
+  arguments and answers what MCP answers (`content`, `structuredContent`,
+  `isError`). GQ runs on `POST /v1/{ns}/query`.
+
+Limits of the shared way: rights by namespace only (a caller with rules on
+labels, properties or records is refused by the tools route and uses the
+API's own routes), and no tools route on a cluster yet.
+
 ## Known limits
 
 - **A walk is about what is in a palace.** A memory that matches the

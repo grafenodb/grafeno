@@ -13,6 +13,15 @@ version (now 18) is upgraded in place, with a copy kept first.
 
 ## Unreleased
 
+- **Added**: several agents share one memory (phase 5 of the Mental
+  Palace plan). `grafeno mcp --url URL --token KEY` runs the agent's
+  tools on a Grafeno server instead of opening a file: the server owns the
+  file, checks each agent's rights by its key and records its writes, so
+  any number of agents work on it at once. `GET /v1/{ns}/tools` and
+  `POST /v1/{ns}/tools/{name}` run the memory tools over HTTP as the
+  caller: reading tools need the right to read the namespace, writing
+  ones a right to write. Rights by namespace only; not on a cluster yet.
+  The message of a file held by another process names `--url`.
 - **Added**: phase 4 of the Mental Palace plan. `palace_review` proposes
   how to arrange a palace (split a crowded room, merge rooms that hold the
   same, move a memory to the room its community lives in, remove empty

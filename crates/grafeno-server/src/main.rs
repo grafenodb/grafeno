@@ -106,11 +106,18 @@ enum Command {
         /// `grafeno shell --url` connect to it and see what the agent
         /// writes as it writes it. Only one process can open a database
         /// file; this one shares it.
-        #[arg(long)]
+        #[arg(long, conflicts_with = "url")]
         listen: Option<SocketAddr>,
-        /// With --listen: every /v1 request needs this bearer token (or an
-        /// account's key or session).
-        #[arg(long, env = "GRAFENO_TOKEN", requires = "listen")]
+        /// Run the tools on the Grafeno server at this address (such as
+        /// http://127.0.0.1:7810) instead of opening a database file: the
+        /// server owns the file, checks this agent's rights by its key
+        /// (--token) and records its writes, and many agents share one
+        /// memory at once.
+        #[arg(long)]
+        url: Option<String>,
+        /// With --listen: every /v1 request needs this bearer token. With
+        /// --url: the key (or token) this agent signs its requests with.
+        #[arg(long, env = "GRAFENO_TOKEN")]
         token: Option<String>,
         /// With --listen: origins allowed to call the API from a browser.
         #[arg(long, value_delimiter = ',', requires = "listen")]
@@ -790,7 +797,8 @@ fn held_elsewhere(path: &std::path::Path, error: grafeno::Error) -> Box<dyn std:
              only one process can open a database file. Stop it, or connect to it instead: \
              start the agent's server with `grafeno mcp --db {} --listen 127.0.0.1:7810` and \
              open http://127.0.0.1:7810 in Grafeno Studio, or `grafeno shell --url \
-             http://127.0.0.1:7810`",
+             http://127.0.0.1:7810`. Several agents share one memory through a server: \
+             `grafeno mcp --url http://127.0.0.1:7810 --token <their key>`",
             path.display(),
             path.display()
         )
@@ -976,6 +984,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             actor,
             own_only,
             listen,
+            url,
             token,
             cors_origins,
         } => {
@@ -991,6 +1000,15 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                     view: None,
                 }),
             };
+            if let Some(url) = url {
+                if db.memory {
+                    return Err(
+                        "--url runs the tools on a server: --memory has no use with it".into(),
+                    );
+                }
+                mcp::run_remote(&url, token, namespace, access)?;
+                return Ok(());
+            }
             let db = std::sync::Arc::new(db.open()?);
             if let Some(addr) = listen {
                 serve_beside_mcp(db.clone(), addr, token, cors_origins)?;

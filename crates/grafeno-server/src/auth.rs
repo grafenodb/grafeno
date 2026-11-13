@@ -842,7 +842,9 @@ fn namespace_actions(method: &str, rest: &[&str]) -> &'static [Act] {
             | ["recall"]
             | ["context"]
             | ["query", "part"]
-            | ["match"],
+            | ["match"]
+            // A memory tool: the handler checks a writing one more.
+            | ["tools", _],
         ) => READ,
         (_, ["merge"] | ["merges", _, "undo"]) => &[Act::Merge],
         (_, ["edges", _, "retract" | "invalidate"] | ["nodes", _, "retract" | "invalidate"]) => {

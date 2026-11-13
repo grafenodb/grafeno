@@ -42,8 +42,12 @@ from a topic to the memories around it. Ids are the UUIDs these tools return.";
 const SNIPPET_CHARS: usize = 400;
 
 pub struct McpServer {
-    /// Shared with the HTTP API when the process serves it too.
+    /// Shared with the HTTP API when the process serves it too. A server
+    /// that sends its tools to another ([`McpServer::remote`]) has an empty
+    /// one it never uses.
     db: std::sync::Arc<Grafeno>,
+    /// Where tools run when this process holds no database of its own.
+    remote: Option<Remote>,
     namespace: String,
     access: McpAccess,
 }
@@ -218,9 +222,39 @@ impl McpServer {
     pub fn shared(db: std::sync::Arc<Grafeno>, namespace: String) -> Self {
         Self {
             db,
+            remote: None,
             namespace,
             access: McpAccess::default(),
         }
+    }
+
+    /// A server whose tools run on a Grafeno server at `url`, as the
+    /// account of `token` (a key or a session): the server owns the
+    /// database file, checks the account's rights and records its writes,
+    /// and any number of agents use it at once.
+    pub fn remote(url: &str, token: Option<String>, namespace: String) -> std::io::Result<Self> {
+        Ok(Self {
+            db: std::sync::Arc::new(
+                Grafeno::in_memory().map_err(|error| io::Error::other(error.to_string()))?,
+            ),
+            remote: Some(Remote {
+                url: url.trim_end_matches('/').to_owned(),
+                token: token.filter(|token| !token.is_empty()),
+            }),
+            namespace,
+            access: McpAccess::default(),
+        })
+    }
+
+    /// Runs one tool and returns its result (`content`, `structuredContent`
+    /// and `isError`), as `tools/call` does; an unknown tool is an error.
+    pub fn call(&self, name: &str, arguments: Value) -> Result<Value, (i64, String)> {
+        self.call_tool(&json!({ "name": name, "arguments": arguments }))
+    }
+
+    /// The tools this server offers.
+    pub fn tool_list(&self) -> Value {
+        self.tools()
     }
 
     pub fn with_access(mut self, access: McpAccess) -> Self {
@@ -318,6 +352,10 @@ impl McpServer {
                 "content": [{ "type": "text", "text": format!("the namespace {wanted:?} is not open to this agent") }],
                 "isError": true,
             }));
+        }
+        if let Some(remote) = &self.remote {
+            let ns = wanted.to_owned();
+            return Ok(remote.call(&ns, name, arguments));
         }
         let outcome = match name {
             "remember" => self.remember(arguments),
@@ -3308,3 +3346,139 @@ fn tools() -> Value {
 }
 
 const QUERY_ROWS: usize = 200;
+
+/// A Grafeno server that runs the tools: `POST /v1/{ns}/tools/{name}`, and
+/// GQ through `POST /v1/{ns}/query`, which checks each statement.
+#[derive(Clone, Debug)]
+struct Remote {
+    url: String,
+    token: Option<String>,
+}
+
+impl Remote {
+    fn agent() -> ureq::Agent {
+        ureq::Agent::config_builder()
+            .http_status_as_error(false)
+            .timeout_global(Some(std::time::Duration::from_secs(120)))
+            .build()
+            .into()
+    }
+
+    fn post(&self, path: &str, body: &Value) -> Result<(u16, Value), String> {
+        let mut request = Self::agent().post(&format!("{}{path}", self.url));
+        if let Some(token) = &self.token {
+            request = request.header("Authorization", &format!("Bearer {token}"));
+        }
+        let mut response = request.send_json(body).map_err(|error| {
+            format!("the Grafeno server at {} did not answer: {error}", self.url)
+        })?;
+        let status = response.status().as_u16();
+        let text = response
+            .body_mut()
+            .with_config()
+            .limit(256 << 20)
+            .read_to_string()
+            .map_err(|error| error.to_string())?;
+        let value = serde_json::from_str(&text).unwrap_or(Value::String(text));
+        Ok((status, value))
+    }
+
+    /// A tool's result, from the server; its refusals and failures as tool
+    /// errors, with the server's message.
+    fn call(&self, ns: &str, name: &str, mut arguments: Value) -> Value {
+        let segment = crate::cluster::encode_segment(ns);
+        let answer = if name == "query" {
+            let query = arguments.get("query").cloned().unwrap_or(Value::Null);
+            let params = arguments
+                .get("params")
+                .cloned()
+                .unwrap_or_else(|| json!({}));
+            self.post(
+                &format!("/v1/{segment}/query"),
+                &json!({ "query": query, "params": params }),
+            )
+            .map(|(status, mut body)| {
+                if status == 200 {
+                    // As the local tool answers: 200 rows at most, no stats.
+                    let total = body["rows"].as_array().map_or(0, Vec::len);
+                    if let Some(rows) = body["rows"].as_array_mut() {
+                        rows.truncate(QUERY_ROWS);
+                    }
+                    body["truncated"] = Value::Bool(total > QUERY_ROWS);
+                    if let Some(object) = body.as_object_mut() {
+                        object.remove("stats");
+                    }
+                    (
+                        200,
+                        json!({
+                            "content": [{ "type": "text", "text": pretty(&body) }],
+                            "structuredContent": body,
+                            "isError": false,
+                        }),
+                    )
+                } else {
+                    (status, body)
+                }
+            })
+        } else {
+            if let Some(object) = arguments.as_object_mut() {
+                object.remove("namespace");
+            }
+            self.post(&format!("/v1/{segment}/tools/{name}"), &arguments)
+        };
+        match answer {
+            Ok((200, result)) => result,
+            Ok((status, body)) => {
+                let message = body["error"]["message"]
+                    .as_str()
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| body.to_string());
+                json!({
+                    "content": [{ "type": "text", "text": format!("the server refused it ({status}): {message}") }],
+                    "isError": true,
+                })
+            }
+            Err(message) => json!({
+                "content": [{ "type": "text", "text": message }],
+                "isError": true,
+            }),
+        }
+    }
+}
+
+/// Serves MCP on stdin and stdout, running the tools on the Grafeno server
+/// at `url` instead of a database file of this process: any number of
+/// agents, each with its own key, share one memory that way.
+pub fn run_remote(
+    url: &str,
+    token: Option<String>,
+    namespace: String,
+    access: McpAccess,
+) -> io::Result<()> {
+    let server = McpServer::remote(url, token, namespace)?.with_access(access);
+    eprintln!(
+        "grafeno MCP server ready (namespace {:?}, on {url})",
+        server.namespace
+    );
+    let mut stdout = io::stdout().lock();
+    let mut stdin = io::stdin().lock();
+    while let Some(message) = read_message(&mut stdin, MAX_MESSAGE)? {
+        let response = match message {
+            Message::Line(line) if line.trim().is_empty() => continue,
+            Message::Line(line) => server.handle_line(&line),
+            Message::TooLong(length) => Some(error_response(
+                Value::Null,
+                -32600,
+                &format!(
+                    "a message of more than {} MiB ({length} bytes read) was skipped",
+                    MAX_MESSAGE >> 20
+                ),
+            )),
+        };
+        if let Some(response) = response {
+            writeln!(stdout, "{response}")?;
+            stdout.flush()?;
+        }
+    }
+    Ok(())
+}
