@@ -212,6 +212,18 @@ on an index whose levels come from random ids; it failed once in this
 work under a loaded machine and passed alone. It is recorded here rather
 than loosened.
 
+In Grafeno Studio, which reaches the engine only through its HTTP API,
+the same capabilities were checked: the algorithms run from Scripts
+(`CALL algo.*`, with completion from `GET /v1/algorithms`), and so do
+filters, conditional traversals, depth limits, ordering, paging and
+batches (GQ); Administration checks integrity, rebuilds indexes, exports
+and imports JSON Lines and takes a consistent backup, which Grafeno
+Desktop opens as a database to restore it; indexes and query traces have
+their panels. One gap was found and closed: the engine reads and writes
+GraphML and CSV, and Studio offered neither. Administration now exports
+and imports both, through `exportAs` and `importAs` in the TypeScript
+client (with a test against the engine).
+
 | Capability | Class | Plan |
 | --- | --- | --- |
 | Breadth-first search, shortest paths, components, cycles, topological order, degrees, centrality, communities | EXISTENTE | `algo.*` (about fifty), traversals. |
