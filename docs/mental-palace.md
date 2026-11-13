@@ -119,6 +119,7 @@ for, its name or its id will do.
 | `palace_map` | no | With no arguments, every palace with its rooms, loci and counts. With `palace`, that palace. With `room`, that room and the memories at each locus. |
 | `palace_walk` | no | From a `topic` or a node (`from`): the rooms and loci that match, the memories anchored there, the anchored memories that match, the rooms their doors lead to, and what the graph's relations lead to from those, up to `hops` (2 by default, 3 at most). `order`: `distance` (default) or `relevance`; `relations` and `valid_at` narrow what is followed; `skip` gives the next part; `budget`: also the memories reached and the facts joining them as text within that many tokens. Each memory says how it was found (`found_by`) and what supports it (`justification`). |
 | `palace_enter` | no | A room's context for the start of a session: its loci, its memories (strongest first) and the facts that connect them as text within a token `budget`, and the latest checkpoint about the room. |
+| `palace_route` | no | From a node, the given relations followed in order (each forwards or `backward`, once or as far as it goes with `repeat`), towards a goal (`to`) if given: every route found, with its nodes and the facts taken (see [below](#the-palace-as-a-view)). |
 | `palace_review` | no | Proposals to arrange a palace better, each with its reason and the call that carries it out; nothing applied (see [below](#review-removal-and-undoing)). |
 | `palace_reflect` | no | What is known about a topic, a room or a node, and what is not: known, uncertain, conflicts, stale, gaps, what to check next (see [below](#reflection)). |
 
@@ -333,6 +334,9 @@ Added in phase 4 of the [plan](mental-palace/IMPLEMENTATION_PLAN.md).
   | `move_memory` | A memory's community lives mostly (two thirds) in another room. |
   | `merge_rooms` | Two rooms share half of their memories or more. |
   | `new_room` | A community of four memories or more has none in the palace. |
+  | `redundant_facts` | The same fact (same ends, label and valid times) recorded more than once from a memory of a room: the first is kept, the others are to retract. |
+  | `loose_memory` | In a room of three memories or more, one related to none of the others: it may belong elsewhere, or miss the relation that says why it is here. |
+  | `unconnected_room` | In a room of three memories or more, none related to another: a pile, not a place. |
 
   What depends on communities needs community summaries
   (`summarize_communities`); without them the review says so and proposes
@@ -452,6 +456,44 @@ its words, whole, so a memory that says it in other words is not found.
   routes; over them, a palace is read and written as nodes and edges.
 - **A checkpoint's time** (`at`) is in microseconds, as `resume` gives it.
 
+## The palace as a view
+
+Added in phase 11 of the [roadmap](mental-palace/ROADMAP.md). A palace
+arranges memories; it never copies one. A memory anchored in two palaces
+is one node, so a change made once (with `update`, by an agent allowed to
+write) shows in both, and an agent that may only read changes neither.
+
+- **Routes with a goal.** `palace_route` follows given relations in
+  order from a node: a decision's versions (`supersedes`, repeated), a
+  chain of dependencies (`depends_on`, repeated), who maintains what an
+  incident hit (`hit`, `depends_on` repeated, then `maintains`
+  backwards). Each step is a label, forwards or `backward`, once or as far
+  as it goes (`repeat`); `to` keeps only the routes ending there;
+  `valid_at` follows only the facts true then. A node is visited once per
+  route; at most 12 hops and 50 relations from each node, and the answer
+  says when it was `cut`.
+
+  ```json
+  {"name": "palace_route", "arguments": {
+    "from": "<the incident>",
+    "steps": [{ "label": "hit" }, { "label": "depends_on", "repeat": true },
+              { "label": "maintains", "backward": true }]}}
+  ```
+- **A context rebuilt.** `get_node` with `reconstruct: true` answers, in
+  one call, a memory's, a decision's, an entity's or a room's places in
+  every palace, the facts that hold now, its latest timeline, the versions
+  it belongs to, what supports it, and a reflection on what is known and
+  not known around it.
+- **Reorganization proposed, never applied.** `palace_review` also lists
+  facts recorded twice and memories related to nothing else of their room
+  (the table above). Every proposal names the call that would carry it
+  out; nothing changes until an agent makes that call.
+
+What was not built, and why: loci shared between rooms (a locus is a
+place in one room; a memory anchored at several loci does the same
+without making "where" ambiguous), and orphan anchors (deleting a locus
+deletes its anchors, so none can be left).
+
 ## Running and testing
 
 An MCP server on a file, for any MCP client:
@@ -481,16 +523,15 @@ cargo test --workspace
 | `crates/grafeno-memory/tests/palace_walk.rs` | Maps; walks by topic, from a node, through relations, inside one palace, with a hop limit; entering a room, within a budget, after a restart, with its checkpoint. |
 | `crates/grafeno-server/tests/mcp.rs` | The palace tools end to end beside the existing ones; bad input; namespaces and the agent's fence; a read-only server on a file another server wrote. |
 | `crates/grafeno-server/tests/http.rs` | A palace read through the subgraph and query routes. |
+| `crates/grafeno-memory/tests/palace_views.rs` | Routes along a line of versions, backwards, cut short, at a past time; a review finding facts recorded twice, a loose memory and an unconnected room; a context rebuilt, a palace refused. |
+| `crates/grafeno-server/tests/mcp.rs` (`two_palaces_share_a_memory_and_both_see_its_change`, `a_route_follows_relations_in_order`) | The acceptance of phase 11: one memory in two palaces, a read-only agent refused, an authorized change shown in both, the context rebuilt; routes with steps, a goal and a wrong direction. |
 
 ## Planned
 
 None of this exists yet.
 
-- Routes: ordered paths between loci and between rooms, and walking one.
 - Suggested placement: proposing a room for a new memory, for the agent
   to accept or not.
-- Rooms proposed from community summaries.
-- Reorganization: splitting a crowded room, merging two.
 - Palace routes in the HTTP API and in the client libraries.
 - A palace view in Grafeno Studio.
 - Palaces shared between namespaces, under the rights there are.

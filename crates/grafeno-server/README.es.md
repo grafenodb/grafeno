@@ -675,7 +675,7 @@ herramientas:
 | `relate`   | Registra un hecho (arista) entre dos nodos, con fechas de validez, `origin`, `certainty` y `method` opcionales; dice qué hechos contradijo bajo una restricción (y terminó). El mismo hecho vigente se registra una vez; `caused_by` necesita `sources`; `reason` dice por qué (en `supersedes`, por qué el nuevo reemplazó al anterior). |
 | `update`   | Reemplaza el texto de un nodo, lo renombra, combina propiedades (un `null` se guarda), quita propiedades por nombre (`remove_props`), cambia etiquetas o importancia. |
 | `forget`   | Invalida (por defecto), retracta o elimina un hecho; elimina un nodo; elimina un palacio, sala o locus con lo que hay debajo, nunca un recuerdo. `dry_run` dice qué se iría. |
-| `get_node` | Un nodo con su texto, propiedades y hechos que lo conectan, y su procedencia (fuentes, quién y cómo, qué lo respalda, qué trajeron las fusiones). |
+| `get_node` | Un nodo con su texto, propiedades y hechos que lo conectan, y su procedencia (fuentes, quién y cómo, qué lo respalda, qué trajeron las fusiones). Con `reconstruct`, todo su contexto: lugares, hechos vigentes, línea de tiempo, versiones, reflexión. |
 | `query`    | Una sentencia [GQ](../../docs/query-language.md) de solo lectura; 200 filas como máximo. |
 | `merge`    | Fusiona un nodo duplicado en otro; se rechaza cuando discrepan salvo con `force`. Devuelve un `merge_id`. |
 | `undo_merge` | Deshace una fusión por su `merge_id`: el nodo fusionado y sus hechos vuelven. |
@@ -699,7 +699,8 @@ herramientas:
 | `palace_anchor` | Pone un recuerdo que ya existe en un locus de una sala, sin copiarlo ni cambiarlo; con `remove`, quita el ancla. |
 | `palace_map` | Los palacios con sus salas, loci y cuentas; con `room`, los recuerdos de cada locus. |
 | `palace_walk` | De un tema o un nodo a los recuerdos que lo rodean: las salas que coinciden, lo anclado en ellas, las salas a las que llevan sus puertas (un hecho `leads_to` entre salas) y a dónde llevan desde ahí las relaciones del grafo. Por distancia o por relevancia, siguiendo solo algunas relaciones (`relations`) o los hechos vigentes en un momento (`valid_at`); cada recuerdo dice cómo se encontró (`found_by`, `via`) y, aparte, qué lo respalda (`justification`). Con `budget`, también como texto con los hechos que los unen. |
-| `palace_review` | Propuestas para ordenar mejor un palacio (dividir, fusionar, mover, lugares vacíos, salas para comunidades sin lugar), cada una con su motivo; no aplica nada. |
+| `palace_route` | Desde un nodo, sigue relaciones dadas en orden (hacia delante o hacia atrás, una vez o repetidas), hacia un objetivo: cada ruta encontrada, con sus nodos y hechos. |
+| `palace_review` | Propuestas para ordenar mejor un palacio (dividir, fusionar, mover, lugares vacíos, salas para comunidades sin lugar, hechos registrados dos veces, recuerdos sin relación con el resto de su sala), cada una con su motivo; no aplica nada. |
 | `palace_reflect` | Lo que se sabe de un tema, una sala o un nodo, y lo que no: contado por tipo y origen, lo incierto, los conflictos, lo desactualizado, los vacíos (preguntas abiertas incluidas), qué comprobar después; cada elemento con su registro. No escribe nada. |
 | `palace_enter` | El contexto de una sala para empezar una sesión: sus recuerdos y hechos como texto dentro de un presupuesto de tokens, y el último checkpoint sobre la sala. |
 

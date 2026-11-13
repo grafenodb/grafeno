@@ -39,6 +39,7 @@ mod recall;
 mod reconcile;
 mod reflect;
 pub mod timeline;
+pub mod views;
 
 pub use checkpoint::{
     CHECKPOINT, Checkpoint, NewCheckpoint, ResumeQuery, checkpoints, resume, save_checkpoint, tasks,
@@ -80,3 +81,6 @@ pub use reconcile::{
 };
 pub use reflect::{Clash, Item, Known, Limits, ReflectOptions, Reflection, Scope, Step, reflect};
 pub use timeline::{Moment, timeline};
+pub use views::{
+    MAX_ROUTE_HOPS, Reconstruction, Route, RouteQuery, RouteStep, Routes, reconstruct, route,
+};

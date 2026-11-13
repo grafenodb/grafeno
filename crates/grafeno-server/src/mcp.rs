@@ -390,6 +390,7 @@ impl McpServer {
             "palace_anchor" => self.palace_anchor(arguments),
             "palace_map" => self.palace_map(arguments),
             "palace_walk" => self.palace_walk(arguments),
+            "palace_route" => self.palace_route(arguments),
             "palace_enter" => self.palace_enter(arguments),
             "palace_review" => self.palace_review(arguments),
             "palace_reflect" => self.palace_reflect(arguments),
@@ -980,6 +981,10 @@ impl McpServer {
         #[serde(deny_unknown_fields)]
         struct Args {
             id: String,
+            /// Also rebuild its context: places, current facts, timeline,
+            /// versions, justification and reflection.
+            #[serde(default)]
+            reconstruct: bool,
             #[serde(default)]
             namespace: Option<String>,
         }
@@ -1050,7 +1055,13 @@ impl McpServer {
         if let Some(merged) = node.prop(grafeno_memory::knowledge::MERGED_FROM) {
             provenance["merged_from"] = merged.clone();
         }
-        Ok(ToolOutput::Json(json!({
+        let reconstruction = if args.reconstruct {
+            let rebuilt = grafeno_memory::reconstruct(&read, ns, id, 30).map_err(describe)?;
+            serde_json::to_value(&rebuilt).unwrap_or_default()
+        } else {
+            Value::Null
+        };
+        let mut output = json!({
             "id": node.id,
             "name": node.display_name(),
             "labels": node.labels,
@@ -1065,7 +1076,11 @@ impl McpServer {
             "last_access": memory.last_access.date(),
             "facts": facts,
             "provenance": provenance,
-        })))
+        });
+        if args.reconstruct {
+            output["reconstruction"] = reconstruction;
+        }
+        Ok(ToolOutput::Json(output))
     }
 
     fn merge(&self, arguments: Value) -> ToolResult {
@@ -2503,6 +2518,56 @@ impl McpServer {
         Ok(ToolOutput::Json(output))
     }
 
+    fn palace_route(&self, arguments: Value) -> ToolResult {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Args {
+            from: String,
+            steps: Vec<grafeno_memory::RouteStep>,
+            #[serde(default)]
+            to: Option<String>,
+            #[serde(default)]
+            valid_at: Option<TimeInput>,
+            #[serde(default)]
+            limit: Option<usize>,
+            #[serde(default)]
+            max_hops: Option<usize>,
+            #[serde(default)]
+            namespace: Option<String>,
+        }
+        let args: Args = parse_args(arguments)?;
+        let ns = self.ns(&args.namespace);
+        let mut query =
+            grafeno_memory::RouteQuery::new(parse_id(&args.from).map_err(describe)?, args.steps);
+        query.to = args
+            .to
+            .as_deref()
+            .map(parse_id)
+            .transpose()
+            .map_err(describe)?;
+        query.valid_at = args
+            .valid_at
+            .as_ref()
+            .map(TimeInput::resolve)
+            .transpose()
+            .map_err(describe)?;
+        query.limit = args.limit.unwrap_or(20).clamp(1, 100);
+        if let Some(hops) = args.max_hops {
+            query.max_hops = hops.clamp(1, grafeno_memory::MAX_ROUTE_HOPS);
+        }
+        let read = self.db.begin_read().map_err(describe)?;
+        let routes = grafeno_memory::route(&read, ns, &query).map_err(describe)?;
+        let mut output = serde_json::to_value(&routes).unwrap_or_default();
+        output["from_name"] = json!(name_of(&read, ns, routes.from));
+        if routes.routes.is_empty() {
+            output["hint"] = json!(
+                "No route follows these steps from there: check each label and its direction \
+                 (`backward: true` follows a relation against its arrow)."
+            );
+        }
+        Ok(ToolOutput::Json(output))
+    }
+
     fn palace_walk(&self, arguments: Value) -> ToolResult {
         #[derive(Deserialize)]
         #[serde(deny_unknown_fields)]
@@ -2618,6 +2683,9 @@ impl McpServer {
                     Proposal::MoveMemory { .. } => "palace_anchor it in to_room, and remove: true from where it is",
                     Proposal::MergeRooms { .. } => "palace_anchor the second room's memories in the first, then forget the second",
                     Proposal::NewRoom { .. } => "palace_create_room, then palace_anchor its memories",
+                    Proposal::RedundantFacts { .. } => "forget each duplicate (mode \"retract\": it repeats the kept fact)",
+                    Proposal::LooseMemory { .. } => "relate it to the memory of the room it belongs with, or palace_anchor it where it does (and remove: true here)",
+                    Proposal::UnconnectedRoom { .. } => "relate the memories that belong together, or split the room with palace_create_room",
                 });
                 value
             })
@@ -3075,10 +3143,14 @@ fn tools() -> Value {
             "name": "get_node",
             "title": "Get node",
             "description": "Read a node: its text, properties, sources and the facts that connect it \
-                to other nodes.",
+                to other nodes. With `reconstruct`, also its whole context rebuilt in one call.",
             "inputSchema": {
                 "type": "object",
-                "properties": { "id": id("Id of the node."), "namespace": namespace },
+                "properties": {
+                    "id": id("Id of the node."),
+                    "reconstruct": { "type": "boolean", "description": "Also rebuild its context in one answer: where it is kept in every palace, the facts that hold now, its latest timeline, the versions it belongs to, what supports it, and a reflection on what is known and not around it. For a memory, a decision, an entity or a room." },
+                    "namespace": namespace
+                },
                 "required": ["id"]
             }
         },
@@ -3577,6 +3649,43 @@ fn tools() -> Value {
                     "namespace": namespace
                 },
                 "required": ["room"]
+            }
+        },
+        {
+            "name": "palace_route",
+            "title": "Follow a route",
+            "description": "From a node, follow given relations in order, towards a goal: a \
+                decision's line of versions (`supersedes`, repeated), a chain of dependencies \
+                (`depends_on`, repeated), who maintains what a service depends on \
+                (`depends_on`, then `maintains` backwards). Each step is a relation label, \
+                followed forwards or `backward`, once or as far as it goes (`repeat`). Returns \
+                every route found, each with its nodes and the facts taken; with `to`, only those \
+                that end there. Reads only.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "from": id("Id of the node to start from."),
+                    "steps": {
+                        "type": "array",
+                        "minItems": 1,
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "label": { "type": "string", "description": "The relation to follow." },
+                                "backward": { "type": "boolean", "description": "Follow it against its arrow. Default: false." },
+                                "repeat": { "type": "boolean", "description": "Follow it as far as it goes, once at least. Default: false." }
+                            },
+                            "required": ["label"]
+                        },
+                        "description": "The relations to follow, in order."
+                    },
+                    "to": id("Only routes that end at this node."),
+                    "valid_at": date,
+                    "limit": { "type": "integer", "minimum": 1, "maximum": 100, "description": "Routes returned. Default: 20." },
+                    "max_hops": { "type": "integer", "minimum": 1, "maximum": 12, "description": "Hops at most. Default: 8." },
+                    "namespace": namespace
+                },
+                "required": ["from", "steps"]
             }
         },
         {

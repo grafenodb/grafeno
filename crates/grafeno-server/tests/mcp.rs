@@ -101,6 +101,7 @@ fn handshake_and_tool_list() {
             "palace_map",
             "palace_walk",
             "palace_enter",
+            "palace_route",
             "palace_review",
             "palace_reflect"
         ]
@@ -1399,6 +1400,7 @@ fn a_read_only_server_reads_palaces_and_writes_none() {
             "palace_map",
             "palace_walk",
             "palace_enter",
+            "palace_route",
             "palace_review",
             "palace_reflect"
         ]
@@ -2269,4 +2271,168 @@ fn a_decision_changed_three_times_keeps_its_reasons() {
         json!({ "id": service, "at": "2026-06-01" }),
     );
     assert!(failure(&refused).contains("compare"));
+}
+
+#[test]
+fn two_palaces_share_a_memory_and_both_see_its_change() {
+    let path = std::env::temp_dir().join(format!(
+        "grafeno-mcp-views-{}-{}.redb",
+        std::process::id(),
+        grafeno::NodeId::new()
+    ));
+    let (work_room, home_room, memory) = {
+        let server = McpServer::new(Grafeno::open(&path).unwrap(), "agent".into());
+        let room = |palace: &str, name: &str| {
+            structured(&call(&server, "palace_create", json!({ "name": palace })));
+            let room = call(
+                &server,
+                "palace_create_room",
+                json!({ "palace": palace, "name": name }),
+            );
+            structured(&room)["id"].as_str().unwrap().to_owned()
+        };
+        let work_room = room("Work", "Billing");
+        let home_room = room("Home", "Bills");
+        let memory = remembered(
+            &server,
+            json!({ "text": "Invoices go out on the first day of the month", "labels": ["Decision"] }),
+        );
+        for room in [&work_room, &home_room] {
+            structured(&call(
+                &server,
+                "palace_anchor",
+                json!({ "memory": memory, "room": room }),
+            ));
+        }
+        (work_room, home_room, memory)
+    };
+    let enter = |server: &McpServer, room: &str| -> String {
+        let entered = call(server, "palace_enter", json!({ "room": room }));
+        structured(&entered)["context"].as_str().unwrap().to_owned()
+    };
+
+    // An agent that may only read cannot change it: both views stay.
+    let reader =
+        McpServer::new(Grafeno::open(&path).unwrap(), "agent".into()).with_access(McpAccess {
+            read_only: true,
+            ..McpAccess::default()
+        });
+    let refused = call(
+        &reader,
+        "update",
+        json!({ "id": memory, "text": "Invoices go out on the fifth" }),
+    );
+    failure(&refused);
+    for room in [&work_room, &home_room] {
+        assert!(enter(&reader, room).contains("first day of the month"));
+    }
+    drop(reader);
+
+    // An authorized change, made once, shows in both palaces: the memory
+    // is the same node, never a copy.
+    let server = McpServer::new(Grafeno::open(&path).unwrap(), "agent".into());
+    structured(&call(
+        &server,
+        "update",
+        json!({ "id": memory, "text": "Invoices go out on the fifth day of the month" }),
+    ));
+    for room in [&work_room, &home_room] {
+        let context = enter(&server, room);
+        assert!(context.contains("fifth day"), "{context}");
+        assert!(!context.contains("first day"), "{context}");
+    }
+
+    // Its context, rebuilt in one call, names both places.
+    let node = call(
+        &server,
+        "get_node",
+        json!({ "id": memory, "reconstruct": true }),
+    );
+    let rebuilt = structured(&node)["reconstruction"].clone();
+    let palaces: Vec<&str> = rebuilt["places"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|place| place["palace_name"].as_str().unwrap())
+        .collect();
+    assert_eq!(palaces.len(), 2, "{rebuilt}");
+    assert!(palaces.contains(&"Work") && palaces.contains(&"Home"));
+    assert!(rebuilt["text"].as_str().unwrap().contains("fifth day"));
+    assert!(rebuilt["reflection"]["known"].is_object());
+    assert!(rebuilt["timeline"].is_array());
+    drop(server);
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn a_route_follows_relations_in_order() {
+    let server = server();
+    let node = |text: &str| remembered(&server, json!({ "text": text }));
+    let incident = node("The billing outage");
+    let service = node("The invoice service");
+    let queue = node("The events queue");
+    let store = node("The ledger store");
+    let ana = node("Ana");
+    let relate = |from: &str, label: &str, to: &str| {
+        structured(&call(
+            &server,
+            "relate",
+            json!({ "from": from, "label": label, "to": to }),
+        ));
+    };
+    relate(&incident, "hit", &service);
+    relate(&service, "depends_on", &queue);
+    relate(&queue, "depends_on", &store);
+    relate(&ana, "maintains", &store);
+
+    // The incident, what it hit, all that depends on, and who maintains
+    // the end of the chain.
+    let found = call(
+        &server,
+        "palace_route",
+        json!({ "from": incident, "steps": [
+            { "label": "hit" },
+            { "label": "depends_on", "repeat": true },
+            { "label": "maintains", "backward": true }
+        ]}),
+    );
+    let found = structured(&found).clone();
+    let routes = found["routes"].as_array().unwrap();
+    assert_eq!(routes.len(), 1, "{found}");
+    assert_eq!(
+        routes[0]["nodes"],
+        json!([incident, service, queue, store, ana])
+    );
+    let labels: Vec<&str> = routes[0]["hops"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|hop| hop["label"].as_str().unwrap())
+        .collect();
+    assert_eq!(labels, ["hit", "depends_on", "depends_on", "maintains"]);
+
+    // A goal: only routes that end there.
+    let to_queue = call(
+        &server,
+        "palace_route",
+        json!({ "from": service, "steps": [{ "label": "depends_on", "repeat": true }],
+                "to": queue }),
+    );
+    assert_eq!(
+        structured(&to_queue)["routes"][0]["nodes"],
+        json!([service, queue])
+    );
+    // A wrong direction finds nothing, and says what to check.
+    let none = call(
+        &server,
+        "palace_route",
+        json!({ "from": incident, "steps": [{ "label": "maintains" }] }),
+    );
+    assert!(structured(&none)["hint"].is_string());
+    let empty = call(
+        &server,
+        "palace_route",
+        json!({ "from": incident, "steps": [] }),
+    );
+    assert!(failure(&empty).contains("step"));
 }

@@ -138,7 +138,15 @@ scope's own, not the whole namespace.
 **Acceptance:** a decision that changes several times; the current one,
 its history and the recorded reasons of each change are recovered.
 
-## Phase 11: the palace as a view
+## Phase 11: the palace as a view (done)
+
+Built as planned below; what it does is in
+[mental-palace.md](../mental-palace.md#the-palace-as-a-view). Tests:
+`two_palaces_share_a_memory_and_both_see_its_change` and
+`a_route_follows_relations_in_order` in `crates/grafeno-server/tests/mcp.rs`
+(the acceptance) and `crates/grafeno-memory/tests/palace_views.rs`. The
+context reconstruction is `get_node` with `reconstruct: true` rather than
+a tool of its own.
 
 | Capability | Class | Plan |
 | --- | --- | --- |

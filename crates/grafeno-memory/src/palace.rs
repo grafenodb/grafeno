@@ -1421,6 +1421,10 @@ pub fn remove(tx: &mut WriteTx, ns: &str, id: NodeId, dry_run: bool) -> Result<R
     Ok(removal)
 }
 
+/// A fact's other end, label and valid times: two facts from one node
+/// alike in all four say the same.
+type SameFact = (NodeId, String, Option<Timestamp>, Option<Timestamp>);
+
 /// What a review proposes, and why. Nothing is applied.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -1466,6 +1470,31 @@ pub enum Proposal {
         name: String,
         memories: Vec<NodeId>,
     },
+    /// The same fact recorded more than once from a memory of a room: the
+    /// first one recorded is kept, the others repeat it.
+    RedundantFacts {
+        room: NodeId,
+        room_name: String,
+        /// The fact as a sentence.
+        text: String,
+        kept: EdgeId,
+        duplicates: Vec<EdgeId>,
+    },
+    /// A memory with no relation to any other memory of its room: it may
+    /// belong elsewhere, or miss the relation that explains why it is here.
+    LooseMemory {
+        memory: NodeId,
+        name: String,
+        room: NodeId,
+        room_name: String,
+    },
+    /// A room whose memories have no relation to one another: a pile, not
+    /// a place.
+    UnconnectedRoom {
+        room: NodeId,
+        name: String,
+        memories: usize,
+    },
 }
 
 /// What a review looks at.
@@ -1483,6 +1512,9 @@ pub struct ReviewOptions {
     /// as rooms (the largest first).
     pub new_room_min: usize,
     pub new_rooms: usize,
+    /// Rooms of at least this many memories are checked for memories with
+    /// no relation to the others.
+    pub loose_min: usize,
 }
 
 impl Default for ReviewOptions {
@@ -1493,6 +1525,7 @@ impl Default for ReviewOptions {
             elsewhere: 0.66,
             new_room_min: 4,
             new_rooms: 5,
+            loose_min: 3,
         }
     }
 }
@@ -1657,6 +1690,74 @@ pub fn review(read: &ReadTx, ns: &str, palace: NodeId, options: &ReviewOptions) 
                     rooms: [a.id, b.id],
                     names: [name_of(a), name_of(b)],
                     overlap: (overlap * 100.0).round() / 100.0,
+                });
+            }
+        }
+    }
+    // Facts recorded twice, and memories related to nothing else of their
+    // room.
+    let now = Timestamp::now();
+    let mut repeated: HashSet<EdgeId> = HashSet::new();
+    for (room, held) in &rooms {
+        let mut loose = Vec::new();
+        for memory in held {
+            let mut related = false;
+            let mut same: HashMap<SameFact, Vec<grafeno::Edge>> = HashMap::new();
+            for neighbor in read.neighbors(ns, *memory, Direction::Both, &EdgeFilter::any())? {
+                let edge = neighbor.edge;
+                if [ANCHORED_AT, HAS_ROOM, HAS_LOCUS].contains(&edge.label.as_str()) {
+                    continue;
+                }
+                if neighbor.node != *memory && held.contains(&neighbor.node) {
+                    related = true;
+                }
+                if edge.from == *memory && edge.valid_to.is_none_or(|to| to > now) {
+                    same.entry((edge.to, edge.label.clone(), edge.valid_from, edge.valid_to))
+                        .or_default()
+                        .push(edge);
+                }
+            }
+            if !related {
+                loose.push(*memory);
+            }
+            for mut edges in same.into_values() {
+                if edges.len() < 2 {
+                    continue;
+                }
+                edges.sort_by_key(|edge| (edge.recorded_at, edge.id));
+                if !repeated.insert(edges[0].id) {
+                    continue;
+                }
+                proposals.push(Proposal::RedundantFacts {
+                    room: room.id,
+                    room_name: name_of(room),
+                    text: format!(
+                        "{} {} {}",
+                        crate::history::name(read, ns, edges[0].from)?,
+                        edges[0].label,
+                        crate::history::name(read, ns, edges[0].to)?
+                    ),
+                    kept: edges[0].id,
+                    duplicates: edges[1..].iter().map(|edge| edge.id).collect(),
+                });
+            }
+        }
+        if held.len() < options.loose_min || loose.is_empty() {
+            continue;
+        }
+        if loose.len() == held.len() {
+            proposals.push(Proposal::UnconnectedRoom {
+                room: room.id,
+                name: name_of(room),
+                memories: held.len(),
+            });
+        } else {
+            for memory in loose {
+                proposals.push(Proposal::LooseMemory {
+                    memory,
+                    name: names[&memory].clone(),
+                    room: room.id,
+                    room_name: name_of(room),
                 });
             }
         }

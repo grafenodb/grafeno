@@ -62,10 +62,16 @@ fn holds(edge: &Edge, at: Timestamp) -> bool {
     edge.valid_from.is_none_or(|from| from <= at) && edge.valid_to.is_none_or(|to| to > at)
 }
 
-fn name(read: &ReadTx, ns: &str, id: NodeId) -> Result<String> {
-    let Some(node) = read.node(ns, id)? else {
-        return Ok(id.to_string());
-    };
+pub(crate) fn name(read: &ReadTx, ns: &str, id: NodeId) -> Result<String> {
+    match read.node(ns, id)? {
+        Some(node) => name_of(read, ns, &node),
+        None => Ok(id.to_string()),
+    }
+}
+
+/// A node's name, or the start of its text, quoted, when it has none.
+pub(crate) fn name_of(read: &ReadTx, ns: &str, node: &Node) -> Result<String> {
+    let id = node.id;
     if node.explicit_name().is_none()
         && let Some(text) = read.text(ns, id)?
     {
@@ -82,7 +88,7 @@ fn name(read: &ReadTx, ns: &str, id: NodeId) -> Result<String> {
     Ok(node.display_name())
 }
 
-fn state_fact(read: &ReadTx, ns: &str, edge: &Edge) -> Result<StateFact> {
+pub(crate) fn state_fact(read: &ReadTx, ns: &str, edge: &Edge) -> Result<StateFact> {
     Ok(StateFact {
         fact: edge.id,
         from: edge.from,

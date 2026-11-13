@@ -13,6 +13,15 @@ version (now 18) is upgraded in place, with a copy kept first.
 
 ## Unreleased
 
+- **Added**: the palace as a view (phase 11). `palace_route` follows given
+  relations in order from a node (forwards or backwards, once or repeated,
+  towards a goal, at a past time): a decision's versions, a chain of
+  dependencies, who maintains what an incident hit. `get_node` with
+  `reconstruct` rebuilds a node's context in one call: its places in every
+  palace, current facts, timeline, versions, justification and
+  reflection. `palace_review` also proposes retracting facts recorded
+  twice, and points at memories related to nothing else of their room and
+  rooms whose memories are not related at all; nothing is applied.
 - **Added**: knowledge over time (phase 10). `timeline` answers the
   `history` of a memory replaced through `supersedes` (a decision changed
   several times): every version, the current one last, with the reason
