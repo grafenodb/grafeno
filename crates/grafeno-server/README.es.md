@@ -693,6 +693,15 @@ herramientas:
 | `contradictions` | Hechos que contradijeron a otros anteriores bajo una restricción, y lo que se hizo (el anterior terminó, el nuevo se rechazó, o ambos quedaron marcados). |
 | `timeline` | Cómo cambió un nodo, del más antiguo al más reciente: sus hechos comenzando y terminando, valores anteriores de sus propiedades, fusiones, contradicciones. |
 | `feedback` | `useful` sube la importancia de un recuerdo; `obsolete` archiva un recuerdo o termina un hecho; `wrong` archiva un recuerdo o retracta un hecho. El veredicto queda en el recuerdo. |
+| `palace_create` / `palace_create_room` | Crea un palacio, o una sala en uno con sus loci (lugares dentro de ella); devuelve el que ya hay cuando existe. |
+| `palace_anchor` | Pone un recuerdo que ya existe en un locus de una sala, sin copiarlo ni cambiarlo; con `remove`, quita el ancla. |
+| `palace_map` | Los palacios con sus salas, loci y cuentas; con `room`, los recuerdos de cada locus. |
+| `palace_walk` | De un tema o un nodo a los recuerdos que lo rodean: las salas que coinciden, lo anclado en ellas y a dónde llevan desde ahí las relaciones del grafo. |
+| `palace_enter` | El contexto de una sala para empezar una sesión: sus recuerdos y hechos como texto dentro de un presupuesto de tokens, y el último checkpoint sobre la sala. |
+
+Las herramientas `palace_*` ordenan en lugares recuerdos que ya existen y
+los traen de vuelta por dónde están; véase
+[docs/mental-palace.md](../../docs/mental-palace.md) (en inglés).
 
 Cada herramienta acepta un `namespace` opcional, que por defecto es
 `--namespace`.

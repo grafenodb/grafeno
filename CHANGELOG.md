@@ -13,6 +13,24 @@ version (now 18) is upgraded in place, with a copy kept first.
 
 ## Unreleased
 
+- **Added**: mental palaces. Memories that already exist are arranged
+  into places and found again by where they are: a palace has rooms, a
+  room has loci, and a memory is anchored at any number of loci without
+  being copied or changed. Six MCP tools: `palace_create`,
+  `palace_create_room`, `palace_anchor`, `palace_map`, `palace_walk` (from
+  a topic or a node to the memories around it, over the graph's
+  relations) and `palace_enter` (a room's memories and facts within a
+  token budget, and the latest checkpoint about the room). In
+  `grafeno-memory`: the `palace` module, and `context_of`, which packs any
+  list of nodes as `context_for` packs a recall's. A palace is ordinary
+  nodes (`Palace`, `Room`, `Locus`) and edges (`has_room`, `has_locus`,
+  `anchored_at`): the file layout stays 18 and the HTTP API is unchanged.
+  See [docs/mental-palace.md](docs/mental-palace.md).
+- **Changed**: recall, context, community summaries, duplicates, weak
+  memories, consolidation and extraction leave out the nodes a palace is
+  made of, and MCP's `remember` does not reuse one for a memory of the
+  same name. A recall that asks for `Palace`, `Room` or `Locus` by label
+  returns them. Databases without those labels behave as before.
 - **Changed**: recall's graph expansion damps well-connected nodes. The
   share a seed's score passes along an edge is divided by
   `sqrt((1 + ln d₁)(1 + ln d₂))`, d₁ and d₂ being the edges of its ends,

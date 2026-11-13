@@ -1,5 +1,5 @@
 use grafeno::Grafeno;
-use grafeno_server::mcp::McpServer;
+use grafeno_server::mcp::{McpAccess, McpServer};
 use serde_json::{Value, json};
 
 fn server() -> McpServer {
@@ -94,7 +94,13 @@ fn handshake_and_tool_list() {
             "ingest",
             "contradictions",
             "timeline",
-            "feedback"
+            "feedback",
+            "palace_create",
+            "palace_create_room",
+            "palace_anchor",
+            "palace_map",
+            "palace_walk",
+            "palace_enter"
         ]
     );
     for tool in response["result"]["tools"].as_array().unwrap() {
@@ -466,7 +472,6 @@ fn maintain_merge_and_consolidate() {
 
 #[test]
 fn agents_are_fenced_and_recorded() {
-    use grafeno_server::mcp::McpAccess;
     let db = Grafeno::in_memory().unwrap();
     let server = McpServer::new(db, "agent".into()).with_access(McpAccess {
         allow: vec!["agent".into(), "team-*".into()],
@@ -869,4 +874,555 @@ fn contradictions_timeline_and_feedback() {
     assert_eq!(health["nodes"], 3, "{health}");
     assert_eq!(health["contradictions"], 1);
     assert_eq!(health["check"]["ok"], true);
+}
+
+#[test]
+fn remember_does_not_take_a_room_for_the_entity_of_its_name() {
+    use grafeno_memory::{NewRoom, create_palace, create_room};
+
+    let db = Grafeno::in_memory().unwrap();
+    let room = db
+        .write(|tx| {
+            let palace = create_palace(tx, "agent", "Grafeno", None)?.id;
+            Ok(create_room(tx, "agent", palace, NewRoom::new("Grafeno"))?.id)
+        })
+        .unwrap();
+    let server = McpServer::new(db, "agent".into());
+
+    let result = call(
+        &server,
+        "remember",
+        json!({ "text": "Grafeno is a graph database", "name": "Grafeno" }),
+    );
+    let id = structured(&result)["id"].as_str().unwrap().to_owned();
+    assert_eq!(structured(&result)["reused"], false);
+    assert_ne!(id, room.to_string());
+
+    // The entity is found again by its name, and the room is as it was.
+    let again = call(
+        &server,
+        "remember",
+        json!({ "text": "It keeps one writer", "name": "grafeno" }),
+    );
+    assert_eq!(structured(&again)["id"], id);
+    let node = call(&server, "get_node", json!({ "id": room.to_string() }));
+    let text = node["content"][0]["text"].as_str().unwrap();
+    assert!(!text.contains("graph database"), "{text}");
+
+    // And recall returns the memory, not the palace.
+    let found = call(&server, "recall", json!({ "query": "Grafeno" }));
+    let results = structured(&found)["results"].as_array().unwrap().clone();
+    assert!(!results.is_empty());
+    assert!(results.iter().all(|hit| hit["id"] != room.to_string()));
+}
+
+/// The text of a tool error.
+fn failure(result: &Value) -> String {
+    assert_eq!(result["isError"], true, "{result}");
+    result["content"][0]["text"].as_str().unwrap().to_owned()
+}
+
+fn remembered(server: &McpServer, arguments: Value) -> String {
+    let result = call(server, "remember", arguments);
+    structured(&result)["id"].as_str().unwrap().to_owned()
+}
+
+#[test]
+fn palace_tools_organize_and_bring_back_memories() {
+    let server = server();
+    let empty = call(&server, "palace_map", json!({}));
+    assert_eq!(structured(&empty)["palaces"], json!([]));
+    assert!(structured(&empty)["hint"].is_string());
+
+    // A palace and a room, made once.
+    let palace = call(
+        &server,
+        "palace_create",
+        json!({ "name": "Work", "description": "Projects" }),
+    );
+    let palace_id = structured(&palace)["id"].as_str().unwrap().to_owned();
+    assert_eq!(structured(&palace)["created"], true);
+    let again = call(&server, "palace_create", json!({ "name": "  work " }));
+    assert_eq!(structured(&again)["id"], palace_id.as_str());
+    assert_eq!(structured(&again)["created"], false);
+
+    let room = call(
+        &server,
+        "palace_create_room",
+        json!({ "palace": "work", "name": "Storage", "topic": "the storage engine",
+                "loci": ["Decisions"] }),
+    );
+    let room_id = structured(&room)["id"].as_str().unwrap().to_owned();
+    assert_eq!(structured(&room)["created"], true);
+    assert_eq!(structured(&room)["palace"]["name"], "Work");
+    let loci: Vec<&str> = structured(&room)["room"]["loci"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|locus| locus["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(loci, ["entrance", "Decisions"]);
+    // By the palace's id too, and the room that exists is returned.
+    let again = call(
+        &server,
+        "palace_create_room",
+        json!({ "palace": palace_id, "name": "storage" }),
+    );
+    assert_eq!(structured(&again)["id"], room_id.as_str());
+    assert_eq!(structured(&again)["created"], false);
+
+    // Memories made with the tools there were, and a fact between two.
+    let writer = remembered(
+        &server,
+        json!({ "text": "Only one transaction writes at a time", "labels": ["Note"] }),
+    );
+    let file = remembered(
+        &server,
+        json!({ "text": "The whole database is one file", "labels": ["Note"] }),
+    );
+    let raft = remembered(
+        &server,
+        json!({ "text": "A replicated log orders the writes", "labels": ["Note"] }),
+    );
+    structured(&call(
+        &server,
+        "relate",
+        json!({ "from": writer, "label": "leads_to", "to": raft }),
+    ));
+
+    // Anchoring: at a locus that exists, at the entrance by default, and
+    // at a locus made on the way.
+    let anchored = call(
+        &server,
+        "palace_anchor",
+        json!({ "memory": writer, "room": "Storage", "locus": "decisions",
+                "note": "why writes are serial" }),
+    );
+    let anchored = structured(&anchored);
+    assert_eq!(anchored["anchored"], true);
+    assert_eq!(anchored["locus_created"], false);
+    assert_eq!(
+        anchored["memory"]["name"],
+        "Only one transaction writes at a time"
+    );
+    assert_eq!(anchored["places"][0]["room_name"], "Storage");
+    assert_eq!(anchored["places"][0]["locus_name"], "Decisions");
+    assert_eq!(anchored["places"][0]["note"], "why writes are serial");
+    let twice = call(
+        &server,
+        "palace_anchor",
+        json!({ "memory": writer, "room": room_id, "locus": "Decisions" }),
+    );
+    assert_eq!(structured(&twice)["anchored"], false);
+    assert_eq!(structured(&twice)["places"].as_array().unwrap().len(), 1);
+    let at_entrance = call(
+        &server,
+        "palace_anchor",
+        json!({ "memory": file, "room": "Storage" }),
+    );
+    assert_eq!(
+        structured(&at_entrance)["places"][0]["locus_name"],
+        "entrance"
+    );
+    let new_locus = call(
+        &server,
+        "palace_anchor",
+        json!({ "memory": writer, "room": "Storage", "locus": "Open questions" }),
+    );
+    assert_eq!(structured(&new_locus)["locus_created"], true);
+    assert_eq!(
+        structured(&new_locus)["places"].as_array().unwrap().len(),
+        2
+    );
+
+    // The memory is the one node it was, with its text and its fact.
+    let node = call(&server, "get_node", json!({ "id": writer }));
+    let text = node["content"][0]["text"].as_str().unwrap();
+    assert!(text.contains("Only one transaction writes"), "{text}");
+    assert!(text.contains("leads_to"), "{text}");
+    let notes = call(
+        &server,
+        "query",
+        json!({ "query": "MATCH (n:Note) RETURN count(n)" }),
+    );
+    assert!(notes.to_string().contains('3'), "{notes}");
+
+    // The map: every palace, one palace, one room with its memories.
+    let all = call(&server, "palace_map", json!({}));
+    let all = structured(&all);
+    assert_eq!(all["palaces"][0]["name"], "Work");
+    assert_eq!(all["palaces"][0]["rooms"][0]["memories"], 2);
+    assert!(all["palaces"][0]["rooms"][0]["loci"][0]["memories"].is_null());
+    let one = call(&server, "palace_map", json!({ "palace": "Work" }));
+    assert_eq!(structured(&one)["palace"]["rooms"][0]["name"], "Storage");
+    let inside = call(&server, "palace_map", json!({ "room": "storage" }));
+    let loci = structured(&inside)["room"]["loci"]
+        .as_array()
+        .unwrap()
+        .clone();
+    assert_eq!(loci.len(), 3);
+    assert_eq!(loci[0]["memories"][0]["id"], file.as_str());
+    assert_eq!(loci[1]["memories"][0]["id"], writer.as_str());
+    assert_eq!(loci[1]["memories"][0]["note"], "why writes are serial");
+    assert_eq!(loci[2]["name"], "Open questions");
+
+    // A walk from the room's topic, and one relation beyond it.
+    let walk = call(&server, "palace_walk", json!({ "topic": "storage engine" }));
+    let walk = structured(&walk);
+    assert_eq!(walk["places"][0]["path"], "Work / Storage");
+    let reached: Vec<(&str, u64)> = walk["memories"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|memory| {
+            (
+                memory["id"].as_str().unwrap(),
+                memory["hops"].as_u64().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        reached,
+        [(file.as_str(), 0), (writer.as_str(), 0), (raft.as_str(), 1)]
+    );
+    assert_eq!(walk["memories"][2]["via"][0]["label"], "leads_to");
+    assert_eq!(walk["memories"][2]["origin"], writer.as_str());
+    let from = call(
+        &server,
+        "palace_walk",
+        json!({ "from": room_id, "hops": 0, "palace": "Work" }),
+    );
+    assert_eq!(structured(&from)["memories"].as_array().unwrap().len(), 2);
+    let nothing = call(&server, "palace_walk", json!({ "topic": "volcanoes" }));
+    assert_eq!(structured(&nothing)["memories"], json!([]));
+    assert!(structured(&nothing)["hint"].is_string());
+
+    // Entering: the context of the room, and no checkpoint yet.
+    let entered = call(&server, "palace_enter", json!({ "room": "Storage" }));
+    let entered = structured(&entered);
+    assert_eq!(entered["palace"]["name"], "Work");
+    assert_eq!(entered["room"]["name"], "Storage");
+    let context = entered["context"].as_str().unwrap();
+    assert!(context.contains("Only one transaction writes"), "{context}");
+    assert!(
+        context.contains("The whole database is one file"),
+        "{context}"
+    );
+    assert!(context.contains("leads_to"), "{context}");
+    assert!(!context.contains("anchored_at"), "{context}");
+    assert_eq!(entered["memories"].as_array().unwrap().len(), 2);
+    assert_eq!(entered["left_out"], 0);
+    assert!(entered["checkpoint"].is_null());
+    assert!(entered["hint"].is_string());
+
+    // The checkpoint tool there was saves where the room's work stands.
+    structured(&call(
+        &server,
+        "checkpoint",
+        json!({ "task": "Storage design", "summary": "One writer settled",
+                "next": ["Measure the file"], "about": room_id }),
+    ));
+    let entered = call(
+        &server,
+        "palace_enter",
+        json!({ "room": room_id, "budget": 60 }),
+    );
+    let entered = structured(&entered);
+    assert_eq!(entered["checkpoint"]["summary"], "One writer settled");
+    assert_eq!(entered["checkpoint"]["next"][0], "Measure the file");
+    assert!(entered["hint"].is_null());
+    assert!(entered["tokens"].as_u64().unwrap() <= 60);
+
+    // Removing an anchor leaves the memory.
+    let removed = call(
+        &server,
+        "palace_anchor",
+        json!({ "memory": file, "room": "Storage", "remove": true }),
+    );
+    assert_eq!(structured(&removed)["removed"], true);
+    assert_eq!(structured(&removed)["places"], json!([]));
+    let removed = call(
+        &server,
+        "palace_anchor",
+        json!({ "memory": file, "room": "Storage", "remove": true }),
+    );
+    assert_eq!(structured(&removed)["removed"], false);
+    structured(&call(&server, "get_node", json!({ "id": file })));
+
+    // Recall and context answer as before: memories, never the palace.
+    let recalled = call(&server, "recall", json!({ "query": "storage engine file" }));
+    let results = structured(&recalled)["results"].as_array().unwrap().clone();
+    assert!(!results.is_empty());
+    assert!(
+        results
+            .iter()
+            .all(|hit| hit["id"] != room_id.as_str() && hit["id"] != palace_id.as_str())
+    );
+}
+
+#[test]
+fn palace_tools_explain_bad_input() {
+    let server = server();
+    structured(&call(&server, "palace_create", json!({ "name": "Work" })));
+    structured(&call(&server, "palace_create", json!({ "name": "Home" })));
+    for palace in ["Work", "Home"] {
+        structured(&call(
+            &server,
+            "palace_create_room",
+            json!({ "palace": palace, "name": "Notes" }),
+        ));
+    }
+    let memory = remembered(&server, json!({ "text": "Something to keep" }));
+
+    let nameless = call(&server, "palace_create", json!({ "name": "  " }));
+    assert!(failure(&nameless).contains("needs a name"));
+    let missing = call(&server, "palace_create", json!({}));
+    assert!(failure(&missing).contains("name"));
+    let unknown = call(
+        &server,
+        "palace_create",
+        json!({ "name": "X", "colour": "red" }),
+    );
+    assert!(failure(&unknown).contains("colour"));
+
+    let no_palace = call(
+        &server,
+        "palace_create_room",
+        json!({ "palace": "Elsewhere", "name": "Room" }),
+    );
+    assert!(failure(&no_palace).contains("no palace named \"Elsewhere\""));
+
+    // A room name two palaces share needs its palace.
+    let ambiguous = call(
+        &server,
+        "palace_anchor",
+        json!({ "memory": memory, "room": "Notes" }),
+    );
+    let message = failure(&ambiguous);
+    assert!(message.contains("several palaces"), "{message}");
+    assert!(
+        message.contains("Home") && message.contains("Work"),
+        "{message}"
+    );
+    let settled = call(
+        &server,
+        "palace_anchor",
+        json!({ "memory": memory, "room": "Notes", "palace": "Home" }),
+    );
+    assert_eq!(structured(&settled)["places"][0]["palace_name"], "Home");
+
+    // A room is not made by anchoring into it.
+    let no_room = call(
+        &server,
+        "palace_anchor",
+        json!({ "memory": memory, "room": "Attic", "palace": "Home" }),
+    );
+    assert!(failure(&no_room).contains("no room named \"Attic\" in Home"));
+    let no_room = call(&server, "palace_enter", json!({ "room": "Attic" }));
+    assert!(failure(&no_room).contains("no room named \"Attic\""));
+
+    let bad_id = call(
+        &server,
+        "palace_anchor",
+        json!({ "memory": "not-an-id", "room": "Notes", "palace": "Home" }),
+    );
+    assert!(failure(&bad_id).contains("invalid id"));
+    let gone = call(
+        &server,
+        "palace_anchor",
+        json!({ "memory": "00000000-0000-4000-8000-000000000000", "room": "Notes",
+                "palace": "Home" }),
+    );
+    assert!(failure(&gone).contains("not found"), "{gone}");
+    // A room is not a memory to anchor.
+    let room = call(
+        &server,
+        "palace_map",
+        json!({ "room": "Notes", "palace": "Work" }),
+    );
+    let room_id = structured(&room)["room"]["id"].as_str().unwrap().to_owned();
+    let not_memory = call(
+        &server,
+        "palace_anchor",
+        json!({ "memory": room_id, "room": "Notes", "palace": "Home" }),
+    );
+    assert!(failure(&not_memory).contains("not a memory"));
+
+    let aimless = call(&server, "palace_walk", json!({}));
+    assert!(failure(&aimless).contains("topic or a node"));
+    // A memory given where a room is expected.
+    let not_room = call(&server, "palace_enter", json!({ "room": memory }));
+    assert!(failure(&not_room).contains("is not a Room"));
+}
+
+#[test]
+fn palaces_keep_to_their_namespace_and_to_what_an_agent_may_do() {
+    let db = Grafeno::in_memory().unwrap();
+    let server = McpServer::new(db, "agent".into()).with_access(McpAccess {
+        allow: vec!["agent".into(), "team-*".into()],
+        read_only: false,
+        actor: Some(grafeno::Actor::new("assistant")),
+    });
+    structured(&call(&server, "palace_create", json!({ "name": "Work" })));
+    structured(&call(
+        &server,
+        "palace_create_room",
+        json!({ "palace": "Work", "name": "Storage" }),
+    ));
+    let memory = remembered(&server, json!({ "text": "One writer at a time" }));
+    structured(&call(
+        &server,
+        "palace_anchor",
+        json!({ "memory": memory, "room": "Storage" }),
+    ));
+
+    // Another namespace sees none of it, and may have a palace of the
+    // same name.
+    let other = call(&server, "palace_map", json!({ "namespace": "team-a" }));
+    assert_eq!(structured(&other)["palaces"], json!([]));
+    let theirs = call(
+        &server,
+        "palace_create",
+        json!({ "name": "Work", "namespace": "team-a" }),
+    );
+    assert_eq!(structured(&theirs)["created"], true);
+    let no_room = call(
+        &server,
+        "palace_enter",
+        json!({ "room": "Storage", "namespace": "team-a" }),
+    );
+    assert!(failure(&no_room).contains("no room named"));
+    structured(&call(
+        &server,
+        "palace_create_room",
+        json!({ "palace": "Work", "name": "Storage", "namespace": "team-a" }),
+    ));
+    // A memory of one namespace is not anchored in another.
+    let across = call(
+        &server,
+        "palace_anchor",
+        json!({ "memory": memory, "room": "Storage", "namespace": "team-a" }),
+    );
+    assert!(failure(&across).contains("not found"), "{across}");
+    let walk = call(
+        &server,
+        "palace_walk",
+        json!({ "topic": "writer", "namespace": "team-a" }),
+    );
+    assert_eq!(structured(&walk)["memories"], json!([]));
+    let mine = call(&server, "palace_map", json!({}));
+    assert_eq!(structured(&mine)["palaces"].as_array().unwrap().len(), 1);
+    assert_eq!(structured(&mine)["palaces"][0]["rooms"][0]["memories"], 1);
+
+    // A namespace that is not open to the agent is not reached.
+    for (tool, arguments) in [
+        ("palace_map", json!({ "namespace": "secret" })),
+        (
+            "palace_create",
+            json!({ "name": "Work", "namespace": "secret" }),
+        ),
+        (
+            "palace_enter",
+            json!({ "room": "Storage", "namespace": "secret" }),
+        ),
+        (
+            "palace_walk",
+            json!({ "topic": "writer", "namespace": "secret" }),
+        ),
+    ] {
+        let fenced = call(&server, tool, arguments);
+        assert!(
+            failure(&fenced).contains("not open to this agent"),
+            "{tool}"
+        );
+    }
+
+    // The agent's name is on what it anchored.
+    let who = call(
+        &server,
+        "query",
+        json!({ "query": "MATCH (m)-[a:anchored_at]->(l:Locus) RETURN a.@recorded_by" }),
+    );
+    assert!(who.to_string().contains("assistant"), "{who}");
+}
+
+#[test]
+fn a_read_only_server_reads_palaces_and_writes_none() {
+    let path = std::env::temp_dir().join(format!(
+        "grafeno-mcp-palace-{}-{}.redb",
+        std::process::id(),
+        grafeno::NodeId::new()
+    ));
+    let (room, memory) = {
+        let server = McpServer::new(Grafeno::open(&path).unwrap(), "agent".into());
+        structured(&call(&server, "palace_create", json!({ "name": "Work" })));
+        let room = call(
+            &server,
+            "palace_create_room",
+            json!({ "palace": "Work", "name": "Storage", "topic": "the storage engine" }),
+        );
+        let room = structured(&room)["id"].as_str().unwrap().to_owned();
+        let memory = remembered(&server, json!({ "text": "One writer at a time" }));
+        structured(&call(
+            &server,
+            "palace_anchor",
+            json!({ "memory": memory, "room": "Storage" }),
+        ));
+        structured(&call(
+            &server,
+            "checkpoint",
+            json!({ "task": "Storage", "summary": "Anchored the first note", "about": room }),
+        ));
+        (room, memory)
+    };
+
+    // The agent stopped and another one starts, on the same file, only to
+    // read: the palace is there, and it cannot change it.
+    let reader =
+        McpServer::new(Grafeno::open(&path).unwrap(), "agent".into()).with_access(McpAccess {
+            read_only: true,
+            ..McpAccess::default()
+        });
+    let list = request(&reader, 1, "tools/list", json!({}));
+    let names: Vec<&str> = list["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|tool| tool["name"].as_str().unwrap())
+        .filter(|name| name.starts_with("palace_"))
+        .collect();
+    assert_eq!(names, ["palace_map", "palace_walk", "palace_enter"]);
+
+    let map = call(&reader, "palace_map", json!({ "room": "Storage" }));
+    assert_eq!(structured(&map)["room"]["id"], room.as_str());
+    assert_eq!(
+        structured(&map)["room"]["loci"][0]["memories"][0]["id"],
+        memory.as_str()
+    );
+    let walk = call(&reader, "palace_walk", json!({ "topic": "storage engine" }));
+    assert_eq!(structured(&walk)["memories"][0]["id"], memory.as_str());
+    let entered = call(&reader, "palace_enter", json!({ "room": "Storage" }));
+    let entered = structured(&entered);
+    assert!(entered["context"].as_str().unwrap().contains("One writer"));
+    assert_eq!(entered["checkpoint"]["summary"], "Anchored the first note");
+
+    for (tool, arguments) in [
+        ("palace_create", json!({ "name": "Home" })),
+        (
+            "palace_create_room",
+            json!({ "palace": "Work", "name": "Other" }),
+        ),
+        (
+            "palace_anchor",
+            json!({ "memory": memory, "room": "Storage", "remove": true }),
+        ),
+    ] {
+        let refused = call(&reader, tool, arguments);
+        assert!(failure(&refused).contains("read-only"), "{tool}");
+    }
+    let map = call(&reader, "palace_map", json!({}));
+    assert_eq!(structured(&map)["palaces"].as_array().unwrap().len(), 1);
+    assert_eq!(structured(&map)["palaces"][0]["rooms"][0]["memories"], 1);
+    drop(reader);
+    let _ = std::fs::remove_file(&path);
 }

@@ -673,6 +673,15 @@ another group's file. See [docs/cluster-runbooks.md](../../docs/cluster-runbooks
 | `contradictions` | Facts that contradicted earlier ones under a constraint, and what was done (the earlier one ended, the new one refused, or both flagged). |
 | `timeline` | How a node changed, oldest first: its facts beginning and ending, earlier property values, merges, contradictions. |
 | `feedback` | `useful` raises a memory's importance; `obsolete` archives a memory or ends a fact; `wrong` archives a memory or retracts a fact. The verdict stays on the memory. |
+| `palace_create` / `palace_create_room` | Makes a palace, or a room in one with its loci (places inside it); returns the one there is when it exists. |
+| `palace_anchor` | Puts an existing memory at a locus of a room, without copying or changing it; with `remove`, takes the anchor away. |
+| `palace_map` | The palaces with their rooms, loci and counts; with `room`, the memories at each locus. |
+| `palace_walk` | From a topic or a node to the memories around it: the rooms that match, what is anchored there, and what the graph's relations lead to from those. |
+| `palace_enter` | A room's context for the start of a session: its memories and facts as text within a token budget, and the latest checkpoint about the room. |
+
+The `palace_*` tools arrange memories that already exist into places and
+bring them back by where they are; see
+[docs/mental-palace.md](../../docs/mental-palace.md).
 
 Every tool takes an optional `namespace`, which defaults to `--namespace`.
 

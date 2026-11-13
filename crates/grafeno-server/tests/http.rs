@@ -1731,3 +1731,97 @@ async fn nulls_are_stored_and_removed_by_name() {
     };
     assert_eq!(props, &json!({ "a": null, "c": 3 }), "{node}");
 }
+
+/// What an interface reads over the API: a palace is ordinary nodes and
+/// edges, so it comes back from the subgraph and query routes as any
+/// other part of the graph, with labels that tell its pieces apart.
+#[tokio::test]
+async fn a_palace_is_read_as_ordinary_nodes_and_edges() {
+    use grafeno_memory::{NewRoom, anchor, create_palace, create_room, find_locus};
+
+    let db = Arc::new(Grafeno::in_memory().unwrap());
+    let (palace, room, note) = db
+        .write(|tx| {
+            let palace = create_palace(tx, "g", "Work", Some("Projects"))?.id;
+            let room = create_room(tx, "g", palace, NewRoom::new("Storage").locus("Decisions"))?.id;
+            let note = tx.create_node(
+                "g",
+                grafeno::NewNode::new("Note")
+                    .prop("title", "One writer")
+                    .text("Only one transaction writes at a time"),
+            )?;
+            Ok((palace, room, note))
+        })
+        .unwrap();
+    let decisions = find_locus(&db.begin_read().unwrap(), "g", room, "Decisions")
+        .unwrap()
+        .unwrap();
+    db.write(|tx| anchor(tx, "g", note, decisions, Some("why")))
+        .unwrap();
+    let app = router(AppState::new(db, None));
+
+    let (status, graph) = call(
+        &app,
+        "POST",
+        "/v1/g/subgraph",
+        Some(json!({ "seeds": [palace], "depth": 3 })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{graph}");
+    let mut nodes: Vec<(String, String)> = graph["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|node| {
+            (
+                node["labels"][0].as_str().unwrap().to_owned(),
+                node["props"]["name"]
+                    .as_str()
+                    .or(node["props"]["title"].as_str())
+                    .unwrap()
+                    .to_owned(),
+            )
+        })
+        .collect();
+    nodes.sort();
+    assert_eq!(
+        nodes,
+        [
+            ("Locus".to_owned(), "Decisions".to_owned()),
+            ("Locus".to_owned(), "entrance".to_owned()),
+            ("Note".to_owned(), "One writer".to_owned()),
+            ("Palace".to_owned(), "Work".to_owned()),
+            ("Room".to_owned(), "Storage".to_owned()),
+        ]
+    );
+    let mut edges: Vec<&str> = graph["edges"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|edge| edge["label"].as_str().unwrap())
+        .collect();
+    edges.sort();
+    assert_eq!(edges, ["anchored_at", "has_locus", "has_locus", "has_room"]);
+    let anchor = graph["edges"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|edge| edge["label"] == "anchored_at")
+        .unwrap();
+    assert_eq!(anchor["from"], note.to_string());
+    assert_eq!(anchor["props"]["note"], "why");
+
+    // And by a query, as a path from the palace to the memory.
+    let (status, body) = call(
+        &app,
+        "POST",
+        "/v1/g/query",
+        Some(json!({ "query": "MATCH (p:Palace)-[:has_room]->(r:Room)-[:has_locus]->(l:Locus)<-[:anchored_at]-(m) RETURN p.name, r.name, l.name, m.title" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        body["rows"],
+        json!([["Work", "Storage", "Decisions", "One writer"]])
+    );
+}

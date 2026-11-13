@@ -186,6 +186,7 @@ Node: only those tests use it.
 - [Phases](docs/phases/README.md): each of Grafeno's phases in its own file, with its steps.
 - [Performance](docs/performance.md) and [benchmarks](docs/benchmarks.md): methods, data and limits of project measurements.
 - [Batched reads: contract, tests and reproducible measurements](docs/read-many.md).
+- [Mental Palace](docs/mental-palace.md): memories arranged into rooms and found again by where they are, over MCP.
 - [Graph expansion](docs/graph-expansion.md): batched neighborhoods (the endpoint the Studio's graph view uses).
 - [Development history](docs/development-history.md): every phase built so far, in detail.
 

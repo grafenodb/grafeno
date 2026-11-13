@@ -34,7 +34,10 @@ mistakes. Give lasting facts a higher `importance`. From time to time, call `mai
 merge duplicates and `consolidate` old memories into summaries. At the start of a session on \
 ongoing work, call `resume`; before stopping, save where it stands with `checkpoint`. Store \
 long texts (documents, conversations, code) with `ingest`, and say what helped or misled with \
-`feedback`. Ids are the UUIDs these tools return.";
+`feedback`. To keep the memories of a project or subject together, give it a room in a \
+palace (`palace_create`, `palace_create_room`) and anchor them there with `palace_anchor`; \
+`palace_enter` brings a room's context back at the start of a session, and `palace_walk` goes \
+from a topic to the memories around it. Ids are the UUIDs these tools return.";
 
 const SNIPPET_CHARS: usize = 400;
 
@@ -88,6 +91,9 @@ const WRITING_TOOLS: &[&str] = &[
     "checkpoint",
     "ingest",
     "feedback",
+    "palace_create",
+    "palace_create_room",
+    "palace_anchor",
 ];
 
 /// Serves MCP on stdin and stdout until stdin closes.
@@ -263,6 +269,12 @@ impl McpServer {
             "contradictions" => self.contradictions(arguments),
             "timeline" => self.timeline(arguments),
             "feedback" => self.feedback(arguments),
+            "palace_create" => self.palace_create(arguments),
+            "palace_create_room" => self.palace_create_room(arguments),
+            "palace_anchor" => self.palace_anchor(arguments),
+            "palace_map" => self.palace_map(arguments),
+            "palace_walk" => self.palace_walk(arguments),
+            "palace_enter" => self.palace_enter(arguments),
             _ => return Err((-32602, format!("unknown tool: {name}"))),
         };
         Ok(match outcome {
@@ -356,6 +368,10 @@ impl McpServer {
                         let Some(node) = tx.node(ns, candidate)? else {
                             continue;
                         };
+                        // A room or a palace of that name is not the entity.
+                        if grafeno_memory::palace::is_structure(&node) {
+                            continue;
+                        }
                         if !explicit_labels || new.labels.iter().any(|label| node.has_label(label))
                         {
                             existing = Some(node);
@@ -1724,6 +1740,345 @@ impl McpServer {
             json!({ "id": id, "verdict": args.verdict, "result": done }),
         ))
     }
+    // ----------------------------------------------------------- palace
+
+    /// A palace, by its id or its name.
+    fn palace_ref(&self, read: &ReadTx, ns: &str, given: &str) -> Result<NodeId, String> {
+        if let Ok(id) = parse_id(given) {
+            return Ok(id);
+        }
+        grafeno_memory::find_palace(read, ns, given)
+            .map_err(describe)?
+            .ok_or_else(|| format!("no palace named {given:?}; palace_map lists the palaces"))
+    }
+
+    /// A room, by its id, or by its name in the palace given; without a
+    /// palace, by its name when one palace has a room of that name.
+    fn room_ref(
+        &self,
+        read: &ReadTx,
+        ns: &str,
+        palace: Option<&str>,
+        given: &str,
+    ) -> Result<NodeId, String> {
+        if let Ok(id) = parse_id(given) {
+            return Ok(id);
+        }
+        if let Some(palace) = palace {
+            let palace = self.palace_ref(read, ns, palace)?;
+            return grafeno_memory::find_room(read, ns, palace, given)
+                .map_err(describe)?
+                .ok_or_else(|| {
+                    format!(
+                        "no room named {given:?} in {}; palace_create_room makes one",
+                        name_of(read, ns, palace)
+                    )
+                });
+        }
+        let key = grafeno::normalize_name(given);
+        let mut found: Vec<(NodeId, String)> = Vec::new();
+        let options = grafeno_memory::MapOptions::default();
+        for palace in grafeno_memory::palaces(read, ns, &options).map_err(describe)? {
+            for room in palace.rooms {
+                if grafeno::normalize_name(&room.name) == key {
+                    found.push((room.id, palace.name.clone()));
+                }
+            }
+        }
+        match found.as_slice() {
+            [] => Err(format!(
+                "no room named {given:?}; palace_map lists the rooms"
+            )),
+            [(id, _)] => Ok(*id),
+            several => Err(format!(
+                "several palaces have a room named {given:?} ({}): say which with `palace`",
+                several
+                    .iter()
+                    .map(|(_, palace)| palace.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )),
+        }
+    }
+
+    fn palace_create(&self, arguments: Value) -> ToolResult {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Args {
+            name: String,
+            #[serde(default)]
+            description: Option<String>,
+            #[serde(default)]
+            namespace: Option<String>,
+        }
+        let args: Args = parse_args(arguments)?;
+        let ns = self.ns(&args.namespace);
+        let made = self
+            .write(|tx| {
+                grafeno_memory::create_palace(tx, ns, &args.name, args.description.as_deref())
+            })
+            .map_err(describe)?;
+        let read = self.db.begin_read().map_err(describe)?;
+        Ok(ToolOutput::Json(json!({
+            "id": made.id,
+            "name": name_of(&read, ns, made.id),
+            "created": made.created,
+        })))
+    }
+
+    fn palace_create_room(&self, arguments: Value) -> ToolResult {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Args {
+            palace: String,
+            name: String,
+            #[serde(default)]
+            topic: Option<String>,
+            #[serde(default)]
+            description: Option<String>,
+            #[serde(default)]
+            loci: Vec<String>,
+            #[serde(default)]
+            namespace: Option<String>,
+        }
+        let args: Args = parse_args(arguments)?;
+        let ns = self.ns(&args.namespace);
+        let read = self.db.begin_read().map_err(describe)?;
+        let palace = self.palace_ref(&read, ns, &args.palace)?;
+        drop(read);
+        let new = grafeno_memory::NewRoom {
+            name: args.name,
+            topic: args.topic,
+            description: args.description,
+            loci: args.loci,
+        };
+        let made = self
+            .write(|tx| grafeno_memory::create_room(tx, ns, palace, new))
+            .map_err(describe)?;
+        let read = self.db.begin_read().map_err(describe)?;
+        let room =
+            grafeno_memory::map_room(&read, ns, made.id, &grafeno_memory::MapOptions::default())
+                .map_err(describe)?;
+        Ok(ToolOutput::Json(json!({
+            "id": made.id,
+            "created": made.created,
+            "palace": { "id": palace, "name": name_of(&read, ns, palace) },
+            "room": room,
+        })))
+    }
+
+    fn palace_anchor(&self, arguments: Value) -> ToolResult {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Args {
+            memory: String,
+            room: String,
+            #[serde(default)]
+            locus: Option<String>,
+            #[serde(default)]
+            palace: Option<String>,
+            #[serde(default)]
+            note: Option<String>,
+            #[serde(default)]
+            remove: bool,
+            #[serde(default)]
+            namespace: Option<String>,
+        }
+        let args: Args = parse_args(arguments)?;
+        let ns = self.ns(&args.namespace);
+        let memory = parse_id(&args.memory).map_err(describe)?;
+        let locus_name = args
+            .locus
+            .as_deref()
+            .unwrap_or(grafeno_memory::palace::ENTRANCE);
+        let read = self.db.begin_read().map_err(describe)?;
+        let room = self.room_ref(&read, ns, args.palace.as_deref(), &args.room)?;
+        let existing = grafeno_memory::find_locus(&read, ns, room, locus_name);
+        drop(read);
+        let result = if args.remove {
+            let removed = match existing.map_err(describe)? {
+                Some(locus) => self
+                    .write(|tx| grafeno_memory::unanchor(tx, ns, memory, locus))
+                    .map_err(describe)?,
+                None => false,
+            };
+            json!({ "removed": removed })
+        } else {
+            // A locus that is not there yet is made: a room and a palace
+            // are not, they are made on purpose.
+            let (locus, anchored) = self
+                .write(|tx| {
+                    let locus = grafeno_memory::create_locus(tx, ns, room, locus_name)?;
+                    let anchored =
+                        grafeno_memory::anchor(tx, ns, memory, locus.id, args.note.as_deref())?;
+                    Ok((locus, anchored))
+                })
+                .map_err(describe)?;
+            json!({
+                "anchor": anchored.edge,
+                "anchored": anchored.created,
+                "locus": locus.id,
+                "locus_created": locus.created,
+            })
+        };
+        let read = self.db.begin_read().map_err(describe)?;
+        let places = grafeno_memory::anchors_of(&read, ns, memory).map_err(describe)?;
+        // An unnamed memory by the start of its text, as the map shows it.
+        let title = match read.node(ns, memory).map_err(describe)? {
+            Some(node) if node.explicit_name().is_none() => {
+                let text = read.text(ns, memory).map_err(describe)?.unwrap_or_default();
+                if text.trim().is_empty() {
+                    node.display_name()
+                } else {
+                    snippet(&text)
+                }
+            }
+            _ => name_of(&read, ns, memory),
+        };
+        let mut output = json!({
+            "memory": { "id": memory, "name": title },
+            "places": places,
+        });
+        if let (Some(output), Some(result)) = (output.as_object_mut(), result.as_object()) {
+            output.extend(result.clone());
+        }
+        Ok(ToolOutput::Json(output))
+    }
+
+    fn palace_map(&self, arguments: Value) -> ToolResult {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Args {
+            #[serde(default)]
+            palace: Option<String>,
+            #[serde(default)]
+            room: Option<String>,
+            #[serde(default)]
+            memories: Option<bool>,
+            #[serde(default)]
+            limit: Option<usize>,
+            #[serde(default)]
+            namespace: Option<String>,
+        }
+        let args: Args = parse_args(arguments)?;
+        let ns = self.ns(&args.namespace);
+        let read = self.db.begin_read().map_err(describe)?;
+        let options = grafeno_memory::MapOptions {
+            // A room is asked for to see what is in it.
+            memories: args.memories.unwrap_or(args.room.is_some()),
+            limit: args.limit.unwrap_or(20).clamp(1, 200),
+        };
+        if let Some(room) = &args.room {
+            let room = self.room_ref(&read, ns, args.palace.as_deref(), room)?;
+            let map = grafeno_memory::map_room(&read, ns, room, &options).map_err(describe)?;
+            return Ok(ToolOutput::Json(json!({ "room": map })));
+        }
+        if let Some(palace) = &args.palace {
+            let palace = self.palace_ref(&read, ns, palace)?;
+            let map = grafeno_memory::map_palace(&read, ns, palace, &options).map_err(describe)?;
+            return Ok(ToolOutput::Json(json!({ "palace": map })));
+        }
+        let palaces = grafeno_memory::palaces(&read, ns, &options).map_err(describe)?;
+        let mut output = json!({ "palaces": palaces });
+        if palaces.is_empty() {
+            output["hint"] = json!("No palace in this namespace yet; palace_create makes one.");
+        }
+        Ok(ToolOutput::Json(output))
+    }
+
+    fn palace_walk(&self, arguments: Value) -> ToolResult {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Args {
+            #[serde(default)]
+            topic: Option<String>,
+            #[serde(default)]
+            from: Option<String>,
+            #[serde(default)]
+            palace: Option<String>,
+            #[serde(default)]
+            hops: Option<usize>,
+            #[serde(default)]
+            limit: Option<usize>,
+            #[serde(default)]
+            namespace: Option<String>,
+        }
+        let args: Args = parse_args(arguments)?;
+        let ns = self.ns(&args.namespace);
+        let read = self.db.begin_read().map_err(describe)?;
+        let query = grafeno_memory::WalkQuery {
+            topic: args.topic,
+            from: args
+                .from
+                .as_deref()
+                .map(parse_id)
+                .transpose()
+                .map_err(describe)?,
+            palace: args
+                .palace
+                .as_deref()
+                .map(|palace| self.palace_ref(&read, ns, palace))
+                .transpose()?,
+            hops: args.hops.unwrap_or(2),
+            limit: args.limit.unwrap_or(20).clamp(1, 100),
+        };
+        let walk = grafeno_memory::walk(&read, ns, &query).map_err(describe)?;
+        let mut output = json!({ "places": walk.places, "memories": walk.memories });
+        if walk.memories.is_empty() {
+            output["hint"] = json!(
+                "Nothing in a palace matches. `recall` searches every memory, anchored or not."
+            );
+        }
+        Ok(ToolOutput::Json(output))
+    }
+
+    fn palace_enter(&self, arguments: Value) -> ToolResult {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Args {
+            room: String,
+            #[serde(default)]
+            palace: Option<String>,
+            #[serde(default)]
+            budget: Option<usize>,
+            #[serde(default)]
+            namespace: Option<String>,
+        }
+        let args: Args = parse_args(arguments)?;
+        let ns = self.ns(&args.namespace);
+        let read = self.db.begin_read().map_err(describe)?;
+        let room = self.room_ref(&read, ns, args.palace.as_deref(), &args.room)?;
+        let options = grafeno_memory::EnterOptions::with_budget(
+            args.budget.unwrap_or(1_500).clamp(50, 20_000),
+        );
+        let entered = grafeno_memory::enter(&read, ns, room, &options).map_err(describe)?;
+        drop(read);
+        let ids: Vec<NodeId> = entered.context.items.iter().map(|item| item.node).collect();
+        self.touch(ns, &ids)?;
+        let memories: Vec<Value> = entered
+            .context
+            .items
+            .iter()
+            .map(|item| json!({ "id": item.node, "name": item.name, "truncated": item.truncated }))
+            .collect();
+        let left_out = entered.room.memories.saturating_sub(memories.len());
+        let mut output = json!({
+            "palace": entered.palace.map(|id| json!({ "id": id, "name": entered.palace_name })),
+            "room": entered.room,
+            "context": entered.context.rendered,
+            "tokens": entered.context.tokens,
+            "memories": memories,
+            "left_out": left_out,
+            "checkpoint": entered.checkpoint,
+        });
+        if entered.checkpoint.is_none() {
+            output["hint"] = json!(
+                "No checkpoint about this room. Before stopping, save one with `checkpoint` and \
+                 `about` set to the room's id."
+            );
+        }
+        Ok(ToolOutput::Json(output))
+    }
 }
 
 /// Arguments shared by `recall` and `context`.
@@ -2348,6 +2703,117 @@ fn tools() -> Value {
                     "namespace": namespace
                 },
                 "required": ["id", "verdict"]
+            }
+        },
+        {
+            "name": "palace_create",
+            "title": "Create a palace",
+            "description": "A mental palace arranges memories into places so they are found again \
+                by where they are: a palace has rooms (one per project, domain or subject), a room \
+                has loci (places inside it), and memories are anchored at loci. This makes a \
+                palace, or returns the one of that name. It stores no memory by itself.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "name": { "type": "string", "description": "The palace's name, unique in the namespace (such as \"Work\")." },
+                    "description": { "type": "string", "description": "What it holds." },
+                    "namespace": namespace
+                },
+                "required": ["name"]
+            }
+        },
+        {
+            "name": "palace_create_room",
+            "title": "Create a room",
+            "description": "Make a room in a palace, or return the one of that name there. A room \
+                is created with a locus named \"entrance\"; `loci` adds more, and names given \
+                again for a room that exists add the ones it lacks.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "palace": { "type": "string", "description": "The palace: its name or its id." },
+                    "name": { "type": "string", "description": "The room's name, unique in its palace." },
+                    "topic": { "type": "string", "description": "What the room is about, in the words you would search it by." },
+                    "description": { "type": "string" },
+                    "loci": { "type": "array", "items": { "type": "string" }, "description": "Places inside the room, in order (such as \"Decisions\", \"Open questions\")." },
+                    "namespace": namespace
+                },
+                "required": ["palace", "name"]
+            }
+        },
+        {
+            "name": "palace_anchor",
+            "title": "Anchor a memory",
+            "description": "Put a memory that already exists at a place in a room. The memory is \
+                not copied or changed and keeps its own relations; it can be anchored at several \
+                places. A locus that does not exist yet is made; a room is not. With `remove`, \
+                takes the anchor away and leaves the memory. Returns every place the memory is at.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "memory": id("Id of the memory (from `remember` or `recall`)."),
+                    "room": { "type": "string", "description": "The room: its name or its id." },
+                    "locus": { "type": "string", "description": "The place inside the room. Default: \"entrance\"." },
+                    "palace": { "type": "string", "description": "The room's palace (name or id), needed when two palaces have a room of that name." },
+                    "note": { "type": "string", "description": "Why it belongs there, in a few words." },
+                    "remove": { "type": "boolean", "description": "Take the anchor away instead. Default: false." },
+                    "namespace": namespace
+                },
+                "required": ["memory", "room"]
+            }
+        },
+        {
+            "name": "palace_map",
+            "title": "Map of the palaces",
+            "description": "What is where. With no arguments: the palaces of the namespace, their \
+                rooms and loci, and how many memories each holds. With `palace`: that palace. \
+                With `room`: that room and the memories at each of its loci.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "palace": { "type": "string", "description": "A palace: its name or its id." },
+                    "room": { "type": "string", "description": "A room: its name or its id." },
+                    "memories": { "type": "boolean", "description": "List the memories at each locus. Default: true for a room, false otherwise." },
+                    "limit": { "type": "integer", "minimum": 1, "maximum": 200, "description": "Memories listed per locus, newest first. Default: 20." },
+                    "namespace": namespace
+                }
+            }
+        },
+        {
+            "name": "palace_walk",
+            "title": "Walk the palace",
+            "description": "From a topic, or from a node, to the memories around it. Finds the \
+                rooms and loci the topic names and the anchored memories that match it, then \
+                follows the graph's relations from those memories. Each memory comes with how \
+                many relations away it is, the way there, and where it is anchored. Memories that \
+                are in no palace are not returned: use `recall` for those.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "topic": { "type": "string", "description": "What to look for." },
+                    "from": id("Id of a palace, room, locus or memory to start from, instead of or besides a topic."),
+                    "palace": { "type": "string", "description": "Stay in this palace (name or id). Default: every palace of the namespace." },
+                    "hops": { "type": "integer", "minimum": 0, "maximum": 3, "description": "Relations followed from the memories found. Default: 2." },
+                    "limit": { "type": "integer", "minimum": 1, "maximum": 100, "description": "Memories returned, the nearest first. Default: 20." },
+                    "namespace": namespace
+                }
+            }
+        },
+        {
+            "name": "palace_enter",
+            "title": "Enter a room",
+            "description": "Rebuild the context of a room at the start of a session: its loci, \
+                its memories (the strongest first) and the facts that connect them, as text \
+                within a token budget, and the latest checkpoint saved about the room.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "room": { "type": "string", "description": "The room: its name or its id." },
+                    "palace": { "type": "string", "description": "The room's palace (name or id), needed when two palaces have a room of that name." },
+                    "budget": { "type": "integer", "minimum": 50, "description": "Tokens for the memories and facts. Default: 1500." },
+                    "namespace": namespace
+                },
+                "required": ["room"]
             }
         }
     ])
