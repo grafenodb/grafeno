@@ -566,7 +566,11 @@ impl McpServer {
         let ns = self.ns(&args.namespace);
         let query = args.query(10)?;
         let read = self.db.begin_read().map_err(describe)?;
-        let results = recall(&read, ns, &query).map_err(describe)?;
+        let results: Vec<_> = recall(&read, ns, &query)
+            .map_err(describe)?
+            .into_iter()
+            .skip(args.skip)
+            .collect();
         let names: HashMap<NodeId, String> = results
             .iter()
             .map(|result| (result.node.id, result.node.display_name()))
@@ -607,6 +611,12 @@ impl McpServer {
             if !known.is_unstated() {
                 item["known"] = known.to_json();
             }
+            // Why it came back (the search) is `why`; what supports it or
+            // puts it in doubt (the facts) is `justification`.
+            item["justification"] = serde_json::to_value(
+                grafeno_memory::justify(&read, ns, &result.node).map_err(describe)?,
+            )
+            .unwrap_or_default();
             out.push(item);
         }
         drop(read);
@@ -631,8 +641,11 @@ impl McpServer {
         let mut options = ContextOptions::with_budget(args.budget.unwrap_or(1_500));
         // Community summaries that match go first, as an overview.
         options.communities = 3;
-        // What repeats a memory already packed is left out.
+        // What repeats a memory already packed is left out, what goes
+        // together is packed together, and a part already read is skipped.
         options.redundancy = Some(grafeno_memory::REDUNDANT);
+        options.group = true;
+        options.skip = args.skip;
         let read = self.db.begin_read().map_err(describe)?;
         let context = context_for(&read, ns, &query, &options).map_err(describe)?;
         drop(read);
@@ -640,14 +653,18 @@ impl McpServer {
         self.touch(ns, &ids)?;
         Ok(ToolOutput::Text(if context.items.is_empty() {
             "No relevant memories found.".into()
-        } else if context.redundant.is_empty() {
-            context.rendered
         } else {
-            format!(
-                "{}\n({} more that repeated these left out)",
-                context.rendered.trim_end(),
-                context.redundant.len()
-            )
+            let mut text = context.rendered.trim_end().to_owned();
+            if !context.redundant.is_empty() {
+                text.push_str(&format!(
+                    "\n({} more that repeated these left out)",
+                    context.redundant.len()
+                ));
+            }
+            // The count is the engine's estimate: the model's tokenizer may
+            // count otherwise.
+            text.push_str(&format!("\n(about {} tokens, estimated)", context.tokens));
+            text
         }))
     }
 
@@ -2467,6 +2484,12 @@ impl McpServer {
             #[serde(default)]
             budget: Option<usize>,
             #[serde(default)]
+            relations: Vec<String>,
+            #[serde(default)]
+            valid_at: Option<TimeInput>,
+            #[serde(default)]
+            skip: usize,
+            #[serde(default)]
             namespace: Option<String>,
         }
         let args: Args = parse_args(arguments)?;
@@ -2498,12 +2521,21 @@ impl McpServer {
             limit: args.limit.unwrap_or(20).clamp(1, 100),
             order,
             budget: args.budget.map(|budget| budget.clamp(50, 20_000)),
+            relations: args.relations,
+            valid_at: args
+                .valid_at
+                .as_ref()
+                .map(TimeInput::resolve)
+                .transpose()
+                .map_err(describe)?,
+            skip: args.skip,
         };
         let walk = grafeno_memory::walk(&read, ns, &query).map_err(describe)?;
         let mut output = json!({ "places": walk.places, "memories": walk.memories });
         if let Some(context) = &walk.context {
             output["context"] = json!(context.rendered);
             output["tokens"] = json!(context.tokens);
+            output["tokens_estimated"] = json!(context.tokens_estimated);
             if !context.redundant.is_empty() {
                 output["left_out_as_repeats"] = json!(context.redundant.len());
             }
@@ -2641,8 +2673,10 @@ impl McpServer {
         let mut options = grafeno_memory::EnterOptions::with_budget(
             args.budget.unwrap_or(1_500).clamp(50, 20_000),
         );
-        // A memory stored twice in other words is packed once.
+        // A memory stored twice in other words is packed once, and what
+        // goes together is packed together.
         options.context.redundancy = Some(grafeno_memory::REDUNDANT);
+        options.context.group = true;
         let entered = grafeno_memory::enter(&read, ns, room, &options).map_err(describe)?;
         drop(read);
         let ids: Vec<NodeId> = entered.context.items.iter().map(|item| item.node).collect();
@@ -2659,6 +2693,7 @@ impl McpServer {
             "room": entered.room,
             "context": entered.context.rendered,
             "tokens": entered.context.tokens,
+            "tokens_estimated": entered.context.tokens_estimated,
             "memories": memories,
             "left_out": left_out,
             "left_out_as_repeats": entered.context.redundant.len(),
@@ -2696,11 +2731,31 @@ struct QueryArgs {
     index: Option<String>,
     #[serde(default)]
     mode: Option<grafeno::SearchMode>,
+    /// Leave out the first this many results: the next part.
+    #[serde(default)]
+    skip: usize,
+    /// How the search's scores are put together: `scores` (each list scaled
+    /// to 0..1, the default) or `rank` (by rank alone).
+    #[serde(default)]
+    fusion: Option<String>,
     #[serde(default)]
     namespace: Option<String>,
 }
 
 impl QueryArgs {
+    /// Scaled scores by default: rank fusion gives the 50th match almost
+    /// the score of the first, so what the best match is related to never
+    /// outranks weak matches (measured in `docs/benchmarks.md`).
+    fn fusion(&self) -> Result<grafeno::Fusion, String> {
+        match self.fusion.as_deref() {
+            None | Some("scores") => Ok(grafeno::Fusion::Weighted {
+                text: if self.embedding.is_some() { 0.5 } else { 1.0 },
+            }),
+            Some("rank") => Ok(grafeno::Fusion::default()),
+            Some(other) => Err(format!("unknown fusion {other:?}: scores or rank")),
+        }
+    }
+
     fn query(&self, default_limit: usize) -> Result<RecallQuery, String> {
         if self.query.trim().is_empty() && self.embedding.is_none() {
             return Err("`query` must not be empty".into());
@@ -2709,7 +2764,11 @@ impl QueryArgs {
         Ok(RecallQuery {
             text: Some(self.query.clone()),
             embedding: self.embedding.clone(),
-            limit: self.limit.unwrap_or(default_limit),
+            // The part skipped is recalled too, then left out.
+            limit: self
+                .limit
+                .unwrap_or(default_limit)
+                .saturating_add(self.skip),
             labels: self.labels.clone(),
             candidates: 50,
             expand: (depth > 0).then(|| Expansion {
@@ -2721,7 +2780,7 @@ impl QueryArgs {
             index: self.index.clone(),
             vector_index: None,
             mode: self.mode,
-            fusion: grafeno::Fusion::default(),
+            fusion: self.fusion()?,
         })
     }
 }
@@ -2877,6 +2936,8 @@ fn tools() -> Value {
                     "index": { "type": "string", "description": "A full-text index to search the query in: then \"a phrase\", +required, -excluded, prefix*, fuzzy~1 and field:word work." },
                     "mode": { "type": "string", "enum": ["text", "vector", "hybrid"], "description": "Use the words, the embedding, or both. Default: what is given." },
                     "include_archived": include_archived.clone(),
+                    "skip": { "type": "integer", "minimum": 0, "description": "Leave out the first this many results: the next part." },
+                    "fusion": { "type": "string", "enum": ["scores", "rank"], "description": "scores: each search's scores scaled to 0..1, so what the best matches are related to can outrank weak matches (default). rank: by rank alone." },
                     "namespace": namespace
                 },
                 "required": ["query"]
@@ -2897,6 +2958,8 @@ fn tools() -> Value {
                     "limit": { "type": "integer", "minimum": 1, "description": "Maximum memories considered. Default: 20." },
                     "embedding": { "type": "array", "items": { "type": "number" }, "description": "Optional embedding of the query." },
                     "include_archived": include_archived,
+                    "skip": { "type": "integer", "minimum": 0, "description": "Leave out the first this many results: the next part." },
+                    "fusion": { "type": "string", "enum": ["scores", "rank"], "description": "scores: each search's scores scaled to 0..1, so what the best matches are related to can outrank weak matches (default). rank: by rank alone." },
                     "namespace": namespace
                 },
                 "required": ["query"]
@@ -3431,9 +3494,11 @@ fn tools() -> Value {
                 rooms and loci the topic names and the anchored memories that match it, then \
                 follows the graph's relations from those memories, and the doors of the rooms \
                 (a `leads_to` fact from one room to another, made with `relate`). Each memory comes \
-                with how many relations away it is, the way there, and where it is anchored. With \
-                `budget`, also the memories and the facts joining them as text. Memories that are \
-                in no palace are not returned: use `recall` for those.",
+                with how many relations away it is, how the walk found it (`found_by`, `via`), what \
+                supports it and what puts it in doubt (`justification`), and where it is anchored. \
+                With `budget`, also the memories and the facts joining them as text, related ones \
+                together. `relations` and `valid_at` narrow what is followed. Memories that are in \
+                no palace are not returned: use `recall` for those.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -3443,6 +3508,9 @@ fn tools() -> Value {
                     "hops": { "type": "integer", "minimum": 0, "maximum": 3, "description": "Relations followed from the memories found, and doors from the rooms found. Default: 2." },
                     "limit": { "type": "integer", "minimum": 1, "maximum": 100, "description": "Memories returned. Default: 20." },
                     "order": { "type": "string", "enum": ["distance", "relevance"], "description": "distance: the nearest first (default). relevance: those whose words match the topic best first, wherever they are." },
+                    "relations": { "type": "array", "items": { "type": "string" }, "description": "Follow only relations with these labels, such as [\"depends_on\"]. Default: all." },
+                    "valid_at": date,
+                    "skip": { "type": "integer", "minimum": 0, "description": "Leave out the first this many memories: the next part of a walk." },
                     "budget": { "type": "integer", "minimum": 50, "description": "Also return the memories reached and the facts joining them as text within this many tokens, ready for a prompt." },
                     "namespace": namespace
                 }

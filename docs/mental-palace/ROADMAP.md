@@ -88,7 +88,16 @@ close the list.
 **Acceptance:** related knowledge recorded, recovered by its entities,
 with relations, identity and evidence kept and no unjustified duplicate.
 
-## Phase 9: explainable retrieval
+## Phase 9: explainable retrieval (done)
+
+Built as planned below; what it does is in
+[cognitive-memory.md](cognitive-memory.md#explainable-retrieval), and the
+measure in [benchmarks.md](../benchmarks.md#questions-that-join-four-memories-cratesgrafeno-memoryexamplesretrieval_qualityrs).
+Tests: `crates/grafeno-memory/tests/explainable.rs` (the acceptance). The
+measure found two weaknesses, both fixed: rank fusion kept a match's
+neighbors below weak matches, so recall never brought a chain back whole
+(the MCP tools now scale scores), and a walk by relevance ranked by words
+alone (what relations reach now inherits relevance).
 
 | Capability | Class | Plan |
 | --- | --- | --- |

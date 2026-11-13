@@ -13,6 +13,20 @@ version (now 18) is upgraded in place, with a copy kept first.
 
 ## Unreleased
 
+- **Added**: explainable retrieval (phase 9). `palace_walk` follows only
+  some relations (`relations`) or the facts true at a time (`valid_at`),
+  and each memory says how it was found (`found_by`) and, apart, what
+  supports it or puts it in doubt (`justification`: sources, how it is
+  known, supported by, contradicted by, superseded by); `recall` answers
+  the justification too. `recall`, `context` and `palace_walk` take `skip`
+  for the next part; contexts pack related memories together and say their
+  token count is an estimate (`tokens_estimated`). A measure of questions
+  that join four memories is in `docs/benchmarks.md`.
+- **Changed**: the MCP tools `recall` and `context` scale each search's
+  scores to 0..1 before fusing them (`fusion: "rank"` keeps the old way):
+  under rank fusion what the best match is related to never outranked
+  weak matches. A walk by relevance gives what relations reach half its
+  origin's relevance per hop.
 - **Added**: a model of knowledge (phase 8). Kinds of memory with a
   meaning: Episode, Concept, Hypothesis, Evidence, Constraint and Goal
   beside Fact, Decision, Experience, Task and Question. Relations with a

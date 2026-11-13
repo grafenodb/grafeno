@@ -99,6 +99,44 @@ They are labels, so `remember` takes them in `labels` and `recall` and
 `context` filter by them, as by any label. Nothing classifies a memory on
 its own; `remember`'s description asks the agent to.
 
+## Explainable retrieval
+
+Added in phase 9 of the [roadmap](ROADMAP.md). Each answer keeps two
+things apart: **how it was found** (the algorithm's side) and **what
+supports it** (the facts' side). They are never mixed: a high score is
+not evidence, and evidence is not a reason the search returned something.
+
+- **How it was found.** `recall` says `why` (text rank, vector
+  similarity, the seed a relation led from). `palace_walk` says
+  `found_by` in words ("anchored in Incidents, which the query led to",
+  "3 relations from a memory found"), `via` (each relation followed, in
+  order), `hops`, `relevance` and `strength`.
+- **What supports it.** `justification`, on each result of `recall` and
+  each memory of `palace_walk`: its `sources`, how it is `known` (origin,
+  certainty, verification), what it is `supported_by`, what
+  `contradicted_by` it, what it is `superseded_by`, and whether it is
+  archived. Each is a record that can be opened with `get_node`.
+- **Narrower walks.** `relations` follows only the labels given, such as
+  `["hit", "depends_on", "maintains"]`; `valid_at` follows only the facts
+  true at that time, so a walk at an earlier date reaches who maintained a
+  store then. A recall "about an entity" is a walk `from` it.
+- **Contexts.** Memories joined by a fact are packed next to each other.
+  Token counts are the engine's estimate (about four characters a token),
+  and the tools say so (`tokens_estimated`, "(about N tokens,
+  estimated)"): an exact count needs the agent's own tokenizer.
+- **The next part.** `skip` on `recall`, `context` and `palace_walk`
+  leaves out what was already read.
+- **Scores fused so the graph counts.** `recall` and `context` scale each
+  search's scores to 0..1 before fusing them (`fusion: "scores"`, the
+  default; `"rank"` fuses by rank alone). Under rank fusion the fiftieth
+  match scores almost what the first does, so what the best match is
+  related to never came back: measured in
+  [benchmarks.md](../benchmarks.md#questions-that-join-four-memories-cratesgrafeno-memoryexamplesretrieval_qualityrs).
+
+In Rust: `WalkQuery::relation`, `valid_at` and `skip`;
+`Reached::found_by` and `justification`; `grafeno_memory::justify`;
+`ContextOptions::group` and `skip`; `Context::tokens_estimated`.
+
 ## An agent's reading in one call
 
 `add_mentions` took the entities an agent found in a memory. It now takes
@@ -213,4 +251,5 @@ In Rust: `grafeno_memory::verify`.
 | File | What it covers |
 | --- | --- |
 | `crates/grafeno-memory/tests/knowledge.rs` | Values checked and read back; an agent's reading with entities, relations, sources and certainty; skipped and refused relations; a relation under a constraint; verifying, with its source and what it was; a file closed and opened again. |
+| `crates/grafeno-memory/tests/explainable.rs` | Phase 9: four memories joined by a walk, each saying how it was found; relation and time filters; justification apart from the explanation; `skip`; related memories packed together. |
 | `crates/grafeno-server/tests/mcp.rs` (`a_technical_description_becomes_entities_relations_and_places`) | The acceptance of the phase: a technical description ingested, the agent's reading in one call, facts with how they are known, a fact verified against the document, a memory of a kind, the context, the entities in a room and found by a walk, and bad input refused. |

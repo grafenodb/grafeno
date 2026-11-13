@@ -152,10 +152,16 @@ fn a_walk_by_relevance_puts_what_matches_the_topic_first() {
     let order = ids(&relevant);
     assert_eq!(order.len(), 4);
     assert_eq!(*order.last().unwrap(), f.lunch);
+    // Its words match nothing: its relevance is what it inherits from the
+    // outage it was reached from, half per relation, below the others'.
     let lunch = relevant.memories.last().unwrap();
-    assert_eq!(lunch.relevance, Some(0.0));
+    let outage = relevant.memories.iter().find(|m| m.id == f.outage).unwrap();
+    assert_eq!(lunch.relevance, Some(outage.relevance.unwrap() * 0.5));
     for memory in &relevant.memories[..3] {
-        assert!(memory.relevance.unwrap() > 0.0, "{memory:?}");
+        assert!(
+            memory.relevance.unwrap() > lunch.relevance.unwrap(),
+            "{memory:?}"
+        );
     }
     // The way each was reached is kept.
     let ana = relevant.memories.iter().find(|m| m.id == f.ana).unwrap();

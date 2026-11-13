@@ -917,6 +917,54 @@ half a millisecond, a comparison of word sets per packed item. Entering
 grows with the room, since every note in it is read to order them by
 strength.
 
+Since phase 9 each memory a walk returns carries its justification (what
+supports it, contradicts it or replaced it: three reads of its relations)
+and a walk's context packs related memories together. Measured again at
+5 000 notes: by distance 3.03 / 3.35 ms (from 2.62 / 3.07), by relevance
+3.81 / 5.08 (from 3.49 / 4.21), by relevance with a context 4.59 / 5.16
+(from 4.08 / 4.68), the same memories returned.
+
+## Questions that join four memories (`crates/grafeno-memory/examples/retrieval_quality.rs`)
+
+200 incidents, each with its chain: incident `hit` service `depends_on`
+store, `maintains` from a person, and three notes about the service that
+share its words. Incidents are anchored in one room. The question names
+only the incident: `who keeps the store behind the <word> outage`. "Whole
+chain" is how often the four memories all come back; "chain found", the
+share of the four found. Recall's limit is 20, budgets 1 500 tokens;
+release build, in memory, one laptop, 2026-11-13.
+
+| Way | Whole chain | Chain found | p50 ms | p95 ms | Tokens (median) |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `context`, recall at depth 1, rank fusion | 0 % | 27 % | 0.39 | 0.50 | 930 |
+| `context`, recall at depth 2, rank fusion | 0 % | 28 % | 0.49 | 0.72 | 930 |
+| `context`, recall at depth 3, rank fusion | 0 % | 28 % | 0.52 | 0.69 | 930 |
+| `context`, recall at depth 3, scores scaled | 100 % | 100 % | 0.49 | 0.62 | 798 |
+| `palace_walk` from the question's words, by relevance, 3 hops | 100 % | 100 % | 0.66 | 0.84 | 273 |
+| `palace_walk` from the question's words, by distance, 3 hops | 100 % | 100 % | 0.53 | 0.60 | 273 |
+| `palace_walk` from the incident, 3 hops | 100 % | 100 % | 0.16 | 0.20 | 273 |
+| `palace_walk` from the incident, 3 hops, only `hit`, `depends_on`, `maintains` | 100 % | 100 % | 0.11 | 0.20 | 209 |
+
+What it found:
+
+- **Rank fusion hid the graph.** Recall spreads each seed's score to its
+  neighbors. Under rank fusion the first match scores 1/61 and the
+  fiftieth 1/110, so a neighbor of the best match (half its score at one
+  hop) never outranks a weak match on a common word, and the limit fills
+  with those: 28 % at any depth. With each search's scores scaled to 0..1
+  the best match stands apart and the chain comes back whole. The MCP
+  tools `recall` and `context` now scale scores by default (`fusion:
+  "rank"` keeps the old order); the library's default is unchanged.
+- **Walks by relevance needed the graph too.** Before this measure, a walk
+  by relevance ranked by words alone and found 25 % of the chain from the
+  question's words; a memory reached through relations now inherits half
+  its origin's relevance per hop, which the rows above include.
+- **Filters cost nothing and save tokens.** Following only the relations
+  that matter is the fastest way here and packs a quarter fewer tokens.
+
+The counts of tokens are the engine's estimate (about four characters a
+token); the tools say so (`tokens_estimated`).
+
 ## Writes with vectors on the one writer (`crates/grafeno/examples/vector_writes.rs`)
 
 A database file with immediate durability, on a laptop's NVMe SSD

@@ -93,6 +93,12 @@ pub struct ContextOptions {
     /// common (Jaccard, from 0 to 1) to be one; `None`, the default, keeps
     /// every item. The tools use [`REDUNDANT`].
     pub redundancy: Option<f64>,
+    /// Leave out the first this many candidates: the next part of a
+    /// context already read.
+    pub skip: usize,
+    /// Pack each item next to those it is related to, so that what goes
+    /// together reads together; otherwise in score order.
+    pub group: bool,
 }
 
 /// The share of common words past which the tools take two items for one.
@@ -114,6 +120,8 @@ impl ContextOptions {
             count_tokens: estimate_tokens,
             communities: 0,
             redundancy: None,
+            skip: 0,
+            group: false,
         }
     }
 }
@@ -155,6 +163,54 @@ pub struct Context {
     /// Items left out as nearly the same as one packed: (left out, kept).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub redundant: Vec<(NodeId, NodeId)>,
+    /// Whether `tokens` is an estimate ([`estimate_tokens`]) rather than a
+    /// count by the model's own tokenizer, passed in `count_tokens`.
+    pub tokens_estimated: bool,
+}
+
+/// `nodes` in score order, each followed by those it is related to (and
+/// those by theirs), so that what goes together is packed together.
+fn grouped(read: &ReadTx, ns: &str, nodes: Vec<(Node, f32)>) -> Result<Vec<(Node, f32)>> {
+    let at: HashMap<NodeId, usize> = nodes
+        .iter()
+        .enumerate()
+        .map(|(i, (node, _))| (node.id, i))
+        .collect();
+    let mut related: Vec<Vec<usize>> = vec![Vec::new(); nodes.len()];
+    for (i, (node, _)) in nodes.iter().enumerate() {
+        for (_, other) in read.neighbor_ids(ns, node.id, Direction::Both, &EdgeFilter::any())? {
+            if let Some(&j) = at.get(&other)
+                && j != i
+                && !related[i].contains(&j)
+            {
+                related[i].push(j);
+            }
+        }
+        related[i].sort_unstable();
+    }
+    let mut order = Vec::with_capacity(nodes.len());
+    let mut taken = vec![false; nodes.len()];
+    for start in 0..nodes.len() {
+        if taken[start] {
+            continue;
+        }
+        let mut stack = vec![start];
+        while let Some(i) = stack.pop() {
+            if taken[i] {
+                continue;
+            }
+            taken[i] = true;
+            order.push(i);
+            // The best related first: pushed last.
+            for &j in related[i].iter().rev() {
+                if !taken[j] {
+                    stack.push(j);
+                }
+            }
+        }
+    }
+    let mut slots: Vec<Option<(Node, f32)>> = nodes.into_iter().map(Some).collect();
+    Ok(order.into_iter().filter_map(|i| slots[i].take()).collect())
 }
 
 /// The words of a text, normalized, for comparing items.
@@ -227,6 +283,12 @@ fn add_items(
     context: &mut Context,
 ) -> Result<()> {
     let count = options.count_tokens;
+    context.tokens_estimated =
+        std::ptr::fn_addr_eq(options.count_tokens, estimate_tokens as fn(&str) -> usize);
+    let mut nodes: Vec<(Node, f32)> = nodes.into_iter().skip(options.skip).collect();
+    if options.group {
+        nodes = grouped(read, ns, nodes)?;
+    }
     // The words of what is packed, to leave out what repeats it.
     let mut packed: Vec<(NodeId, HashSet<String>)> = Vec::new();
     for (node, score) in &nodes {

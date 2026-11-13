@@ -489,3 +489,45 @@ pub fn verify(
         }
     }
 }
+
+/// What supports a memory, and what puts it in doubt, as stored: the
+/// factual side of a result, apart from how the search found it.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct Justification {
+    /// What it came from.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub sources: Vec<NodeId>,
+    /// How it is known: origin, certainty, verification.
+    pub known: Value,
+    /// What supports it ([`SUPPORTED_BY`]).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub supported_by: Vec<NodeId>,
+    /// What says the opposite ([`CONTRADICTS`], either way).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub contradicted_by: Vec<NodeId>,
+    /// What replaced it ([`SUPERSEDES`] pointing at it).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub superseded_by: Vec<NodeId>,
+    /// Archived (summarized, obsolete or wrong).
+    pub archived: bool,
+}
+
+/// What supports `node` and what puts it in doubt.
+pub fn justify(read: &grafeno::ReadTx, ns: &str, node: &Node) -> Result<Justification> {
+    use grafeno::{Direction, EdgeFilter};
+    let ends = |direction: Direction, label: &str| -> Result<Vec<NodeId>> {
+        Ok(read
+            .neighbor_ids(ns, node.id, direction, &EdgeFilter::any().label(label))?
+            .into_iter()
+            .map(|(_, other)| other)
+            .collect())
+    };
+    Ok(Justification {
+        sources: node.sources.clone(),
+        known: of_node(node).to_json(),
+        supported_by: ends(Direction::Out, SUPPORTED_BY)?,
+        contradicted_by: ends(Direction::Both, CONTRADICTS)?,
+        superseded_by: ends(Direction::In, SUPERSEDES)?,
+        archived: node.has_label(crate::recall::ARCHIVED),
+    })
+}

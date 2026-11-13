@@ -650,8 +650,8 @@ another group's file. See [docs/cluster-runbooks.md](../../docs/cluster-runbooks
 | Tool       | What it does                                                                   |
 | ---------- | ------------------------------------------------------------------------------ |
 | `remember` | Stores a memory (text, optional name, labels, importance and links). A known `name` updates that entity instead. |
-| `recall`   | Hybrid search; returns ids, names, snippets and why each result matched. Records accesses. |
-| `context`  | Relevant memories and facts as compact text within a token budget, after the community summaries that match. |
+| `recall`   | Hybrid search; returns ids, names, snippets, why each result matched and, apart, what supports it or puts it in doubt (`justification`). `skip` gives the next part. Records accesses. |
+| `context`  | Relevant memories and facts as compact text within a token budget, after the community summaries that match; related memories packed together, the token count said to be an estimate. `skip` gives the next part. |
 | `relate`   | Records a fact (edge) between two nodes, with optional valid dates, `origin`, `certainty` and `method`; says which facts it contradicted under a constraint (and ended). The same current fact is recorded once; `caused_by` needs `sources`. |
 | `update`   | Replaces a node's text, renames it, merges properties (a `null` is stored), removes properties by name (`remove_props`), changes labels or importance. |
 | `forget`   | Invalidates (default), retracts or deletes a fact; deletes a node; deletes a palace, room or locus with what is under it, never a memory. `dry_run` says what would go. |
@@ -678,7 +678,7 @@ another group's file. See [docs/cluster-runbooks.md](../../docs/cluster-runbooks
 | `palace_create` / `palace_create_room` | Makes a palace, or a room in one with its loci (places inside it); returns the one there is when it exists. |
 | `palace_anchor` | Puts an existing memory at a locus of a room, without copying or changing it; with `remove`, takes the anchor away. |
 | `palace_map` | The palaces with their rooms, loci and counts; with `room`, the memories at each locus. |
-| `palace_walk` | From a topic or a node to the memories around it: the rooms that match, what is anchored there, the rooms their doors lead to (a `leads_to` fact between rooms), and what the graph's relations lead to from those. By distance or by relevance; with `budget`, also as text with the facts joining them. |
+| `palace_walk` | From a topic or a node to the memories around it: the rooms that match, what is anchored there, the rooms their doors lead to (a `leads_to` fact between rooms), and what the graph's relations lead to from those. By distance or by relevance, following only some relations (`relations`) or the facts true at a time (`valid_at`); each memory says how it was found (`found_by`, `via`) and, apart, what supports it (`justification`). With `budget`, also as text with the facts joining them. |
 | `palace_review` | Proposals to arrange a palace better (split, merge, move, empty places, rooms for unplaced communities), each with its reason; nothing applied. |
 | `palace_reflect` | What is known about a topic, a room or a node, and what is not: counted by kind and origin, uncertain, conflicts, out of date, gaps (open questions among them), what to check next; each item with its record. Writes nothing. |
 | `palace_enter` | A room's context for the start of a session: its memories and facts as text within a token budget, and the latest checkpoint about the room. |

@@ -117,7 +117,7 @@ for, its name or its id will do.
 | `palace_create_room` | yes | Makes a room in a palace, with its entrance and the loci asked for; or returns the one of that name. |
 | `palace_anchor` | yes | Puts an existing memory at a locus of a room (the entrance by default), with an optional note; makes the locus when it is missing. With `remove`, takes the anchor away. Returns every place the memory is at. |
 | `palace_map` | no | With no arguments, every palace with its rooms, loci and counts. With `palace`, that palace. With `room`, that room and the memories at each locus. |
-| `palace_walk` | no | From a `topic` or a node (`from`): the rooms and loci that match, the memories anchored there, the anchored memories that match, the rooms their doors lead to, and what the graph's relations lead to from those, up to `hops` (2 by default, 3 at most). `order`: `distance` (default) or `relevance`; `budget`: also the memories reached and the facts joining them as text within that many tokens. |
+| `palace_walk` | no | From a `topic` or a node (`from`): the rooms and loci that match, the memories anchored there, the anchored memories that match, the rooms their doors lead to, and what the graph's relations lead to from those, up to `hops` (2 by default, 3 at most). `order`: `distance` (default) or `relevance`; `relations` and `valid_at` narrow what is followed; `skip` gives the next part; `budget`: also the memories reached and the facts joining them as text within that many tokens. Each memory says how it was found (`found_by`) and what supports it (`justification`). |
 | `palace_enter` | no | A room's context for the start of a session: its loci, its memories (strongest first) and the facts that connect them as text within a token `budget`, and the latest checkpoint about the room. |
 | `palace_review` | no | Proposals to arrange a palace better, each with its reason and the call that carries it out; nothing applied (see [below](#review-removal-and-undoing)). |
 | `palace_reflect` | no | What is known about a topic, a room or a node, and what is not: known, uncertain, conflicts, stale, gaps, what to check next (see [below](#reflection)). |
@@ -305,8 +305,11 @@ Added in phase 3 of the [plan](mental-palace/IMPLEMENTATION_PLAN.md).
   `leads_to` between memories is an ordinary fact.
 - **Relevance.** With `order: "relevance"`, a walk gathers up to ten times
   its limit, ranks what it reached by how well its words match the topic
-  (the full-text score), then by distance, and keeps the best. Each
-  memory says its `relevance`.
+  (the full-text score), then by distance, and keeps the best. A memory
+  reached through relations inherits half the relevance of the one it
+  was reached from per relation, when that is more than its own (since
+  phase 9 of the [roadmap](mental-palace/ROADMAP.md)). Each memory says
+  its `relevance`.
 - **A context.** With `budget`, a walk also packs the memories it reached,
   in its order, and the facts that join them, into that many tokens: a
   question that needs several memories joined is answered by the text,

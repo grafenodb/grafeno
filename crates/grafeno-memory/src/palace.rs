@@ -737,6 +737,12 @@ pub struct WalkQuery {
     /// Also pack the memories reached, in their order, and the facts that
     /// join them, into a context of this many tokens.
     pub budget: Option<usize>,
+    /// Follow only relations with these labels (all when empty).
+    pub relations: Vec<String>,
+    /// Follow only facts true at this time.
+    pub valid_at: Option<Timestamp>,
+    /// Leave out the first this many memories: the next part of a walk.
+    pub skip: usize,
 }
 
 /// How a walk orders the memories it reached.
@@ -761,6 +767,9 @@ impl Default for WalkQuery {
             limit: 20,
             order: WalkOrder::Distance,
             budget: None,
+            relations: Vec::new(),
+            valid_at: None,
+            skip: 0,
         }
     }
 }
@@ -804,6 +813,21 @@ impl WalkQuery {
         self.budget = Some(budget);
         self
     }
+
+    pub fn relation(mut self, label: impl Into<String>) -> Self {
+        self.relations.push(label.into());
+        self
+    }
+
+    pub fn valid_at(mut self, at: Timestamp) -> Self {
+        self.valid_at = Some(at);
+        self
+    }
+
+    pub fn skip(mut self, skip: usize) -> Self {
+        self.skip = skip;
+        self
+    }
 }
 
 /// A palace, room or locus a walk went through.
@@ -845,8 +869,10 @@ pub struct Reached {
     /// The memory found in the palace the walk came from (itself at 0
     /// hops), or the room whose door led to it.
     pub origin: NodeId,
-    /// How well its words match the topic, when the walk was ordered by
-    /// relevance (0: not at all).
+    /// How relevant it is to the topic, when the walk was ordered by
+    /// relevance: how well its words match it, or half the relevance of
+    /// the memory it was reached from per relation, whichever is more (0:
+    /// not at all).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub relevance: Option<f32>,
     /// The relations followed from `origin`, in order.
@@ -855,6 +881,14 @@ pub struct Reached {
     /// Where it is anchored.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub places: Vec<Place>,
+    /// How the walk found it: the algorithm's side.
+    pub found_by: String,
+    /// Its importance decayed since its last use, by which reached
+    /// memories are ordered within a distance.
+    pub strength: f32,
+    /// What supports it and what puts it in doubt: the factual side, apart
+    /// from how it was found.
+    pub justification: crate::knowledge::Justification,
 }
 
 /// What a walk found.
@@ -1041,11 +1075,16 @@ pub fn walk(read: &ReadTx, ns: &str, query: &WalkQuery) -> Result<Walk> {
     // What is anchored at the places found comes first, place by place.
     let mut level: Vec<NodeId> = Vec::new();
     let mut reached: HashMap<NodeId, (usize, NodeId, Vec<Hop>)> = HashMap::new();
+    let mut found_by: HashMap<NodeId, String> = HashMap::new();
     for place in &places {
         for locus in loci_under(read, ns, place)? {
             for (_, node) in anchored(read, ns, locus)? {
                 if !node.has_label(ARCHIVED) && !reached.contains_key(&node.id) {
                     reached.insert(node.id, (0, node.id, Vec::new()));
+                    found_by.insert(
+                        node.id,
+                        format!("anchored in {}, which the query led to", name_of(place)),
+                    );
                     level.push(node.id);
                 }
             }
@@ -1054,20 +1093,37 @@ pub fn walk(read: &ReadTx, ns: &str, query: &WalkQuery) -> Result<Walk> {
     for id in origins {
         if let std::collections::hash_map::Entry::Vacant(slot) = reached.entry(id) {
             slot.insert((0, id, Vec::new()));
+            found_by.insert(
+                id,
+                if query.from == Some(id) {
+                    "the node the walk started from".into()
+                } else {
+                    "its words match the topic, and it has a place in the palace".into()
+                },
+            );
             level.push(id);
         }
     }
 
     let now = Timestamp::now();
     let hidden = structure(read, ns)?;
+    // Which relations a walk follows: these labels, true at that time.
+    let mut follow = EdgeFilter::any();
+    for label in &query.relations {
+        follow = follow.label(label.clone());
+    }
+    if let Some(at) = query.valid_at {
+        follow = follow.valid_at(at);
+    }
     let mut order: Vec<NodeId> = Vec::new();
     // Ordered by relevance, a walk gathers more than it returns, and keeps
     // the best of them.
     let by_relevance = query.order == WalkOrder::Relevance && topic.is_some();
+    let wanted = query.limit.saturating_add(query.skip);
     let gather = if by_relevance {
-        query.limit.saturating_mul(10).max(200)
+        wanted.saturating_mul(10).max(200)
     } else {
-        query.limit
+        wanted
     };
     for distance in 0..=hops {
         // What was found in the palace keeps its order; what was reached
@@ -1092,6 +1148,7 @@ pub fn walk(read: &ReadTx, ns: &str, query: &WalkQuery) -> Result<Walk> {
         if distance == 0 {
             for (id, room, door) in beyond.drain(..) {
                 if let std::collections::hash_map::Entry::Vacant(slot) = reached.entry(id) {
+                    found_by.insert(id, format!("beyond a door of the room, in {}", door.name));
                     slot.insert((1, room, vec![door]));
                     next.push(id);
                 }
@@ -1099,7 +1156,7 @@ pub fn walk(read: &ReadTx, ns: &str, query: &WalkQuery) -> Result<Walk> {
         }
         for id in &level {
             let (_, origin, via) = reached[id].clone();
-            let neighbors = read.neighbors(ns, *id, Direction::Both, &EdgeFilter::any())?;
+            let neighbors = read.neighbors(ns, *id, Direction::Both, &follow)?;
             if neighbors.len() > WALK_FANOUT {
                 continue;
             }
@@ -1121,6 +1178,10 @@ pub fn walk(read: &ReadTx, ns: &str, query: &WalkQuery) -> Result<Walk> {
                     node: node.id,
                     name: title(read, ns, &node)?,
                 });
+                found_by.insert(
+                    node.id,
+                    format!("{} relation(s) from a memory found", distance + 1),
+                );
                 reached.insert(node.id, (distance + 1, origin, via));
                 next.push(node.id);
             }
@@ -1141,6 +1202,23 @@ pub fn walk(read: &ReadTx, ns: &str, query: &WalkQuery) -> Result<Walk> {
                 relevance.insert(hit.node, hit.score);
             }
         }
+        // What a walk reached through relations shares no word with the
+        // topic, yet is about it through the memory it came from: it takes
+        // that memory's relevance, halved at each relation (its own when
+        // higher). Without this, a question that names one thing ranks
+        // every memory that shares a common word above what is joined to
+        // the thing it names.
+        let own = relevance.clone();
+        for id in &order {
+            if let Some((hops, origin, _)) = reached.get(id)
+                && *hops > 0
+                && let Some(from) = own.get(origin)
+            {
+                let inherited = from * RELEVANCE_DECAY.powi(*hops as i32);
+                let score = relevance.entry(*id).or_insert(0.0);
+                *score = score.max(inherited);
+            }
+        }
         let position: HashMap<NodeId, usize> =
             order.iter().enumerate().map(|(at, id)| (*id, at)).collect();
         order.sort_by(|a, b| {
@@ -1152,7 +1230,7 @@ pub fn walk(read: &ReadTx, ns: &str, query: &WalkQuery) -> Result<Walk> {
     }
 
     let mut packed: Vec<(Node, f32)> = Vec::new();
-    for id in order.into_iter().take(query.limit) {
+    for id in order.into_iter().skip(query.skip).take(query.limit) {
         let Some(node) = read.node(ns, id)? else {
             continue;
         };
@@ -1167,6 +1245,9 @@ pub fn walk(read: &ReadTx, ns: &str, query: &WalkQuery) -> Result<Walk> {
             relevance: by_relevance.then(|| score.unwrap_or(0.0)),
             via,
             places: anchors_of(read, ns, id)?,
+            found_by: found_by.remove(&id).unwrap_or_default(),
+            strength: strength(read, ns, &node, now)?,
+            justification: crate::knowledge::justify(read, ns, &node)?,
         });
         if query.budget.is_some() {
             let weight = match score {
@@ -1179,10 +1260,14 @@ pub fn walk(read: &ReadTx, ns: &str, query: &WalkQuery) -> Result<Walk> {
     if let Some(budget) = query.budget {
         let mut options = ContextOptions::with_budget(budget);
         options.redundancy = Some(crate::context::REDUNDANT);
+        options.group = true;
         walk.context = Some(context_of(read, ns, packed, &options)?);
     }
     Ok(walk)
 }
+
+/// The share of a memory's relevance passed on at each relation.
+const RELEVANCE_DECAY: f32 = 0.5;
 
 /// Text matches a walk ordered by relevance looks among.
 const RELEVANCE_CANDIDATES: usize = 1_000;
