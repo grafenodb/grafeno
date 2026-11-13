@@ -655,8 +655,8 @@ mantiene alta indica que las escrituras llegan más rápido de lo que un
 escritor las confirma (cerca de 11 000 escrituras pequeñas por segundo en
 un SSD con durabilidad inmediata, más con `durability = "eventual"`). Las
 escrituras que indexan un texto y un vector cuestan mucho más, y casi todo
-es el grafo vectorial: unas 400 por segundo con 10 000 vectores de 128
-dimensiones, unas 150 con 100 000 (ver
+es el grafo vectorial: unas 500 por segundo con 30 000 vectores de 128
+dimensiones, unas 375 con 100 000 (ver
 [benchmarks](benchmarks.md#writes-with-vectors-on-the-one-writer-cratesgrafenoexamplesvector_writesrs), en
 inglés); las búsquedas no se ralentizan por ellas.
 `grafeno_write_rejected_total` cuenta los 503 por encima del límite de la

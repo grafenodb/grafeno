@@ -630,8 +630,8 @@ Watch `grafeno_write_queue` and `grafeno_write_seconds`: a queue that
 stays up means writes arrive faster than one writer commits them (about
 11 000 small writes a second on an SSD with immediate durability, more
 with `durability = "eventual"`). Writes that index a text and a vector
-cost far more, and most of it is the vector graph: about 400 a second
-with 10 000 vectors of 128 dimensions, about 150 with 100 000 (see
+cost far more, and most of it is the vector graph: about 500 a second
+with 30 000 vectors of 128 dimensions, about 375 with 100 000 (see
 [benchmarks](benchmarks.md#writes-with-vectors-on-the-one-writer-cratesgrafenoexamplesvector_writesrs));
 searches are not slowed by them. `grafeno_write_rejected_total` counts the 503s
 past the queue's limit. Load large exports with `?bulk=true`: they then go

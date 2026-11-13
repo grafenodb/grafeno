@@ -889,7 +889,8 @@ a near miss.
 ## Writes with vectors on the one writer (`crates/grafeno/examples/vector_writes.rs`)
 
 A database file with immediate durability, on a laptop's NVMe SSD
-(Windows 11), release build, 2026-11-12. Each write is a node with a
+(Windows 11), release build, 2026-11-12, before inserts were planned on a
+snapshot (see the end of this section for after). Each write is a node with a
 40-word text (from a 5 000-word vocabulary) and a 128-dimension vector
 (64 clusters); four threads search the graph without pause meanwhile.
 First what each part of a write costs, alone in its transaction and 200
@@ -939,12 +940,44 @@ at the cost of their record and text, but the vectors would still be
 inserted by the one writer (in the bulk lane), so they would fall behind
 by as much as they now wait; searches would miss the newest vectors for
 that long. What raises the ceiling is taking the graph search out of the
-writer: find each new vector's neighbors on a read snapshot, on several
-threads, and leave the writer only the link lists to write, re-checking
-the few that changed meanwhile. Until then: send writes in batches
-(`/batch`, `/ingest`, `?bulk=true`), keep vectors in their own namespace
-or group when a cluster has several, and give write-heavy vector indexes a
-lower `ef_construction` (64 kept recall@10 at the same level on 20 000
+writer, which is what the engine now does:
+
+### Inserts planned on a snapshot
+
+A vector written in a transaction is stored at once and joins the graph
+when the transaction commits. When a commit brings several to a space (a
+group commit, a batch, a background index build), each one's neighbors
+are searched on a read snapshot of what the transaction started from, on
+as many threads as the machine has, against the snapshot's graph and the
+other new vectors (compared one by one); the writer then writes the link
+lists, working out again only those that changed since the snapshot (a
+neighbor two new vectors both chose, a list a removal repaired). The
+graph depends only on the vectors and their order, so the members of a
+cluster that apply the same entry build the same one.
+
+The same benchmark, the version before and after run alternately on the
+same machine (2026-11-12), writes of a node, a 40-word text and a
+128-dimension vector:
+
+| vectors | | vector, ms each in groups of 200 | node + text + vector, ms each | writes/s at most | p50 ms at 100/s | p50 ms at 250/s |
+| --- | --- | --- | --- | --- | --- | --- |
+| 30 000 | before | 1.60 | 2.10 | about 350 | 28 | 399 |
+| 30 000 | planned | 0.72 | 1.07 | about 500 | 22 | 213 |
+| 100 000 | before | 3.16 | 4.11 | about 210 | 189 | 1 197 |
+| 100 000 | planned | 1.26 | 1.65 | about 375 | 44 | 417 |
+
+Searches kept their latency in both (0.7 ms at 30 000 vectors, 1.5 ms at
+100 000). A write alone in its transaction costs what it did: planning
+starts at two new vectors. Building is faster too: `hnsw_recall` inserts
+its 20 000 vectors (in transactions of 1 000) in 4.9 s instead of about
+9 s, with the same recall@10 (0.951 / 0.996 / 1.000 at `ef` 16 / 32 /
+64), and `hnsw_churn` keeps recall@10 at `ef` 64 at 0.999 or above
+through all its rounds. What is left of a vector write on the writer is
+writing about 17 link lists per layer and checking the few that moved;
+past this ceiling, send writes in batches (`/batch`, `/ingest`,
+`?bulk=true`), keep vectors in their own namespace or group when a
+cluster has several, or give write-heavy vector indexes a lower
+`ef_construction` (64 kept recall@10 at the same level on 20 000
 vectors, above).
 
 ## Record encodings (`crates/grafeno/examples/record_formats.rs`)

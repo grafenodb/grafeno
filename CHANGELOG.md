@@ -52,6 +52,17 @@ version (now 18) is upgraded in place, with a copy kept first.
   before vector indexes are compacted: older members rebuild them with
   the default similarity when they replay it.
 
+- **Changed**: new vectors join their graph when the transaction
+  commits. When a commit brings several to a space (a group commit, a
+  batch, a background index build), their neighbors are searched on a
+  read snapshot on several threads, and the writer only writes the link
+  lists, working out again those that changed meanwhile. With 100 000
+  vectors of 128 dimensions the writer's ceiling for node + text + vector
+  writes went from about 210 to 375 a second and the median latency at
+  100 a second from 189 to 44 ms; recall is unchanged. Members of a
+  cluster that apply the same entry build the same graph. A write alone
+  in its transaction costs what it did (#18).
+
 ## 0.2.1 (2026-11-11)
 
 The same database layout (18), HTTP API (version 1) and log entry format

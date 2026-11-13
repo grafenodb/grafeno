@@ -178,7 +178,7 @@ pub enum Durability {
 /// It allows one writer and many readers at once; each reader sees a fixed
 /// snapshot.
 pub struct Grafeno {
-    db: Database,
+    db: Arc<Database>,
     eventual: AtomicBool,
     /// Commits with eventual durability since the last flush.
     unflushed: AtomicBool,
@@ -429,7 +429,7 @@ impl Grafeno {
         let shared: Arc<Shared> = Arc::default();
         shared.replication.store(replication, Ordering::Relaxed);
         Ok(Self {
-            db,
+            db: Arc::new(db),
             eventual: AtomicBool::new(false),
             unflushed: AtomicBool::new(false),
             shared,
@@ -515,6 +515,7 @@ impl Grafeno {
         }
         Ok(WriteTx {
             tx,
+            database: self.db.clone(),
             vectors: vector::Cache::new(self.vector_cache),
             shared: self.shared.clone(),
             actor: None,
@@ -1373,6 +1374,9 @@ impl Actor {
 /// A write transaction. Nothing is visible to others until `commit`.
 pub struct WriteTx {
     pub(crate) tx: WriteTransaction,
+    /// The database, for read snapshots of what this transaction started
+    /// from (vector inserts are planned on one at commit).
+    pub(crate) database: Arc<Database>,
     /// Decoded vectors and links, shared by the vector writes of this transaction.
     pub(crate) vectors: vector::Cache,
     pub(crate) shared: Arc<Shared>,
@@ -1543,6 +1547,8 @@ impl WriteTx {
     }
 
     pub fn commit(mut self) -> Result<()> {
+        // New vectors join their graphs now, all of them at once.
+        vector::flush(&self.tx, &mut self.vectors, &self.database)?;
         self.fill_values()?;
         if let Some(at) = self.log_entry()? {
             self.commit_at = Some(at);

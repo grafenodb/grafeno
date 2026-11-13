@@ -1076,6 +1076,8 @@ impl WriteTx {
         for (id, vector) in &all {
             vector::insert(&self.tx, &mut self.vectors, ns, *id, vector)?;
         }
+        // Into the graph now, to check it.
+        vector::flush(&self.tx, &mut self.vectors, &self.database)?;
         let unreachable_after = {
             let vectors = self.tx.open_table(VECTORS).map_err(storage)?;
             let links = self.tx.open_table(HNSW_LINKS).map_err(storage)?;

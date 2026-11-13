@@ -23,13 +23,23 @@
 //! their vectors. A search can take a filter, applied while the graph is
 //! walked: nodes that fail it are stepped through but not kept, so a
 //! selective filter still finds `limit` results.
+//!
+//! A vector written in a transaction is stored at once and joins the graph
+//! when the transaction commits ([`flush`]). With several new vectors in a
+//! space, the expensive part of each insert, the search for its neighbors,
+//! runs on a read snapshot of what the transaction started from, on several
+//! threads, against the snapshot's graph and the other new vectors; the
+//! writer then only writes the link lists, and works out again the few that
+//! changed since the snapshot. The result depends on the vectors and their
+//! order alone, so every member of a cluster that applies the same entry
+//! builds the same graph.
 
 use std::cmp::{Ordering, Reverse};
 use std::collections::{BinaryHeap, HashMap, HashSet};
 use std::sync::Arc;
 
 use grafeno_core::{Error, NodeId, Result};
-use redb::{ReadableTable, WriteTransaction};
+use redb::{Database, ReadableDatabase, ReadableTable, WriteTransaction};
 use serde::{Deserialize, Serialize};
 
 use crate::Hit;
@@ -449,6 +459,18 @@ pub(crate) struct Cache {
     namespaces: HashMap<String, NamespaceCache>,
     /// The bytes each namespace's cache may take.
     budget: usize,
+    /// Vectors stored in this transaction and not yet in their graph, in
+    /// the order they were written: `(space, id, vector as stored)`.
+    pending: Vec<(String, u128, Arc<[f32]>)>,
+    /// Per space, ids whose vector this transaction removed or replaced: a
+    /// snapshot still has the old one.
+    removed: HashMap<String, HashSet<u128>>,
+    /// Spaces whose tables this transaction changed directly (cleared,
+    /// rebuilt): a snapshot's graph says nothing about them.
+    stale: HashSet<String>,
+    /// Spaces already flushed once in this transaction: a snapshot lacks
+    /// what that flush linked.
+    flushed: HashSet<String>,
 }
 
 impl Default for Cache {
@@ -462,6 +484,10 @@ impl Cache {
         Self {
             namespaces: HashMap::new(),
             budget,
+            pending: Vec::new(),
+            removed: HashMap::new(),
+            stale: HashSet::new(),
+            flushed: HashSet::new(),
         }
     }
 
@@ -473,9 +499,12 @@ impl Cache {
         self.namespaces.get_mut(ns).expect("inserted above")
     }
 
-    /// Drops what is cached for `ns`, after its tables were changed directly.
+    /// Drops what is cached for `ns`, after its tables were changed
+    /// directly: the vectors waiting to join its graph went with them.
     pub(crate) fn forget(&mut self, ns: &str) {
         self.namespaces.remove(ns);
+        self.pending.retain(|(space, _, _)| space != ns);
+        self.stale.insert(ns.to_owned());
     }
 }
 
@@ -691,8 +720,8 @@ where
     }
 }
 
-/// Stores `vector` for `node` and links it into the graph, replacing any
-/// previous vector.
+/// Stores `vector` for `node`, replacing any previous vector; it joins the
+/// graph when the transaction commits ([`flush`]).
 pub(crate) fn insert(
     tx: &WriteTransaction,
     cache: &mut Cache,
@@ -723,21 +752,39 @@ pub(crate) fn insert(
         )));
     }
     meta.dimension = query.len();
-    let (similarity, m) = (meta.similarity, meta.m);
+    meta.count += 1;
+    meta_table
+        .insert(ns, encode(&meta)?.as_slice())
+        .map_err(storage)?;
 
     let id = node.as_u128();
-    let mut vectors = tx.open_table(VECTORS).map_err(storage)?;
-    vectors
+    tx.open_table(VECTORS)
+        .map_err(storage)?
         .insert((ns, id), vector_bytes(&query).as_slice())
         .map_err(storage)?;
     tx.open_table(VECTORS_Q8)
         .map_err(storage)?
         .insert((ns, id), quantize(&query).as_slice())
         .map_err(storage)?;
+    let stored: Arc<[f32]> = Arc::from(query.as_slice());
+    let space = cache.namespace(ns);
+    space.trim(query.len());
+    space.vectors.insert(id, Some(stored.clone()));
+    cache.pending.push((ns.to_owned(), id, stored));
+    Ok(())
+}
+
+/// Links a stored vector into its graph, the way one insert does: searches
+/// the graph as it is in `tx` and writes the lists.
+fn link(tx: &WriteTransaction, cache: &mut Cache, ns: &str, id: u128, query: &[f32]) -> Result<()> {
+    let mut meta_table = tx.open_table(VECTOR_META).map_err(storage)?;
+    let mut meta = read_meta(&meta_table, ns)?
+        .ok_or_else(|| Error::Storage(format!("vector metadata missing for {ns:?}")))?;
+    let (similarity, m) = (meta.similarity, meta.m);
+    let node = NodeId::from_u128(id);
+    let vectors = tx.open_table(VECTORS).map_err(storage)?;
     let mut links = tx.open_table(HNSW_LINKS).map_err(storage)?;
     let cache = cache.namespace(ns);
-    cache.trim(query.len());
-    cache.vectors.insert(id, Some(Arc::from(query.as_slice())));
     let level = level_of(node, m);
 
     if let Some(entry) = meta.entry {
@@ -751,7 +798,7 @@ pub(crate) fn insert(
             cache: Some(&mut *cache),
             quantized: false,
         }
-        .descend(&query, entry, level.min(entry_level))?;
+        .descend(query, entry, level.min(entry_level))?;
 
         for layer in (0..=level.min(entry_level)).rev() {
             // Read phase: compute every link list of this layer…
@@ -764,7 +811,7 @@ pub(crate) fn insert(
                 cache: Some(&mut *cache),
                 quantized: false,
             };
-            let mut found = space.search_layer(&query, &entries, meta.ef_construction, layer)?;
+            let mut found = space.search_layer(query, &entries, meta.ef_construction, layer)?;
             // Links left pointing at this id (from before it lost its vector)
             // lead the search back to the node itself: never its own neighbor.
             found.retain(|Scored(_, other)| *other != id);
@@ -793,12 +840,413 @@ pub(crate) fn insert(
     } else {
         meta.entry = Some(node);
     }
-
-    meta.count += 1;
     meta_table
         .insert(ns, encode(&meta)?.as_slice())
         .map_err(storage)?;
     Ok(())
+}
+
+/// Below this many new vectors in a space, a flush links them one by one:
+/// planning would not pay for its threads.
+const PLAN_MIN: usize = 2;
+/// Above this many, too: the other new vectors are candidate neighbors of
+/// each, compared one by one.
+const PLAN_MAX: usize = 4_096;
+
+/// Links the vectors written in this transaction into their graphs. Each
+/// space's new vectors are planned on a read snapshot of `database` (what
+/// this transaction started from) when there are several, else linked one
+/// by one.
+pub(crate) fn flush(tx: &WriteTransaction, cache: &mut Cache, database: &Database) -> Result<()> {
+    if cache.pending.is_empty() {
+        return Ok(());
+    }
+    let pending = std::mem::take(&mut cache.pending);
+    let mut spaces: Vec<(String, Vec<NewVector>)> = Vec::new();
+    for (space, id, vector) in pending {
+        match spaces.iter_mut().find(|(name, _)| *name == space) {
+            Some((_, items)) => items.push((id, vector)),
+            None => spaces.push((space, vec![(id, vector)])),
+        }
+    }
+    for (space, items) in spaces {
+        // Only vectors still stored: a later write may have removed them.
+        let items: Vec<(u128, Arc<[f32]>)> = {
+            let vectors = tx.open_table(VECTORS).map_err(storage)?;
+            let mut kept = Vec::with_capacity(items.len());
+            for (id, vector) in items {
+                if vectors
+                    .get((space.as_str(), id))
+                    .map_err(storage)?
+                    .is_some()
+                {
+                    kept.push((id, vector));
+                }
+            }
+            kept
+        };
+        let planned = (PLAN_MIN..=PLAN_MAX).contains(&items.len())
+            && !cache.stale.contains(&space)
+            && !cache.flushed.contains(&space);
+        if planned {
+            plan_and_apply(tx, cache, database, &space, &items)?;
+        } else {
+            for (id, vector) in &items {
+                link(tx, cache, &space, *id, vector)?;
+            }
+        }
+        cache.flushed.insert(space);
+    }
+    Ok(())
+}
+
+/// A vector waiting to join its graph: its node, and the vector as stored.
+type NewVector = (u128, Arc<[f32]>);
+
+/// What one new vector's insert will write, worked out on a snapshot.
+struct Plan {
+    id: u128,
+    level: u8,
+    /// Per layer, its own neighbors.
+    own: Vec<Vec<u128>>,
+    /// Per layer, each neighbor that gains it: the neighbor's list in the
+    /// snapshot (`None` for another new vector) and its list with this one.
+    gains: Vec<Vec<Gain>>,
+}
+
+type Gain = (u128, Option<Arc<[u128]>>, Vec<u128>);
+
+/// The heuristic of [`Space::select`], over vectors from `vector`.
+fn select_from(
+    candidates: &[Scored],
+    m: usize,
+    similarity: Similarity,
+    vector: &mut dyn FnMut(u128) -> Result<Option<Arc<[f32]>>>,
+) -> Result<Vec<u128>> {
+    let mut chosen: Vec<(u128, Arc<[f32]>)> = Vec::new();
+    let mut skipped = Vec::new();
+    for &Scored(distance, id) in candidates {
+        if chosen.len() >= m {
+            break;
+        }
+        let Some(found) = vector(id)? else {
+            continue;
+        };
+        if chosen
+            .iter()
+            .all(|(_, other)| similarity.distance(&found, other) > distance)
+        {
+            chosen.push((id, found));
+        } else {
+            skipped.push(id);
+        }
+    }
+    let mut out: Vec<u128> = chosen.into_iter().map(|(id, _)| id).collect();
+    out.extend(skipped.into_iter().take(m.saturating_sub(out.len())));
+    Ok(out)
+}
+
+/// [`Space::prune`] over vectors from `vector`.
+fn prune_from(
+    base: u128,
+    links: &[u128],
+    m: usize,
+    similarity: Similarity,
+    vector: &mut dyn FnMut(u128) -> Result<Option<Arc<[f32]>>>,
+) -> Result<Vec<u128>> {
+    let Some(base_vector) = vector(base)? else {
+        return Ok(Vec::new());
+    };
+    let mut scored = Vec::new();
+    for &id in links {
+        if id == base {
+            continue;
+        }
+        if let Some(other) = vector(id)? {
+            scored.push(Scored(similarity.distance(&base_vector, &other), id));
+        }
+    }
+    scored.sort();
+    scored.dedup_by_key(|item| item.1);
+    select_from(&scored, m, similarity, vector)
+}
+
+/// Plans each new vector of `space` on a snapshot, on several threads, then
+/// writes the plans in order.
+fn plan_and_apply(
+    tx: &WriteTransaction,
+    cache: &mut Cache,
+    database: &Database,
+    space: &str,
+    items: &[(u128, Arc<[f32]>)],
+) -> Result<()> {
+    let meta = {
+        let table = tx.open_table(VECTOR_META).map_err(storage)?;
+        read_meta(&table, space)?
+            .ok_or_else(|| Error::Storage(format!("vector metadata missing for {space:?}")))?
+    };
+    let (similarity, m, ef) = (meta.similarity, meta.m, meta.ef_construction);
+    let removed: HashSet<u128> = cache.removed.get(space).cloned().unwrap_or_default();
+    let new: HashMap<u128, Arc<[f32]>> = items.iter().cloned().collect();
+    let threads = std::thread::available_parallelism()
+        .map_or(1, |n| n.get())
+        .min(items.len())
+        .max(1);
+    let budget = cache.budget / threads;
+    let context = Planning {
+        items,
+        space,
+        similarity,
+        m,
+        ef,
+        removed: &removed,
+        new: &new,
+    };
+
+    // Each thread plans every `threads`-th vector on its own snapshot: all
+    // see the same commit, as this transaction holds the only writer.
+    let planned: Vec<Result<Vec<(usize, Plan)>>> = std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..threads)
+            .map(|first| {
+                let context = &context;
+                scope.spawn(move || -> Result<Vec<(usize, Plan)>> {
+                    let read = database.begin_read().map_err(storage)?;
+                    let vectors = read.open_table(VECTORS).map_err(storage)?;
+                    let links = read.open_table(HNSW_LINKS).map_err(storage)?;
+                    let entry = {
+                        let table = read.open_table(VECTOR_META).map_err(storage)?;
+                        read_meta(&table, context.space)?.and_then(|meta| meta.entry)
+                    };
+                    let mut local = NamespaceCache::new(budget);
+                    let mut out = Vec::new();
+                    for at in (first..context.items.len()).step_by(threads) {
+                        out.push((at, context.plan(at, entry, &vectors, &links, &mut local)?));
+                    }
+                    Ok(out)
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .map(|handle| {
+                handle
+                    .join()
+                    .unwrap_or_else(|_| Err(Error::Storage("planning a vector panicked".into())))
+            })
+            .collect()
+    });
+    let mut plans: Vec<Option<Plan>> = (0..items.len()).map(|_| None).collect();
+    for thread in planned {
+        for (at, plan) in thread? {
+            plans[at] = Some(plan);
+        }
+    }
+
+    // The writer's part: the lists, checked against what changed since.
+    let vectors = tx.open_table(VECTORS).map_err(storage)?;
+    let mut links = tx.open_table(HNSW_LINKS).map_err(storage)?;
+    let mut meta_table = tx.open_table(VECTOR_META).map_err(storage)?;
+    let ns_cache = cache.namespace(space);
+    for plan in plans.into_iter().flatten() {
+        let id = plan.id;
+        for layer in 0..=plan.level {
+            let max = max_links(layer, m);
+            let mut writes: Vec<(u128, Vec<u128>)> = Vec::new();
+            {
+                let mut live = Space {
+                    ns: space,
+                    similarity,
+                    m,
+                    vectors: &vectors,
+                    links: &links,
+                    cache: Some(&mut *ns_cache),
+                    quantized: false,
+                };
+                // Its own list, with what earlier new vectors already linked
+                // to it.
+                let current = live.links(id, layer)?;
+                let mut own: Vec<u128> = Vec::new();
+                for &other in &plan.own[layer as usize] {
+                    if live.vector(other)?.is_some() {
+                        own.push(other);
+                    }
+                }
+                if !current.is_empty() {
+                    for &other in current.iter() {
+                        if !own.contains(&other) {
+                            own.push(other);
+                        }
+                    }
+                    if own.len() > max {
+                        own = live.prune(id, &own, max)?;
+                    }
+                }
+                writes.push((id, own));
+                // Each neighbor that gains it: the planned list when the
+                // neighbor's list is still the snapshot's, else worked out
+                // again from its list as it is now.
+                for (neighbor, snapshot, planned) in &plan.gains[layer as usize] {
+                    if live.vector(*neighbor)?.is_none() {
+                        continue;
+                    }
+                    let current = live.links(*neighbor, layer)?;
+                    let list = match snapshot {
+                        Some(snapshot) if *snapshot == current => planned.clone(),
+                        _ => {
+                            let mut list = current.to_vec();
+                            if !list.contains(&id) {
+                                list.push(id);
+                            }
+                            if list.len() > max {
+                                list = live.prune(*neighbor, &list, max)?;
+                            }
+                            list
+                        }
+                    };
+                    writes.push((*neighbor, list));
+                }
+            }
+            for (node, list) in writes {
+                links
+                    .insert((space, node, layer), links_bytes(&list).as_slice())
+                    .map_err(storage)?;
+                ns_cache.links.insert((node, layer), list.into());
+            }
+        }
+        let mut meta = read_meta(&meta_table, space)?
+            .ok_or_else(|| Error::Storage(format!("vector metadata missing for {space:?}")))?;
+        if meta
+            .entry
+            .is_none_or(|entry| plan.level > level_of(entry, m))
+        {
+            meta.entry = Some(NodeId::from_u128(id));
+            meta_table
+                .insert(space, encode(&meta)?.as_slice())
+                .map_err(storage)?;
+        }
+    }
+    Ok(())
+}
+
+/// What planning the new vectors of one space shares.
+struct Planning<'a> {
+    items: &'a [(u128, Arc<[f32]>)],
+    space: &'a str,
+    similarity: Similarity,
+    m: usize,
+    ef: usize,
+    /// Ids whose vector this transaction removed or replaced.
+    removed: &'a HashSet<u128>,
+    /// The new vectors, by id.
+    new: &'a HashMap<u128, Arc<[f32]>>,
+}
+
+impl Planning<'_> {
+    /// The plan of `items[at]`: its neighbors among the snapshot's graph
+    /// (the vectors this transaction removed or replaced left out) and the
+    /// other new vectors, compared one by one, chosen as an insert chooses
+    /// them; and the lists of the neighbors that gain it.
+    fn plan<V, L>(
+        &self,
+        at: usize,
+        entry: Option<NodeId>,
+        vectors: &V,
+        links: &L,
+        local: &mut NamespaceCache,
+    ) -> Result<Plan>
+    where
+        V: ReadableTable<RecordKey, &'static [u8]>,
+        L: ReadableTable<LinkKey, &'static [u8]>,
+    {
+        let (id, query) = (self.items[at].0, self.items[at].1.clone());
+        let (similarity, m) = (self.similarity, self.m);
+        let level = level_of(NodeId::from_u128(id), m);
+        let mut snapshot = Space {
+            ns: self.space,
+            similarity,
+            m,
+            vectors,
+            links,
+            cache: Some(local),
+            quantized: false,
+        };
+        let mut found: Vec<Vec<Scored>> = vec![Vec::new(); level as usize + 1];
+        if let Some(entry) = entry {
+            let top = level.min(level_of(entry, m));
+            let mut entries = snapshot.descend(&query, entry, top)?;
+            for layer in (0..=top).rev() {
+                let layer_found = snapshot.search_layer(&query, &entries, self.ef, layer)?;
+                found[layer as usize] = layer_found
+                    .iter()
+                    .copied()
+                    .filter(|Scored(_, other)| {
+                        *other != id
+                            && !self.removed.contains(other)
+                            && !self.new.contains_key(other)
+                    })
+                    .collect();
+                entries = layer_found;
+            }
+        }
+        let mut own = Vec::with_capacity(level as usize + 1);
+        let mut gains = Vec::with_capacity(level as usize + 1);
+        for layer in 0..=level {
+            let mut candidates = std::mem::take(&mut found[layer as usize]);
+            for (other, other_vector) in self.items {
+                if *other != id && level_of(NodeId::from_u128(*other), m) >= layer {
+                    candidates.push(Scored(similarity.distance(&query, other_vector), *other));
+                }
+            }
+            candidates.sort();
+            let mut seen = HashSet::new();
+            candidates.retain(|Scored(_, other)| seen.insert(*other));
+            candidates.truncate(self.ef);
+            let chosen = select_from(&candidates, m, similarity, &mut |other| {
+                self.vector(&mut snapshot, other)
+            })?;
+            let max = max_links(layer, m);
+            let mut layer_gains = Vec::with_capacity(chosen.len());
+            for &neighbor in &chosen {
+                if self.new.contains_key(&neighbor) {
+                    layer_gains.push((neighbor, None, Vec::new()));
+                    continue;
+                }
+                let before = snapshot.links(neighbor, layer)?;
+                let mut list = before.to_vec();
+                list.push(id);
+                if list.len() > max {
+                    list = prune_from(neighbor, &list, max, similarity, &mut |other| {
+                        self.vector(&mut snapshot, other)
+                    })?;
+                }
+                layer_gains.push((neighbor, Some(before), list));
+            }
+            own.push(chosen);
+            gains.push(layer_gains);
+        }
+        Ok(Plan {
+            id,
+            level,
+            own,
+            gains,
+        })
+    }
+
+    /// A vector as the transaction has it: a new one, none for one it
+    /// removed, else the snapshot's.
+    fn vector<V, L>(&self, snapshot: &mut Space<'_, V, L>, id: u128) -> Result<Option<Arc<[f32]>>>
+    where
+        V: ReadableTable<RecordKey, &'static [u8]>,
+        L: ReadableTable<LinkKey, &'static [u8]>,
+    {
+        if let Some(fresh) = self.new.get(&id) {
+            return Ok(Some(fresh.clone()));
+        }
+        if self.removed.contains(&id) {
+            return Ok(None);
+        }
+        snapshot.vector(id)
+    }
 }
 
 /// Removes the vector of `node` and reconnects its neighbors. Returns whether
@@ -818,6 +1266,17 @@ pub(crate) fn remove(
     if vectors.remove((ns, id)).map_err(storage)?.is_none() {
         return Ok(false);
     }
+    // Not linked yet, it leaves the queue; a snapshot keeps the old vector.
+    cache
+        .pending
+        .retain(|(space, other, _)| !(*other == id && space == ns));
+    cache.removed.entry(ns.to_owned()).or_default().insert(id);
+    let waiting: HashSet<u128> = cache
+        .pending
+        .iter()
+        .filter(|(space, _, _)| space == ns)
+        .map(|(_, other, _)| *other)
+        .collect();
     let (similarity, m) = {
         let table = tx.open_table(VECTOR_META).map_err(storage)?;
         read_meta(&table, ns)?.map_or((Similarity::Cosine, DEFAULT_M), |meta| {
@@ -963,7 +1422,8 @@ pub(crate) fn remove(
     meta.removed += 1;
     meta.repaired += repaired;
     if meta.entry == Some(node) {
-        meta.entry = highest_node(&vectors, ns, m)?;
+        // Vectors waiting to be linked cannot lead a search anywhere yet.
+        meta.entry = highest_node(&vectors, ns, m, &waiting)?;
     }
     meta_table
         .insert(ns, encode(&meta)?.as_slice())
@@ -976,6 +1436,7 @@ fn highest_node(
     vectors: &impl ReadableTable<RecordKey, &'static [u8]>,
     ns: &str,
     m: usize,
+    waiting: &HashSet<u128>,
 ) -> Result<Option<NodeId>> {
     let mut best: Option<(u8, NodeId)> = None;
     for item in vectors.range((ns, 0u128)..).map_err(storage)? {
@@ -983,6 +1444,9 @@ fn highest_node(
         let (key_ns, id) = key.value();
         if key_ns != ns {
             break;
+        }
+        if waiting.contains(&id) {
+            continue;
         }
         let node = NodeId::from_u128(id);
         let level = level_of(node, m);

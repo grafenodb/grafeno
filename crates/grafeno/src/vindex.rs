@@ -248,10 +248,11 @@ impl WriteTx {
     ) -> Result<u64> {
         let spec = def.vector.as_ref().expect("a vector index");
         reset_space(&self.tx, ns, def)?;
+        let space = space_of(ns, &def.name);
+        self.vectors.forget(&space);
         if spec.building.is_some() {
             return Ok(0);
         }
-        let space = space_of(ns, &def.name);
         let mut count = 0;
         for (id, props, _) in records {
             let Some(found) = props.get(&def.key).and_then(vector_of) else {
