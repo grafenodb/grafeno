@@ -11,7 +11,16 @@ API version (`GET /v1/about`, now 1) changes only when a change would
 break a client of the previous one, and the database files' layout
 version (now 18) is upgraded in place, with a copy kept first.
 
-## Unreleased
+## 0.3.0 (2026-11-13)
+
+Agent memory as a place, and knowledge that says how it is known: mental
+palaces, provenance and kinds of knowledge, explainable retrieval,
+knowledge over time and a reflection on what is and is not known, all
+reachable from MCP and, through the new `tools` capability, over HTTP.
+The database layout (18), the HTTP API version (1) and the log entry
+format are those of 0.2: files open as they are, clients of 0.2 keep
+working, and 0.2 and 0.3 members can share a cluster while it is upgraded.
+Security fixes from two outside reviews are included.
 
 - **Added**: the `tools` capability in `GET /v1/about`, so clients know
   the memory tools run over HTTP (`GET /v1/{ns}/tools`,
