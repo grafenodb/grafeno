@@ -593,6 +593,7 @@ lo que le falta a un motor más antiguo en lugar de fallar. Las capacidades:
 | `search.fulltext`, `search.hybrid` | índices de texto completo con un lenguaje de consulta y fragmentos; `POST /v1/{ns}/search` con un modo (16.6) |
 | `recall`, `context`, `memory` | recall híbrido, contexto para un prompt, importancia y accesos |
 | `recall.hubs` | `hubs` y `fanout` en el `expand` del recall: nodos muy conectados atenuados, vecinos por nodo limitados |
+| `tools` | las herramientas de memoria por HTTP: `GET /v1/{ns}/tools` las lista, `POST /v1/{ns}/tools/{name}` ejecuta una (palacios, reflexión, líneas de tiempo, rutas…) |
 | `transactions` | `BEGIN`, `COMMIT` y `ROLLBACK` a lo largo de varias peticiones (16.4) |
 | `indexes.advanced` | índices sobre varias propiedades, sobre aristas y sobre varias etiquetas; restricciones `NOT NULL`, de tipo y de clave (16.5) |
 | `query`, `query.explain`, `batches`, `traversal`, `algorithms` | GQ, `EXPLAIN`, lotes, k-hop, caminos, subgrafos y vecindarios, algoritmos de grafos |

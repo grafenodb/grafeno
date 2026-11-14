@@ -274,24 +274,33 @@ println!("{}", entered.context.rendered);
 
 ## In Grafeno Studio
 
-Grafeno Studio reads an engine through its HTTP API, and a palace needs
-nothing more from it: the subgraph route returns palaces, rooms, loci,
-anchors and the anchored memories as the nodes and edges they are, and a
-query walks them as any path.
+Grafeno Studio has a **Palaces** view, for engines with the `tools`
+capability. It reads palaces through the same tools agents use, over HTTP
+(`POST /v1/{ns}/tools/{name}`), and writes nothing:
+
+- the palaces and their rooms, with how many memories each holds and the
+  doors between them (`palace_map`);
+- a room as an agent enters it: its context within a budget and its
+  latest checkpoint (`palace_enter`); its loci and what is anchored at
+  each (`palace_map` with `room`); what is known and not known there
+  (`palace_reflect`);
+- a walk from a topic, each memory with how it was found and what
+  supports it (`palace_walk`); a route along relations typed as
+  `hit, depends_on*, <maintains` (`palace_route`);
+- a palace's review proposals, each with the call that would carry it
+  out (`palace_review`).
+
+Arranging a palace stays with agents and their tools. Palaces are also
+ordinary nodes and edges, so the graph views draw them and a query walks
+them:
 
 ```
 MATCH (p:Palace)-[:has_room]->(r:Room)-[:has_locus]->(l:Locus)<-[:anchored_at]-(m)
 RETURN p.name, r.name, l.name, m
 ```
 
-A test asks both routes for a palace and checks what comes back
-(`a_palace_is_read_as_ordinary_nodes_and_edges`). Palaces, rooms and
-loci have a `name`, so they are drawn with it, and their labels tell
-them apart.
-
-What was not checked: the Studio's own screen. It is a separate product
-in its own repository, and this work did not open it. There is no view
-made for palaces; they appear in the graph views there are.
+Clients reach the same tools with the TypeScript client's `tools()` and
+`tool()`.
 
 ## Doors, relevance and contexts
 
@@ -545,6 +554,4 @@ None of this exists yet.
 
 - Suggested placement: proposing a room for a new memory, for the agent
   to accept or not.
-- Palace routes in the HTTP API and in the client libraries.
-- A palace view in Grafeno Studio.
 - Palaces shared between namespaces, under the rights there are.

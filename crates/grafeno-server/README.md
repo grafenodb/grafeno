@@ -576,6 +576,7 @@ engine lacks instead of failing. The capabilities:
 | `search.fulltext`, `search.hybrid` | full-text indexes with a query language and fragments; `POST /v1/{ns}/search` with a mode (16.6) |
 | `recall`, `context`, `memory` | hybrid recall, context for a prompt, importance and accesses |
 | `recall.hubs` | `hubs` and `fanout` in recall's `expand`: well-connected nodes damped, neighbors per node capped |
+| `tools` | the memory tools over HTTP: `GET /v1/{ns}/tools` lists them, `POST /v1/{ns}/tools/{name}` runs one (palaces, reflection, timelines, routes…) |
 | `transactions` | `BEGIN`, `COMMIT` and `ROLLBACK` across requests (16.4) |
 | `indexes.advanced` | indexes on several properties, on edges and over several labels; `NOT NULL`, type and key constraints (16.5) |
 | `query`, `query.explain`, `batches`, `traversal`, `algorithms` | GQ, `EXPLAIN`, batches, k-hop, paths, subgraphs and neighborhoods, graph algorithms |

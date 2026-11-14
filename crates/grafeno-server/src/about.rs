@@ -56,6 +56,10 @@ pub const CAPABILITIES: &[&str] = &[
     "memory",
     // `hubs` and `fanout` in recall's graph expansion.
     "recall.hubs",
+    // The memory tools over HTTP: `GET /v1/{ns}/tools` and
+    // `POST /v1/{ns}/tools/{name}`, palaces, reflection and timelines
+    // among them (cognitive memory, phase 5).
+    "tools",
     // Queries (phases 7 and 12): GQ, EXPLAIN, batches.
     "query",
     "query.explain",

@@ -13,6 +13,10 @@ version (now 18) is upgraded in place, with a copy kept first.
 
 ## Unreleased
 
+- **Added**: the `tools` capability in `GET /v1/about`, so clients know
+  the memory tools run over HTTP (`GET /v1/{ns}/tools`,
+  `POST /v1/{ns}/tools/{name}`); they did since the cognitive memory's
+  phase 5, unannounced.
 - **Checked**: the graph engine on its own (phase 13). `grafeno-core`,
   `grafeno` and `grafeno-query` depend on nothing of the cognitive layer,
   and their tests pass alone: 290 passed, none failed.
