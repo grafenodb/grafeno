@@ -11,20 +11,28 @@
 # One architecture only: --build-arg TARGETS=x86_64-unknown-linux-musl
 
 # The SELinux module, compiled with the policy tools of RHEL's family.
-FROM almalinux:9 AS selinux
+FROM almalinux:9@sha256:02df05719ef287ebd0df0a1eedb9172a00bd70703aed7b25660e426b8e0d6047 AS selinux
 RUN dnf install -y -q selinux-policy-devel make && dnf clean all
 COPY packaging/linux/selinux /selinux
 WORKDIR /selinux
 RUN make -f /usr/share/selinux/devel/Makefile grafeno.pp
 
-FROM rust:1-slim-trixie AS build
+# Images, tools and the zig wheel are pinned: a new version comes with a
+# commit of this repository, not with whoever publishes them.
+FROM rust:1.99.1-slim-trixie@sha256:f6c4a35d21dbb3c89d7a8d056c193e94fc09037f2b58dd858b09c39a47dd02d7 AS build
 RUN apt-get update \
     && apt-get install -y --no-install-recommends musl-tools rpm dpkg-dev file python3-pip \
-    && pip install --break-system-packages --no-cache-dir ziglang==0.13.0 \
+    && printf '%s\n' "ziglang==0.13.0 \\" \
+        "    --hash=sha256:3ce0c9f16547e5d61b32e0d226926e9a2552ef4b91fccf7ab5ea1a623a77824b \\" \
+        "    --hash=sha256:5714a4d46f9246ba6180a0930e23df2bc8bc26e62b5fe0dc798b4afca1903308" \
+        > /tmp/zig.txt \
+    && pip install --break-system-packages --no-cache-dir --require-hashes -r /tmp/zig.txt \
     && rm -rf /var/lib/apt/lists/*
 RUN rustup target add x86_64-unknown-linux-musl aarch64-unknown-linux-musl
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    cargo install --locked cargo-deb cargo-generate-rpm cargo-zigbuild
+    cargo install --locked --version 3.8.0 cargo-deb \
+    && cargo install --locked --version 0.21.1 cargo-generate-rpm \
+    && cargo install --locked --version 0.24.1 cargo-zigbuild
 WORKDIR /src
 COPY . .
 COPY --from=selinux /selinux/grafeno.pp /selinux/grafeno.pp

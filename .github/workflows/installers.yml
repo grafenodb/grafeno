@@ -38,12 +38,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v4
-      - uses: docker/setup-qemu-action@v3
-      - uses: docker/setup-buildx-action@v3
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
       - name: Build the .tar.gz, .deb and .rpm (x86_64 and aarch64)
         run: docker buildx build -f packaging/linux/Dockerfile --output dist/linux .
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: linux-packages
           path: dist/linux/*
@@ -70,7 +70,7 @@ jobs:
           esac
         }
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: linux-packages
           path: dist
@@ -120,14 +120,16 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master
+        with:
+          toolchain: 1.99.1
       - name: Build grafeno.exe
         run: cargo build --release --locked -p grafeno-server
       - name: Build the setup
         shell: pwsh
         run: |
-          choco install innosetup --no-progress -y
+          choco install innosetup --version 6.7.1 --no-progress -y
           & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" /Q "/DAppVersion=0.0.0" packaging\windows\grafeno.iss
       - name: Install it unattended (its own data folder and port, a virtual account, an administrator)
         shell: pwsh
