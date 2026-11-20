@@ -394,7 +394,7 @@ Los ids son UUID. Los tiempos en las respuestas son microsegundos desde la
 | `GET`    | `/v1/export`                          | `?ns=a,b` (todos por defecto)                           | JSON Lines                    |
 | `POST`   | `/v1/import`                          | JSON Lines (hasta 1 GiB); `?bulk=true` carga por tramos entre otras escrituras | `{namespaces, nodes, edges}`  |
 | `GET`    | `/v1/{ns}/stats`                      |                                                         | estadísticas                  |
-| `POST`   | `/v1/{ns}/compact`                    | `?index=` (un índice vectorial; sin él, los vectores del propio namespace) | reconstruye ese grafo vectorial (admin): `{vectors, dangling_before, unreachable_before, unreachable_after}` |
+| `POST`   | `/v1/{ns}/compact`                    | `?index=` (un índice vectorial; sin él, los vectores del propio namespace) | reconstruye ese grafo vectorial (`update` en el namespace: quien escribe en él): `{vectors, dangling_before, unreachable_before, unreachable_after}` |
 | `GET`    | `/v1/{ns}/vectors/health`             |                                                         | `[{index, dimension, vectors, removed, repaired, churn, building}]`: las eliminaciones de cada grafo vectorial desde que se construyó (`churn` = removed / vectors), solo de su metadata |
 | `GET`    | `/v1/{ns}/vectors/recall`             | `?sample=100&ef=64`                                     | `{sample, ef, recall}`: recall@10 estimado |
 | `GET`    | `/v1/{ns}/check`                      |                                                         | `{…, problems}`               |

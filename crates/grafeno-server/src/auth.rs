@@ -816,10 +816,15 @@ fn namespace_actions(method: &str, rest: &[&str]) -> &'static [Act] {
     let first = rest.first().copied().unwrap_or("");
     // Changing how the namespace works; a webhook also makes the server
     // send requests.
-    let schema = matches!(first, "rebuild" | "compact" | "webhooks" | "indexes")
+    let schema = matches!(first, "rebuild" | "webhooks" | "indexes")
         || (matches!(first, "match-rules" | "constraints") && method != "GET");
     if schema {
         return &[Act::Schema];
+    }
+    // Compacting rebuilds a vector graph that writes wore: it changes no
+    // record and no definition, so whoever writes may keep it in shape.
+    if first == "compact" {
+        return &[Act::Update];
     }
     if first.starts_with("export") {
         return &[Act::Export];

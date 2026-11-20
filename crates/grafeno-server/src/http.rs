@@ -2338,7 +2338,7 @@ async fn rebuild(
     Ok(Json(report))
 }
 
-/// Builds the namespace's vector graph again (admin).
+/// Builds the namespace's vector graph again (whoever writes it).
 #[derive(Deserialize)]
 struct CompactParams {
     /// A vector index; the namespace's own vectors without it.

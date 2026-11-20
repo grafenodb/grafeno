@@ -598,12 +598,28 @@ async fn vector_recall_and_compact_over_http() {
         false,
     )
     .await;
-    let (status, _) = call(&app, &writer, "POST", "/v1/a/compact", None).await;
-    assert_eq!(status, StatusCode::FORBIDDEN, "compacting needs admin");
-    let (status, report) = call(&app, OWNER, "POST", "/v1/a/compact", None).await;
+    let reader = key(
+        &app,
+        "reader",
+        json!([{ "namespace": "a", "role": "read" }]),
+        false,
+    )
+    .await;
+    let (status, _) = call(&app, &reader, "POST", "/v1/a/compact", None).await;
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "compacting needs the right to write"
+    );
+    let (status, _) = call(&app, &writer, "POST", "/v1/b/compact", None).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "in its own namespace only");
+    // A writer keeps its own namespace's vector graph in shape.
+    let (status, report) = call(&app, &writer, "POST", "/v1/a/compact", None).await;
     assert_eq!(status, StatusCode::OK, "{report}");
     assert_eq!(report["vectors"], 1);
     assert_eq!(report["unreachable_after"], 0);
+    let (status, report) = call(&app, OWNER, "POST", "/v1/a/compact", None).await;
+    assert_eq!(status, StatusCode::OK, "{report}");
 }
 
 #[tokio::test]

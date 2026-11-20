@@ -384,7 +384,7 @@ requests accept either that or an ISO 8601 string (`2024-05-01`,
 | `GET`    | `/v1/export`                          | `?ns=a,b` (all by default)                              | JSON Lines                    |
 | `POST`   | `/v1/import`                          | JSON Lines (up to 1 GiB); `?bulk=true` loads in chunks between other writes | `{namespaces, nodes, edges}`  |
 | `GET`    | `/v1/{ns}/stats`                      |                                                         | statistics                    |
-| `POST`   | `/v1/{ns}/compact`                    | `?index=` (a vector index; the namespace's own vectors without it) | rebuilds that vector graph (admin): `{vectors, dangling_before, unreachable_before, unreachable_after}` |
+| `POST`   | `/v1/{ns}/compact`                    | `?index=` (a vector index; the namespace's own vectors without it) | rebuilds that vector graph (`update` on the namespace: whoever writes it): `{vectors, dangling_before, unreachable_before, unreachable_after}` |
 | `GET`    | `/v1/{ns}/vectors/health`             |                                                         | `[{index, dimension, vectors, removed, repaired, churn, building}]`: each vector graph's removals since it was built (`churn` = removed / vectors), from its metadata alone |
 | `GET`    | `/v1/{ns}/vectors/recall`             | `?sample=100&ef=64`                                     | `{sample, ef, recall}`: estimated recall@10 |
 | `GET`    | `/v1/{ns}/check`                      |                                                         | `{…, problems}`               |
