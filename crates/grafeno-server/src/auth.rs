@@ -584,6 +584,16 @@ impl Caller {
         }
     }
 
+    /// Who the caller is, told apart by kind: the server's token, nobody,
+    /// or an account (an account may be named `owner` too).
+    pub fn principal(&self) -> String {
+        match self {
+            Caller::Owner => "token".to_owned(),
+            Caller::Anonymous => "anonymous".to_owned(),
+            Caller::Account { account, .. } => format!("account:{}", account.name),
+        }
+    }
+
     /// What the caller may see and change record by record (`None`: every
     /// record, the owner's token or a superuser).
     pub fn view(&self) -> Option<Arc<grafeno::View>> {

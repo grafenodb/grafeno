@@ -187,13 +187,7 @@ impl Transport for HttpTransport {
 /// empty secret matches nothing: a missing header reads as empty, and a
 /// member with no secret would otherwise take any request.
 pub(crate) fn same_secret(given: &[u8], expected: &[u8]) -> bool {
-    !expected.is_empty()
-        && given.len() == expected.len()
-        && given
-            .iter()
-            .zip(expected)
-            .fold(0u8, |acc, (a, b)| acc | (a ^ b))
-            == 0
+    !expected.is_empty() && crate::http::constant_time_eq(given, expected)
 }
 
 #[derive(Clone)]

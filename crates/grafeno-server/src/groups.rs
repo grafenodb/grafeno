@@ -252,7 +252,7 @@ pub async fn placement(State(state): State<AppState>) -> ApiResult<Json<Value>> 
     let db = state.db.clone();
     let list = tokio::task::spawn_blocking(move || placements(&db))
         .await
-        .map_err(|e| ApiError::internal(e.to_string()))??;
+        .map_err(crate::http::joined)??;
     Ok(Json(json!(
         list.into_iter()
             .map(|(ns, p)| json!({ "namespace": ns, "group": p.group, "moving_to": p.moving_to }))
@@ -293,7 +293,7 @@ pub async fn place(
         )
     })
     .await
-    .map_err(|e| ApiError::internal(e.to_string()))?
+    .map_err(crate::http::joined)?
     .map(Json)
 }
 
@@ -343,7 +343,7 @@ pub async fn import(
         writer.write(move |tx| tx.import_ops(&input.ops, input.changes.clone(), input.at))
     })
     .await
-    .map_err(|e| ApiError::internal(e.to_string()))?
+    .map_err(crate::http::joined)?
     .map_err(ApiError::from)?;
     Ok(Json(json!({ "position": applied(&state) })))
 }
@@ -377,7 +377,7 @@ pub async fn fence(
         })
     })
     .await
-    .map_err(|e| ApiError::internal(e.to_string()))?
+    .map_err(crate::http::joined)?
     .map_err(ApiError::from)?;
     Ok(Json(json!({ "position": applied(&state) })))
 }
@@ -491,13 +491,14 @@ pub async fn set_directory(
         .to_owned();
     let placement: Placement = serde_json::from_value(input["placement"].clone())
         .map_err(|e| ApiError::bad_request(e.to_string()))?;
-    let bytes = serde_json::to_vec(&placement).map_err(|e| ApiError::internal(e.to_string()))?;
+    let bytes =
+        serde_json::to_vec(&placement).map_err(|error| ApiError::internal(error.to_string()))?;
     let writer = state.writer.clone();
     tokio::task::spawn_blocking(move || {
         writer.write(move |tx| tx.put_state(DIRECTORY.0, DIRECTORY.1, &ns, &bytes))
     })
     .await
-    .map_err(|e| ApiError::internal(e.to_string()))?
+    .map_err(crate::http::joined)?
     .map_err(ApiError::from)?;
     Ok(Json(json!({ "position": applied(&state) })))
 }

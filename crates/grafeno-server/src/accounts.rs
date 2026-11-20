@@ -342,6 +342,7 @@ async fn open_session(
         expires_at: later(state.auth.session),
         refresh_hash: auth::hash_secret(&refresh_secret),
         refresh_expires_at: later(state.auth.refresh),
+        replaced_refresh_hash: None,
         created_at: Timestamp::now(),
         refreshed_at: None,
         address,
@@ -426,7 +427,7 @@ pub async fn signin(
     let _turn = auth::password_checks()
         .acquire()
         .await
-        .map_err(|e| ApiError::internal(e.to_string()))?;
+        .map_err(|error| ApiError::internal(error.to_string()))?;
     let account = tokio::task::spawn_blocking(move || -> grafeno::Result<Option<Account>> {
         let account = db.begin_read()?.account(&name)?;
         // A wrong name costs as much as a wrong password.
@@ -440,7 +441,7 @@ pub async fn signin(
         Ok(account.filter(|_| ok))
     })
     .await
-    .map_err(|e| ApiError::internal(e.to_string()))??;
+    .map_err(crate::http::joined)??;
     drop(_turn);
     let Some(account) = account else {
         failed_signin(
@@ -499,6 +500,18 @@ pub async fn refresh(
         .session(&id)?
         .ok_or_else(|| unauthorized("unauthorized", "the session ended"))?;
     if !crate::http::constant_time_eq(hash.as_bytes(), session.refresh_hash.as_bytes()) {
+        // Only the token this session's last refresh replaced shows a
+        // copy; any other secret is just wrong, and ends nothing.
+        let reused = session
+            .replaced_refresh_hash
+            .as_ref()
+            .is_some_and(|used| crate::http::constant_time_eq(hash.as_bytes(), used.as_bytes()));
+        if !reused {
+            return Err(unauthorized(
+                "unauthorized",
+                "not this session's refresh token",
+            ));
+        }
         let ended = id.clone();
         let account = session.account.clone();
         crate::http::write(&state, move |tx| {
@@ -540,6 +553,7 @@ pub async fn refresh(
         token_hash: auth::hash_secret(&access_secret),
         expires_at: later(state.auth.session),
         refresh_hash: auth::hash_secret(&refresh_secret),
+        replaced_refresh_hash: Some(session.refresh_hash.clone()),
         refreshed_at: Some(Timestamp::now()),
         ..session
     };
@@ -680,7 +694,7 @@ pub async fn change_password(
     let _turn = auth::password_checks()
         .acquire()
         .await
-        .map_err(|e| ApiError::internal(e.to_string()))?;
+        .map_err(|error| ApiError::internal(error.to_string()))?;
     let ok = account
         .password_hash
         .as_deref()

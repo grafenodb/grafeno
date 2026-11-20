@@ -186,6 +186,7 @@ fn write_everything(db: &Grafeno) -> (NodeId, NodeId) {
             expires_at: Timestamp::from_micros(900),
             refresh_hash: "ef".repeat(32),
             refresh_expires_at: Timestamp::from_micros(9_000),
+            replaced_refresh_hash: None,
             created_at: Timestamp::from_micros(7),
             refreshed_at: None,
             address: Some("127.0.0.1".into()),

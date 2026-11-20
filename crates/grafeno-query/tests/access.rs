@@ -164,6 +164,7 @@ fn suspending_ends_sessions_and_explain_names_what_is_missing() {
             expires_at: Timestamp::from_secs(4_000_000_000),
             refresh_hash: "r".into(),
             refresh_expires_at: Timestamp::from_secs(4_000_000_000),
+            replaced_refresh_hash: None,
             created_at: Timestamp::now(),
             refreshed_at: None,
             address: None,

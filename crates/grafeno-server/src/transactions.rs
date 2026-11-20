@@ -176,7 +176,7 @@ impl Transactions {
                     "no transaction {id:?}: it ended, timed out, or never began"
                 ))
             })?;
-        if session.owner != auth::current().name() {
+        if session.owner != auth::current().principal() {
             return Err(ApiError::forbidden_message(
                 "this transaction belongs to another caller",
             ));
@@ -272,13 +272,13 @@ pub async fn begin(state: &AppState, input: BeginInput) -> ApiResult<Value> {
         let db = state.db.clone();
         let read = tokio::task::spawn_blocking(move || db.begin_read())
             .await
-            .map_err(|e| ApiError::internal(e.to_string()))??;
+            .map_err(crate::http::joined)??;
         Work::Read(Arc::new(read))
     } else if let Some(node) = state.writer.cluster().cloned() {
         let wait = settings.wait;
         let transaction = tokio::task::spawn_blocking(move || node.begin_transaction(wait))
             .await
-            .map_err(|e| ApiError::internal(e.to_string()))?
+            .map_err(crate::http::joined)?
             .map_err(|error| match error {
                 grafeno_cluster::Error::Timeout => busy(wait),
                 other => ApiError::from(crate::cluster::engine_error(other)),
@@ -289,11 +289,11 @@ pub async fn begin(state: &AppState, input: BeginInput) -> ApiResult<Value> {
             tokio::time::timeout(settings.wait, transactions.writer.clone().acquire_owned())
                 .await
                 .map_err(|_| busy(settings.wait))?
-                .map_err(|e| ApiError::internal(e.to_string()))?;
+                .map_err(|error| ApiError::internal(error.to_string()))?;
         let db = state.db.clone();
         let tx = tokio::task::spawn_blocking(move || db.begin_write())
             .await
-            .map_err(|e| ApiError::internal(e.to_string()))??;
+            .map_err(crate::http::joined)??;
         Work::Write {
             tx,
             _permit: permit,
@@ -301,7 +301,7 @@ pub async fn begin(state: &AppState, input: BeginInput) -> ApiResult<Value> {
     };
     let session = Arc::new(Session {
         id: grafeno::NodeId::new().to_string(),
-        owner: auth::current().name().to_owned(),
+        owner: auth::current().principal(),
         group: state.group,
         read_only: input.read_only,
         started: Instant::now(),
@@ -403,7 +403,7 @@ pub async fn query(
         result.map(|r| r.to_json()).map_err(ApiError::from)
     })
     .await
-    .map_err(|e| ApiError::internal(e.to_string()))?;
+    .map_err(crate::http::joined)?;
     *session.statements.lock().unwrap_or_else(|e| e.into_inner()) += 1;
     outcome
 }
@@ -440,7 +440,7 @@ pub async fn commit(state: &AppState, id: &str) -> ApiResult<Value> {
         })
     })
     .await
-    .map_err(|e| ApiError::internal(e.to_string()))?;
+    .map_err(crate::http::joined)?;
     match outcome {
         Ok(()) => Ok(json!({ "id": id, "committed": true })),
         Err(message) => Err(ApiError::with_status(
@@ -457,7 +457,7 @@ pub async fn rollback_route(state: &AppState, id: &str) -> ApiResult<Value> {
     let session = state.transactions.take(&session.id).unwrap_or(session);
     tokio::task::spawn_blocking(move || end(&session, false))
         .await
-        .map_err(|e| ApiError::internal(e.to_string()))?
+        .map_err(crate::http::joined)?
         .map_err(ApiError::bad_request)?;
     Ok(json!({ "id": id, "rolled_back": true }))
 }

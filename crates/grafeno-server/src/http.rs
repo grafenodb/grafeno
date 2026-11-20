@@ -850,7 +850,7 @@ pub(crate) async fn write<T: Send + 'static>(
     };
     tokio::task::spawn_blocking(move || writer.write(work))
         .await
-        .map_err(|error| ApiError::internal(error.to_string()))?
+        .map_err(crate::http::joined)?
         .map_err(ApiError::from)
 }
 
@@ -877,7 +877,7 @@ async fn write_bulk<T: Send + 'static>(
         Ok::<T, grafeno::Error>(value)
     })
     .await
-    .map_err(|error| ApiError::internal(error.to_string()))?
+    .map_err(crate::http::joined)?
     .map_err(ApiError::from)
 }
 
@@ -914,7 +914,7 @@ pub(crate) async fn blocking<T: Send + 'static>(
     let view = auth::current().view();
     tokio::task::spawn_blocking(move || work(&Db { db: &db, view }))
         .await
-        .map_err(|error| ApiError::internal(error.to_string()))?
+        .map_err(crate::http::joined)?
         .map_err(ApiError::from)
 }
 
@@ -988,7 +988,7 @@ async fn auth(State(state): State<AppState>, request: Request, next: Next) -> Re
             let state = state.clone();
             tokio::task::spawn_blocking(move || crate::accounts::authenticate(&state, &given))
                 .await
-                .unwrap_or_else(|e| Err(ApiError::internal(e.to_string())))
+                .unwrap_or_else(|error| Err(joined(error)))
         }
         None => Err(ApiError::with_status(
             StatusCode::UNAUTHORIZED,
@@ -1137,8 +1137,23 @@ fn require_all(ns: &str, actions: &[grafeno::Act]) -> ApiResult<()> {
     }
 }
 
+/// A task that panicked or was cancelled inside the server: what it said
+/// goes to the log, never to the client.
+pub(crate) fn joined(error: tokio::task::JoinError) -> ApiError {
+    let reference = NodeId::new();
+    eprintln!("grafeno: request task failed (ref {reference}): {error}");
+    ApiError::internal(format!(
+        "the request failed inside the server (ref {reference})"
+    ))
+}
+
+/// Whether two secrets are equal, in a time that tells nothing of either:
+/// their hashes are compared, so neither a length nor a first difference
+/// ends it early.
 pub(crate) fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
-    a.len() == b.len() && a.iter().zip(b).fold(0, |acc, (x, y)| acc | (x ^ y)) == 0
+    use sha2::{Digest, Sha256};
+    let (a, b) = (Sha256::digest(a), Sha256::digest(b));
+    a.iter().zip(b.iter()).fold(0, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
 /// Absent → `None`, `null` → `Some(None)`, a value → `Some(Some(value))`.
@@ -1943,6 +1958,11 @@ async fn recall_handler(
 ) -> ApiResult<Json<Vec<grafeno_memory::Recalled>>> {
     let query = input.resolve()?;
     let touch = input.touch;
+    // Recording accesses changes the memory: it needs the right to, as
+    // the `touch` route does.
+    if touch {
+        require_all(&ns, &[grafeno::Act::Update])?;
+    }
     let read_ns = ns.clone();
     let results = blocking(&state, move |db| {
         recall(&db.begin_read()?, &read_ns, &query)
@@ -1962,6 +1982,9 @@ async fn context_handler(
 ) -> ApiResult<Json<grafeno_memory::Context>> {
     let (query, options) = input.resolve()?;
     let touch = input.query.touch;
+    if touch {
+        require_all(&ns, &[grafeno::Act::Update])?;
+    }
     let read_ns = ns.clone();
     let context = blocking(&state, move |db| {
         context_for(&db.begin_read()?, &read_ns, &query, &options)
@@ -2149,7 +2172,7 @@ async fn batch(
         result.map_err(|error| (failed_at, error))
     })
     .await
-    .map_err(|error| ApiError::internal(error.to_string()))?;
+    .map_err(crate::http::joined)?;
 
     match outcome {
         Ok(output) => Ok(Json(output)),
@@ -2464,7 +2487,7 @@ async fn import(
     let writer = state.writer.clone();
     let stats = tokio::task::spawn_blocking(move || writer.import(body.as_ref(), chunk))
         .await
-        .map_err(|error| ApiError::internal(error.to_string()))??;
+        .map_err(crate::http::joined)??;
     Ok(Json(stats))
 }
 
@@ -2582,7 +2605,7 @@ async fn query_part(
     };
     tokio::task::spawn_blocking(move || crate::cluster::read_part(&node, &ns, &input, &limits))
         .await
-        .map_err(|error| ApiError::internal(error.to_string()))?
+        .map_err(crate::http::joined)?
         .map(Json)
 }
 
@@ -2788,11 +2811,7 @@ fn idempotency_scope(
 ) -> String {
     use sha2::{Digest, Sha256};
     let mut hash = Sha256::new();
-    let who = match caller {
-        auth::Caller::Owner => "token".to_owned(),
-        auth::Caller::Anonymous => "anonymous".to_owned(),
-        auth::Caller::Account { account, .. } => format!("account:{}", account.name),
-    };
+    let who = caller.principal();
     for part in [who.as_str(), query] {
         hash.update(part.as_bytes());
         hash.update([0]);
@@ -2849,7 +2868,7 @@ async fn run_query_counted(
             Ok(result)
         })
         .await
-        .map_err(|error| ApiError::internal(error.to_string()))?;
+        .map_err(crate::http::joined)?;
     }
     // Writes join the next group commit. A failing query must make the
     // writer discard the group's transaction, so its error travels as an
@@ -3461,7 +3480,7 @@ async fn ingest(
                 })
             })
             .await
-            .map_err(|error| ApiError::internal(error.to_string()))?
+            .map_err(crate::http::joined)?
             .map_err(ApiError::from)
         }
     };
@@ -3557,7 +3576,7 @@ async fn create_webhook(
         let url = input.url.clone();
         tokio::task::spawn_blocking(move || crate::events::destination_allowed(&url))
             .await
-            .map_err(|e| ApiError::internal(e.to_string()))?
+            .map_err(crate::http::joined)?
             .map_err(ApiError::bad_request)?;
     }
     let since = match input.since {
@@ -3647,7 +3666,7 @@ async fn cluster_voters(
     let node = member(&state)?;
     let index = tokio::task::spawn_blocking(move || node.change_membership(&body.voters))
         .await
-        .map_err(|error| ApiError::internal(error.to_string()))?
+        .map_err(crate::http::joined)?
         .map_err(|error| ApiError::from(crate::cluster::engine_error(error)))?;
     Ok(Json(json!({ "index": index })))
 }
@@ -3657,7 +3676,7 @@ async fn cluster_compact(State(state): State<AppState>) -> ApiResult<Json<Value>
     let node = member(&state)?;
     let index = tokio::task::spawn_blocking(move || node.compact())
         .await
-        .map_err(|error| ApiError::internal(error.to_string()))?
+        .map_err(crate::http::joined)?
         .map_err(|error| ApiError::from(crate::cluster::engine_error(error)))?;
     Ok(Json(json!({ "snapshot_index": index })))
 }
@@ -3820,7 +3839,7 @@ async fn extract(
         Ok(report)
     })
     .await
-    .map_err(|error| ApiError::internal(error.to_string()))??;
+    .map_err(crate::http::joined)??;
     Ok(Json(report))
 }
 
@@ -4327,7 +4346,7 @@ async fn run_memory_tool(
         })
     })
     .await
-    .map_err(|error| ApiError::internal(error.to_string()))?;
+    .map_err(crate::http::joined)?;
     match result {
         Ok(result) => Ok(Json(result)),
         Err((_, message)) => Err(ApiError::not_found_message(message)),

@@ -252,6 +252,10 @@ pub struct Session {
     /// Hex SHA-256 of the current refresh token's secret.
     pub refresh_hash: String,
     pub refresh_expires_at: Timestamp,
+    /// Hex SHA-256 of the refresh token the current one replaced: given
+    /// again, it was copied, and the session is ended.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replaced_refresh_hash: Option<String>,
     pub created_at: Timestamp,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub refreshed_at: Option<Timestamp>,

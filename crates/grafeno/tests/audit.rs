@@ -81,6 +81,7 @@ fn churn(db: &Grafeno) {
             expires_at: Timestamp::from_secs(4_000_000_000),
             refresh_hash: "r".into(),
             refresh_expires_at: Timestamp::from_secs(4_000_000_000),
+            replaced_refresh_hash: None,
             created_at: Timestamp::now(),
             refreshed_at: None,
             address: Some("10.0.0.2".into()),

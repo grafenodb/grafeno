@@ -445,3 +445,176 @@ async fn a_cluster_import_does_not_write_identities() {
     let (code, _) = call(&app, &mover, "GET", "/v1/whoami", None).await;
     assert_eq!(code, StatusCode::OK);
 }
+
+async fn anonymous(app: &Router, method: &str, uri: &str, body: Value) -> (StatusCode, Value) {
+    let request = Request::builder()
+        .method(method)
+        .uri(uri)
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(body.to_string()))
+        .unwrap();
+    let response = app.clone().oneshot(request).await.unwrap();
+    let status = response.status();
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    (
+        status,
+        serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+    )
+}
+
+// F-005: a refresh with a wrong secret ended a session whose id was known.
+#[tokio::test]
+async fn a_wrong_refresh_secret_ends_nothing_a_reused_one_ends_the_session() {
+    let app = server();
+    ok(
+        &app,
+        "POST",
+        "/v1/accounts",
+        json!({ "name": "ana", "kind": "user", "password": "her long passphrase" }),
+    )
+    .await;
+    let (code, signed) = anonymous(
+        &app,
+        "POST",
+        "/v1/auth/signin",
+        json!({ "name": "ana", "password": "her long passphrase" }),
+    )
+    .await;
+    assert_eq!(code, StatusCode::OK, "{signed}");
+    let access = signed["access_token"].as_str().unwrap().to_owned();
+    let refresh = signed["refresh_token"].as_str().unwrap().to_owned();
+
+    // The session's id with a made-up secret.
+    let (prefix, _) = refresh.split_once('.').unwrap();
+    let forged = format!("{prefix}.not-the-secret");
+    let (code, _) = anonymous(
+        &app,
+        "POST",
+        "/v1/auth/refresh",
+        json!({ "refresh_token": forged }),
+    )
+    .await;
+    assert_eq!(code, StatusCode::UNAUTHORIZED);
+    let (code, _) = call(&app, &access, "GET", "/v1/whoami", None).await;
+    assert_eq!(code, StatusCode::OK, "the session goes on");
+
+    // A real refresh, then the replaced token again: a copy, so the
+    // session ends.
+    let (code, renewed) = anonymous(
+        &app,
+        "POST",
+        "/v1/auth/refresh",
+        json!({ "refresh_token": refresh }),
+    )
+    .await;
+    assert_eq!(code, StatusCode::OK, "{renewed}");
+    let access = renewed["access_token"].as_str().unwrap().to_owned();
+    let (code, _) = anonymous(
+        &app,
+        "POST",
+        "/v1/auth/refresh",
+        json!({ "refresh_token": refresh }),
+    )
+    .await;
+    assert_eq!(code, StatusCode::UNAUTHORIZED);
+    let (code, _) = call(&app, &access, "GET", "/v1/whoami", None).await;
+    assert_eq!(code, StatusCode::UNAUTHORIZED, "the session ended");
+}
+
+// F-013: an account named `owner` passed for the server's token.
+#[tokio::test]
+async fn an_account_named_owner_is_not_the_servers_token() {
+    let app = server();
+    let impostor = principal(&app, "owner", "s", &["read", "create", "update", "delete"]).await;
+    let begun = ok(&app, "POST", "/v1/s/transactions", json!({})).await;
+    let id = begun["id"].as_str().unwrap().to_owned();
+    // A refusal is audited, and the audit waits for the writer the open
+    // transaction holds: the attempts run aside until the owner ends it.
+    let attempt = |path: String, body: Option<Value>| {
+        let (app, impostor) = (app.clone(), impostor.clone());
+        tokio::spawn(async move { call(&app, &impostor, "POST", &path, body).await })
+    };
+    let query = attempt(
+        format!("/v1/s/transactions/{id}/query"),
+        Some(json!({ "query": "CREATE (:Stolen)" })),
+    );
+    let commit = attempt(format!("/v1/s/transactions/{id}/commit"), None);
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    ok(
+        &app,
+        "POST",
+        &format!("/v1/s/transactions/{id}/rollback"),
+        json!({}),
+    )
+    .await;
+    for attempt in [query, commit] {
+        let (code, body) = attempt.await.unwrap();
+        assert_eq!(code, StatusCode::FORBIDDEN, "{body}");
+    }
+    let rows = ok(
+        &app,
+        "POST",
+        "/v1/s/query",
+        json!({ "query": "MATCH (n:Stolen) RETURN count(n) AS n" }),
+    )
+    .await;
+    assert_eq!(rows["rows"][0][0], json!(0), "{rows}");
+}
+
+// F-023: recall and context recorded accesses for a caller that may only
+// read.
+#[tokio::test]
+async fn recording_accesses_needs_the_right_to_update() {
+    let app = server();
+    ok(
+        &app,
+        "POST",
+        "/v1/s/nodes",
+        json!({ "labels": ["Memory"], "text": "billing outage" }),
+    )
+    .await;
+    let reader = principal(&app, "reader", "s", &["read"]).await;
+    for route in ["recall", "context"] {
+        let uri = format!("/v1/s/{route}");
+        let (code, body) = call(
+            &app,
+            &reader,
+            "POST",
+            &uri,
+            Some(json!({ "text": "billing", "touch": true })),
+        )
+        .await;
+        assert_eq!(code, StatusCode::FORBIDDEN, "{route}: {body}");
+        let (code, body) = call(
+            &app,
+            &reader,
+            "POST",
+            &uri,
+            Some(json!({ "text": "billing" })),
+        )
+        .await;
+        assert_eq!(code, StatusCode::OK, "{route}: {body}");
+    }
+    let writer = principal(&app, "writer", "s", &["read", "update"]).await;
+    let (code, body) = call(
+        &app,
+        &writer,
+        "POST",
+        "/v1/s/recall",
+        Some(json!({ "text": "billing", "touch": true })),
+    )
+    .await;
+    assert_eq!(code, StatusCode::OK, "{body}");
+}
+
+// F-017: the static token compared with an early end on its length.
+#[tokio::test]
+async fn the_static_token_is_compared_whole() {
+    let app = server();
+    for wrong in ["o", "owner-secre", "owner-secret-", "OWNER-SECRET"] {
+        let (code, _) = call(&app, wrong, "GET", "/v1/whoami", None).await;
+        assert_eq!(code, StatusCode::UNAUTHORIZED, "{wrong}");
+    }
+    let (code, _) = call(&app, OWNER, "GET", "/v1/whoami", None).await;
+    assert_eq!(code, StatusCode::OK);
+}

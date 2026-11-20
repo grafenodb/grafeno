@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::auth;
-use crate::http::{ApiError, ApiResult, AppState};
+use crate::http::{ApiResult, AppState};
 
 /// The header that carries the cluster secret between members.
 const SECRET_HEADER: &str = "x-grafeno-cluster";
@@ -260,7 +260,7 @@ pub async fn read(
             }
         })
         .await
-        .map_err(|error| ApiError::internal(error.to_string()))??;
+        .map_err(crate::http::joined)??;
         return Ok(([(header::CONTENT_TYPE, "application/x-ndjson")], lines).into_response());
     }
     if !wants_stream {
@@ -269,7 +269,7 @@ pub async fn read(
         let page: AuditPage =
             tokio::task::spawn_blocking(move || db.begin_read()?.audit(since, limit))
                 .await
-                .map_err(|error| ApiError::internal(error.to_string()))??;
+                .map_err(crate::http::joined)??;
         return Ok(Json(page).into_response());
     }
     let db = state.db.clone();
