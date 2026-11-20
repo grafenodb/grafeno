@@ -1,12 +1,13 @@
 # Security
 
 How Grafeno protects what it holds, what an operator has to do for the
-rest, and what two outside reviews found in November 2026 and what was done
-about each finding.
+rest, and what the outside reviews of November 2026 found and what was
+done about each finding.
 
 - [What the engine does](#what-the-engine-does)
 - [What the operator does](#what-the-operator-does)
 - [Review of November 2026](#review-of-november-2026)
+- [Review of version 0.3.0](#review-of-version-030)
 - [Open decisions](#open-decisions)
 
 ## What the engine does
@@ -99,6 +100,28 @@ has a test that fails without it.
 | `/health` and `/v1/about` say the version publicly | Low | Not changed: clients read them before signing in. |
 | `k-hop` accepts any depth | Medium | Not changed: a walk is bounded by the size of its component. |
 | A member whose Raft thread stopped still answered `/health` 200 | — | The panic is fixed; `/health` does not check the thread yet. |
+
+## Review of version 0.3.0
+
+A review of 0.3.0, focused on who may do what. Its access findings are
+fixed below, each with a test that failed before the change
+(`crates/grafeno-server/tests/security.rs`,
+`crates/grafeno-server/tests/groups_open.rs`); the rest follow.
+
+| Finding | Severity given | What was done |
+| --- | --- | --- |
+| A cluster group's empty file made a server with accounts open again | High | Fixed: each group keeps its own keys; whether the server is open is the first group's. |
+| The `cluster` privilege wrote accounts, keys, sessions and roles through a group import | High | Fixed: only a superuser's import carries them. |
+| `batch` retracted and invalidated without the right to retract, and wrote as nobody | High | Fixed: needs `retract`, and records its caller. |
+| A GQ idempotency key returned another caller's result | High | Fixed: a key stands for its caller and its statement. |
+| A webhook delivered what its creator could not read | High | Fixed: a webhook needs read access to the whole namespace. |
+| GraphML and CSV imports ignored the caller's write restrictions | High | Fixed: they write as their caller. |
+| A group's rights cache did not tell group files apart | Medium | Fixed with the first finding. |
+| A refresh with a wrong secret ended the session it named | Medium | Fixed: only a reused refresh token ends it; a wrong one is refused. |
+| `recall` and `context` with `touch` recorded accesses for a reader | Medium | Fixed: `touch` needs the right to update. |
+| An account named `owner` shared the static token's transactions | Medium | Fixed: transactions belong to a caller by kind and name. |
+| A task's failure message reached the client | Low | Fixed: a reference, the message in the log. |
+| A secret's comparison ended early on a different length | Low | Fixed: hashes compared whole. |
 
 ## Open decisions
 

@@ -11,6 +11,38 @@ API version (`GET /v1/about`, now 1) changes only when a change would
 break a client of the previous one, and the database files' layout
 version (now 18) is upgraded in place, with a copy kept first.
 
+## Unreleased
+
+Fixes from a review of 0.3.0 focused on access; see
+[docs/security.md](docs/security.md#review-of-version-030).
+
+- **Fixed**: on a cluster member with several groups and no static token,
+  a request to a group whose file had no account made the server open
+  again, and every caller its owner. Each group keeps its own keys;
+  whether the server is open is decided by the first group.
+- **Fixed**: a group import by an account with the `cluster` privilege
+  could write accounts, keys, sessions and roles; only a superuser's
+  carries them now.
+- **Fixed**: `POST /v1/{ns}/batch` retracted and invalidated facts without
+  the `retract` right, and recorded no author; it needs the right and
+  writes as its caller.
+- **Fixed**: a GQ idempotency key returned the result of another caller's
+  statement; a key now stands for its caller and statement.
+- **Fixed**: a webhook subscription delivered events its creator could not
+  read; it needs read access to the whole namespace.
+- **Fixed**: GraphML and CSV imports ignored the caller's write
+  restrictions and wrote as nobody; they write as their caller.
+- **Fixed**: a refresh with a wrong secret ended the session it named;
+  only a reused refresh token ends it now.
+- **Fixed**: `recall` and `context` with `touch` recorded accesses for a
+  caller that may only read; `touch` needs the `update` right.
+- **Fixed**: an account named `owner` could use the static token's
+  explicit transactions.
+- **Fixed**: a failed request task sent its message to the client; it
+  gets a reference, and the message goes to the log.
+- **Fixed**: secrets are compared in a time that tells nothing of their
+  length.
+
 ## 0.3.0 (2026-11-13)
 
 Agent memory as a place, and knowledge that says how it is known: mental
