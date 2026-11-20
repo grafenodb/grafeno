@@ -2098,23 +2098,42 @@ async fn batch(
     Path(ns): Path<String>,
     Body(input): Body<BatchInput>,
 ) -> ApiResult<Json<BatchOutput>> {
+    // Taking a fact back needs the right to, as on its own route.
+    let takes_back = input.ops.iter().any(|op| {
+        matches!(
+            op,
+            BatchOp::RetractEdge { .. } | BatchOp::InvalidateEdge { .. }
+        )
+    });
+    if takes_back {
+        require_all(&ns, &[grafeno::Act::Retract])?;
+    }
     let writer = state.writer.clone();
+    // The batch writes as its caller, from where it came, like `write`.
+    let actor = auth::current().actor();
+    let origin = crate::audit::origin();
     let outcome = tokio::task::spawn_blocking(move || {
         let failed_at = Arc::new(std::sync::Mutex::new(None));
         let failed = failed_at.clone();
         let result = writer.write(move |tx| {
+            tx.act_as(actor.clone());
+            tx.set_origin(origin.clone());
             let mut refs = HashMap::new();
             let mut results = Vec::with_capacity(input.ops.len());
+            let mut outcome = Ok(());
             for (index, op) in input.ops.iter().cloned().enumerate() {
                 match apply_op(tx, &ns, op, &mut refs) {
                     Ok(value) => results.push(value),
                     Err(error) => {
                         *failed.lock().expect("not poisoned") = Some(index);
-                        return Err(error);
+                        outcome = Err(error);
+                        break;
                     }
                 }
             }
-            Ok(BatchOutput { results, refs })
+            tx.act_as(None);
+            tx.set_origin(None);
+            outcome.map(|()| BatchOutput { results, refs })
         });
         let failed_at = *failed_at.lock().expect("not poisoned");
         result.map_err(|error| (failed_at, error))
