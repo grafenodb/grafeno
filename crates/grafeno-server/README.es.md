@@ -501,15 +501,19 @@ Los ids son UUID. Los tiempos en las respuestas son microsegundos desde la
 - **filtro** (`filter`): `{labels?, valid_at?, known_at?}`. Sin `known_at`,
   las aristas retractadas se omiten.
 - **consulta de recall**: `{text?, embedding?, limit?, labels?, candidates?,
-  expand?, ranking?, include_archived?, touch?}`, donde `expand` es `true`
+  expand?, ranking?, include_archived?, superseded_weight?, touch?}`, donde `expand` es `true`
   (por defecto), `false`, o `{depth, direction, filter, decay, seeds, hubs,
   fanout}`, donde `hubs` (1 por defecto, 0 lo desactiva) atenúa los nodos
   según su número de aristas y `fanout` (100 por defecto, 0 para todos)
   limita los vecinos que se siguen desde cada nodo;
   `ranking` es `true` (por defecto: la importancia y la recencia cuentan),
   `false`, o `{importance_weight, recency_weight, half_life_days}`; los
-  recuerdos archivados se omiten salvo con `include_archived`; `touch`
-  registra un acceso a cada resultado.
+  recuerdos archivados se omiten salvo con `include_archived`; un recuerdo
+  que un hecho `supersedes` vigente reemplazó tiene su puntuación
+  multiplicada por `superseded_weight` (0,2 por defecto, 1 la deja como
+  está), sin importar quién grabó cada uno, y lo dice en sus señales;
+  `touch` registra un acceso a cada resultado. `context` ordena sus
+  recuerdos del mismo modo.
 - **memory** (en las respuestas de nodos): `{importance, accesses,
   last_access}`.
 

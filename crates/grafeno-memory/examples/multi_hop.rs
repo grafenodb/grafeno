@@ -141,7 +141,7 @@ fn print(read: &ReadTx, results: &[Recalled]) -> grafeno::Result<()> {
                     let unit = if *hops == 1 { "hop" } else { "hops" };
                     why.push(format!("{hops} {unit} from {}", name(*seed)?))
                 }
-                Signal::Memory { .. } => {}
+                Signal::Memory { .. } | Signal::Superseded { .. } => {}
             }
         }
         println!(

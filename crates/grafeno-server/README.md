@@ -489,15 +489,18 @@ requests accept either that or an ISO 8601 string (`2024-05-01`,
 - **filter**: `{labels?, valid_at?, known_at?}`. Without `known_at`, retracted
   edges are left out.
 - **recall query**: `{text?, embedding?, limit?, labels?, candidates?,
-  expand?, ranking?, include_archived?, touch?}`, where `expand` is `true`
+  expand?, ranking?, include_archived?, superseded_weight?, touch?}`, where `expand` is `true`
   (default), `false`, or `{depth, direction, filter, decay, seeds, hubs,
   fanout}`, where `hubs` (default 1, 0 to turn it off) damps nodes by
   their number of edges and `fanout` (default 100, 0 for all) caps the
   neighbors followed from each node;
   `ranking` is `true` (default: importance and recency weigh in), `false`, or
   `{importance_weight, recency_weight, half_life_days}`; archived memories
-  are left out unless `include_archived`; `touch` records an access to each
-  result.
+  are left out unless `include_archived`; a memory that a `supersedes`
+  fact true now replaced has its score multiplied by `superseded_weight`
+  (0.2 by default, 1 to leave it as it is), whoever recorded either, and
+  says so in its signals; `touch` records an access to each result.
+  `context` ranks its memories the same way.
 - **memory** (in node responses): `{importance, accesses, last_access}`.
 
 ### Batches

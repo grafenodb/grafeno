@@ -598,6 +598,16 @@ impl McpServer {
                         format!("{hops} hop(s) from {seed_name}")
                     }
                     Signal::Memory { importance, .. } => format!("importance {importance:.2}"),
+                    Signal::Superseded { by, .. } => {
+                        let newer: Vec<String> = by
+                            .iter()
+                            .map(|id| match names.get(id) {
+                                Some(name) => name.clone(),
+                                None => name_of(&read, ns, *id),
+                            })
+                            .collect();
+                        format!("replaced by {} (ranked lower)", newer.join(", "))
+                    }
                 });
             }
             let mut item = json!({
@@ -2887,6 +2897,7 @@ impl QueryArgs {
             }),
             ranking: Some(Ranking::default()),
             include_archived: self.include_archived,
+            superseded_weight: grafeno_memory::SUPERSEDED_WEIGHT,
             index: self.index.clone(),
             vector_index: None,
             mode: self.mode,

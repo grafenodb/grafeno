@@ -42,6 +42,9 @@ impl Default for Expansion {
     }
 }
 
+/// What a replaced memory's score is multiplied by, by default.
+pub const SUPERSEDED_WEIGHT: f32 = 0.2;
+
 /// The label that archived memories get: recall leaves them out by default.
 pub const ARCHIVED: &str = "Archived";
 
@@ -83,6 +86,10 @@ pub struct RecallQuery {
     pub ranking: Option<Ranking>,
     /// Also return archived memories (label [`ARCHIVED`]).
     pub include_archived: bool,
+    /// What the score of a memory another one replaced (a `supersedes`
+    /// fact true now points at it) is multiplied by: 1 leaves it as it is,
+    /// 0 puts it last. Who recorded either memory does not matter.
+    pub superseded_weight: f32,
     /// A full-text index for the text, with its query language (16.6);
     /// without one, the node text, word by word.
     pub index: Option<String>,
@@ -108,6 +115,7 @@ impl Default for RecallQuery {
             expand: Some(Expansion::default()),
             ranking: Some(Ranking::default()),
             include_archived: false,
+            superseded_weight: SUPERSEDED_WEIGHT,
             index: None,
             vector_index: None,
             mode: None,
@@ -167,6 +175,12 @@ pub enum Signal {
     Memory {
         importance: f32,
         recency: f32,
+    },
+    /// Replaced by these memories (`supersedes`, true now): its score was
+    /// multiplied by `weight`.
+    Superseded {
+        by: Vec<NodeId>,
+        weight: f32,
     },
 }
 
@@ -308,6 +322,27 @@ pub fn recall(read: &ReadTx, ns: &str, query: &RecallQuery) -> Result<Vec<Recall
             .remove(&id)
             .map(|(_, signals)| signals)
             .unwrap_or_default();
+        // A memory something newer replaced goes down, whoever recorded
+        // either.
+        if query.superseded_weight < 1.0 {
+            let by: Vec<NodeId> = read
+                .neighbor_ids(
+                    ns,
+                    id,
+                    Direction::In,
+                    &EdgeFilter::any()
+                        .label(crate::knowledge::SUPERSEDES)
+                        .valid_at(now),
+                )?
+                .into_iter()
+                .map(|(_, other)| other)
+                .collect();
+            if !by.is_empty() {
+                let weight = query.superseded_weight.max(0.0);
+                score *= weight;
+                signals.push(Signal::Superseded { by, weight });
+            }
+        }
         if let Some(ranking) = &query.ranking {
             let state = read.memory(ns, &node)?;
             let recency = state.recency(now, ranking.half_life_secs);

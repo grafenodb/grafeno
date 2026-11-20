@@ -73,7 +73,9 @@ pub use palace::{
     create_locus, create_palace, create_room, enter, find_locus, find_palace, find_room,
     map_palace, map_room, palaces, remove, review, unanchor, walk,
 };
-pub use recall::{ARCHIVED, Expansion, Ranking, RecallQuery, Recalled, Signal, recall};
+pub use recall::{
+    ARCHIVED, Expansion, Ranking, RecallQuery, Recalled, SUPERSEDED_WEIGHT, Signal, recall,
+};
 pub use reconcile::{
     AgentMention, AgentRelation, ExtractOptions, ExtractReport, MENTIONS, MentionRef, Occurrence,
     Plan, Reading, Resolution, ReviewItem, SOURCE_LABELS, extract, extract_batch, ingest,

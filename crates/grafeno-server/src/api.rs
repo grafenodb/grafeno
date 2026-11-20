@@ -212,6 +212,10 @@ pub struct RecallInput {
     /// Also return archived memories.
     #[serde(default)]
     pub include_archived: bool,
+    /// What a replaced memory's score is multiplied by (`supersedes`):
+    /// 0.2 by default, 1 to leave it as it is.
+    #[serde(default)]
+    pub superseded_weight: Option<f32>,
     /// `true` (default) weighs importance and recency, `false` ranks by
     /// relevance alone, or `{importance_weight, recency_weight, half_life_days}`.
     #[serde(default)]
@@ -337,6 +341,9 @@ impl RecallInput {
             expand,
             ranking: self.ranking.resolve(),
             include_archived: self.include_archived,
+            superseded_weight: self
+                .superseded_weight
+                .unwrap_or(grafeno_memory::SUPERSEDED_WEIGHT),
             index: self.index.clone(),
             vector_index: self.vector_index.clone(),
             mode: self.mode,
