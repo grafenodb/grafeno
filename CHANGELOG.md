@@ -11,10 +11,14 @@ API version (`GET /v1/about`, now 1) changes only when a change would
 break a client of the previous one, and the database files' layout
 version (now 18) is upgraded in place, with a copy kept first.
 
-## Unreleased
+## 0.3.1 (2026-11-20)
 
-Fixes from a review of 0.3.0, on access, the network and packaging; see
-[docs/security.md](docs/security.md#review-of-version-030).
+Security fixes from a review of 0.3.0, on access, the network and
+packaging; see [docs/security.md](docs/security.md#review-of-version-030).
+The database layout (18), the HTTP API version (1) and the log entry
+format are those of 0.3.0. A compose cluster now needs
+`GRAFENO_CLUSTER_SECRET`, and a member refuses the example settings'
+secret.
 
 - **Fixed**: on a cluster member with several groups and no static token,
   a request to a group whose file had no account made the server open
