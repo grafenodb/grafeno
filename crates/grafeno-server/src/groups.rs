@@ -319,6 +319,24 @@ pub async fn import(
     State(state): State<AppState>,
     Body(input): Body<ImportInput>,
 ) -> ApiResult<Json<Value>> {
+    // A namespace's move copies its records, never accounts, keys,
+    // sessions or roles: those need the rights to manage them, which the
+    // `cluster` privilege does not give.
+    let identities = input.ops.iter().any(|op| {
+        matches!(
+            op,
+            Op::Principal { .. }
+                | Op::Account { .. }
+                | Op::ApiKey { .. }
+                | Op::Session { .. }
+                | Op::Role { .. }
+        )
+    });
+    if identities && !crate::auth::current().is_owner() {
+        return Err(ApiError::forbidden_message(
+            "a group import cannot write accounts, keys, sessions or roles",
+        ));
+    }
     let input = Arc::new(input);
     let writer = state.writer.clone();
     tokio::task::spawn_blocking(move || {

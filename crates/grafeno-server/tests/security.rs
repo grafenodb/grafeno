@@ -385,3 +385,63 @@ async fn a_webhook_needs_read_access_to_the_whole_namespace() {
     .await;
     assert_eq!(code, StatusCode::OK, "{body}");
 }
+
+// F-002: the `cluster` privilege wrote accounts, keys, sessions and roles
+// through a group import.
+#[tokio::test]
+async fn a_cluster_import_does_not_write_identities() {
+    let app = server();
+    ok(
+        &app,
+        "PUT",
+        "/v1/roles/mover-role",
+        json!({ "privileges": [{ "action": "cluster", "object": { "on": "server" } }] }),
+    )
+    .await;
+    ok(
+        &app,
+        "POST",
+        "/v1/accounts",
+        json!({ "name": "mover", "kind": "service", "roles": ["mover-role"] }),
+    )
+    .await;
+    let made = ok(
+        &app,
+        "POST",
+        "/v1/keys",
+        json!({ "name": "mover-key", "account": "mover" }),
+    )
+    .await;
+    let mover = made["secret"].as_str().unwrap().to_owned();
+
+    // It may not make accounts the ordinary way.
+    let (code, _) = call(
+        &app,
+        &mover,
+        "POST",
+        "/v1/accounts",
+        Some(json!({ "name": "intruder", "kind": "service" })),
+    )
+    .await;
+    assert_eq!(code, StatusCode::FORBIDDEN);
+    for op in [
+        json!({ "op": "account", "name": "intruder", "account": null }),
+        json!({ "op": "api_key", "name": "mover-key", "key": null }),
+        json!({ "op": "role", "name": "mover-role", "role": null }),
+        json!({ "op": "session", "id": "x", "session": null }),
+        json!({ "op": "principal", "name": "intruder", "principal": null }),
+    ] {
+        let (code, body) = call(
+            &app,
+            &mover,
+            "POST",
+            "/v1/cluster/groups/0/import",
+            Some(json!({ "ops": [op.clone()] })),
+        )
+        .await;
+        assert_eq!(code, StatusCode::FORBIDDEN, "{op}: {body}");
+    }
+    // The key it used is still there.
+    let (code, _) = call(&app, &mover, "GET", "/v1/whoami", None).await;
+    assert_eq!(code, StatusCode::OK);
+}
