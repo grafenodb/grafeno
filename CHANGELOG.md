@@ -11,6 +11,30 @@ API version (`GET /v1/about`, now 1) changes only when a change would
 break a client of the previous one, and the database files' layout
 version (now 18) is upgraded in place, with a copy kept first.
 
+## Unreleased
+
+- **Added**: the static token changes itself. `POST /v1/auth/token`,
+  called with the token and given the current one again, replaces it at
+  once and writes the new one to the settings file it was read from;
+  `grafeno config token --rotate` asks the running server. The token
+  stays the administrator's credential, with no account; a token given by
+  `--token` or `GRAFENO_TOKEN` is changed there.
+- **Changed**: `recall` and `context` rank a memory that a `supersedes`
+  fact true now replaced below what replaced it: its score is multiplied
+  by `superseded_weight` (0.2 by default, 1 to leave it as it was),
+  whoever recorded either, and a `superseded` signal says so.
+- **Fixed**: hybrid search lost strong matches only one list found (a
+  memory in another language than the question, say), which fell below
+  every weak match of the text list. A node one list lacks now counts
+  there as if it ranked four times lower (rank fusion), or with half its
+  scaled score (weighted).
+- **Fixed**: `maintain` did not find two memories with the same text when
+  there were no embeddings; the same text (case, accents and punctuation
+  aside, three words at least) is now a duplicate.
+- **Changed**: compacting a namespace's vector graph
+  (`POST /v1/{ns}/compact`) needs `update` on the namespace instead of
+  the schema right, so whoever writes the namespace keeps it in shape.
+
 ## 0.3.1 (2026-11-20)
 
 Security fixes from a review of 0.3.0, on access, the network and
