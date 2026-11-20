@@ -13,7 +13,7 @@ version (now 18) is upgraded in place, with a copy kept first.
 
 ## Unreleased
 
-Fixes from a review of 0.3.0, on access and the network; see
+Fixes from a review of 0.3.0, on access, the network and packaging; see
 [docs/security.md](docs/security.md#review-of-version-030).
 
 - **Fixed**: on a cluster member with several groups and no static token,
@@ -55,6 +55,17 @@ Fixes from a review of 0.3.0, on access and the network; see
   and kept each snapshot Raft refused until the process ended. A message
   is refused past 1 GiB before it is read, only a snapshot carries data
   after its message, and a snapshot Raft does not install is dropped.
+- **Changed**: a cluster member refuses to start with the members' secret
+  of the example settings (`change-this-shared-secret`), which it only
+  warned about. `GRAFENO_CLUSTER_SECRET` gives `[cluster] secret` from the
+  environment; the compose cluster requires it, beside `GRAFENO_TOKEN`.
+- **Fixed**: `install.sh --service` without root wrote a user unit with no
+  confinement; it now writes only its data folder, with the system and
+  the home read-only.
+- **Changed**: releases are built with pinned actions (by commit), Rust
+  1.99.1, images by digest, packaging tools by version and the zig wheel
+  by hash; only the jobs that publish can write to the repository, and
+  the Windows signing certificate reaches a tag's build only.
 - **Fixed**: while an explicit write transaction was open, a refused
   request (a wrong credential, a missing right, a failed sign-in) was not
   answered until the transaction ended, since its audit event waited for

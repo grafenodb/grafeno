@@ -96,7 +96,7 @@ has a test that fails without it.
 | `backup` copies every namespace | High | Documented; see open decisions. |
 | Backup, export, import and audit built in memory | High | Documented; streaming is planned. |
 | No TLS | Medium | Documented: a TLS proxy and a private network. |
-| CI actions and packaging tools not pinned by digest | Medium | Not changed. |
+| CI actions and packaging tools not pinned by digest | Medium | Not changed then; pinned since the review of 0.3.0. |
 | `/health` and `/v1/about` say the version publicly | Low | Not changed: clients read them before signing in. |
 | `k-hop` accepts any depth | Medium | Not changed: a walk is bounded by the size of its component. |
 | A member whose Raft thread stopped still answered `/health` 200 | — | The panic is fixed; `/health` does not check the thread yet. |
@@ -104,9 +104,10 @@ has a test that fails without it.
 ## Review of version 0.3.0
 
 A review of 0.3.0, focused on who may do what. Its access findings are
-and network findings are fixed below, each with a test that failed
-before the change (`crates/grafeno-server/tests/security.rs`,
-`groups_open.rs` and `cluster.rs` there); the rest follow.
+network and packaging findings are below. A fix to the code came with a
+test that failed before it (`crates/grafeno-server/tests/security.rs`,
+`groups_open.rs`, `cluster.rs` and `cluster_secret.rs` there); a fix to
+the packaging was checked by building it.
 
 | Finding | Severity given | What was done |
 | --- | --- | --- |
@@ -125,6 +126,11 @@ before the change (`crates/grafeno-server/tests/security.rs`,
 | A webhook delivery looked its name up again after the check, or let a proxy of the environment do it | High | Fixed: it connects to the addresses checked, through no proxy. |
 | IPv6 addresses carrying a private IPv4 one (NAT64, 6to4, Teredo, compatible and translated forms) passed for public | Medium | Fixed: as public as the address they carry; Teredo and local-use NAT64 refused. |
 | With the cluster secret, `/raft` read a body of any size and kept each refused snapshot | Medium | Fixed: a message is refused past 1 GiB before it is read, only a snapshot carries data, and a refused snapshot is dropped. |
+| The compose cluster's members shared the example settings' secret, and a member only warned | Medium | Fixed: a member refuses it; `GRAFENO_CLUSTER_SECRET` gives the secret, and compose requires it. |
+| Release actions, toolchain, images and packaging tools taken by name; every release job could write; a dispatched build got the signing certificate | Medium | Fixed: pinned by commit, version, digest or hash; write only where a release is published; the certificate on tags only. Reviewers for the signing secrets (a protected environment) are a setting of the repository. |
+| `install.sh` checks a download against a checksum from the same place, with no key of its own | Medium | Not changed yet: the project has no signing key. Once one is made, its public key goes into the script and a missing `minisign` stops the install. |
+| `install.sh --service` without root wrote a user unit with no confinement | Low | Fixed: the user unit writes its data folder only, with the system and the home read-only. |
+| The SELinux module is installed permissive | Low | Not changed yet: it is made enforcing after a run on an enforcing host. |
 | A refused request waited while an explicit transaction held the writer (found while fixing the above) | — | Fixed: the refusal is answered; its event is written once the writer is free, 64 at most waiting, the rest counted as left out. |
 
 ## Open decisions
@@ -141,4 +147,8 @@ These change what existing installations do, and are the maintainer's:
 3. **Streaming** of backups, exports, imports and the audit log.
 4. **TLS** in the server, or a refusal to start on a network address
    without a proxy that says it terminates TLS.
-5. **Pinning** CI actions and images by digest, with signed releases.
+5. **Signed releases.** A minisign key for the release's files and an
+   OpenPGP key for the package repositories, their public halves in
+   `install.sh`, and the secret halves in a protected environment of the
+   repository. Actions, images and tools are pinned since the review of
+   0.3.0.
