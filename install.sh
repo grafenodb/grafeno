@@ -254,7 +254,9 @@ elif [ "$SERVICE" = 1 ]; then
     if [ ! -f "$CONF" ]; then
         "$PREFIX/grafeno" config init --path "$CONF" --db "$DATA/grafeno.redb" >/dev/null
     fi
-    mkdir -p "$UNIT_DIR"
+    mkdir -p "$UNIT_DIR" "$DATA"
+    # Confined as far as a user's service can be: it writes its data folder
+    # and nothing else of the user's, and reads the rest of the home only.
     cat > "$UNIT_DIR/grafeno.service" <<UNIT
 [Unit]
 Description=Grafeno graph engine (user service)
@@ -264,6 +266,18 @@ Documentation=https://github.com/grafenodb/grafeno
 ExecStart=$PREFIX/grafeno serve --config $CONF
 Restart=on-failure
 RestartSec=2
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=$DATA
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictRealtime=true
+MemoryDenyWriteExecute=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+SystemCallArchitectures=native
+UMask=0077
 
 [Install]
 WantedBy=default.target
