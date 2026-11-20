@@ -119,7 +119,7 @@ pub const CAPABILITIES: &[&str] = &[
 
 /// `GET /v1/about` (public).
 pub async fn about(State(state): State<AppState>) -> Json<Value> {
-    let accounts = state.keys.has_accounts();
+    let accounts = state.primary_keys.has_accounts();
     let cluster = state.writer.cluster().map(|node| {
         let status = node.status();
         json!({ "id": status.id, "group": state.group })

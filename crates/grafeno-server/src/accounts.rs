@@ -311,7 +311,7 @@ fn me(caller: &Caller) -> ApiResult<Arc<Account>> {
 /// `GET /v1/auth/status` (public): whether the server is open, and
 /// whether its first account can be made by signing up.
 pub async fn status(State(state): State<AppState>) -> Json<Value> {
-    let accounts = state.keys.has_accounts();
+    let accounts = state.primary_keys.has_accounts();
     Json(json!({
         "open": state.token.is_none() && !accounts,
         "setup": state.token.is_none() && !accounts,
@@ -362,7 +362,7 @@ pub async fn setup(
     ClientAddress(address): ClientAddress,
     Body(input): Body<Credentials>,
 ) -> ApiResult<(StatusCode, Json<Value>)> {
-    if state.token.is_some() || state.keys.has_accounts() {
+    if state.token.is_some() || state.primary_keys.has_accounts() {
         return Err(ApiError::forbidden_message(
             "this server already has accounts (or a token): sign in instead",
         ));
@@ -827,7 +827,7 @@ pub async fn create_account(
         created_at: Timestamp::now(),
     };
     let stored = account.clone();
-    let (token, had) = (state.token.is_some(), state.keys.has_accounts());
+    let (token, had) = (state.token.is_some(), state.primary_keys.has_accounts());
     crate::http::write(&state, move |tx| {
         tx.create_account(&stored)?;
         keep_a_superuser(tx, token, had)
@@ -893,7 +893,7 @@ pub async fn change_account(
     };
     let input = Arc::new(input);
     let target = name.clone();
-    let (token, had) = (state.token.is_some(), state.keys.has_accounts());
+    let (token, had) = (state.token.is_some(), state.primary_keys.has_accounts());
     let changed = crate::http::write(&state, move |tx| {
         let mut account = tx
             .account(&target)?
@@ -1007,7 +1007,7 @@ pub async fn delete_account(
 ) -> ApiResult<StatusCode> {
     guard_superuser(&state, &name)?;
     let target = name.clone();
-    let (token, had) = (state.token.is_some(), state.keys.has_accounts());
+    let (token, had) = (state.token.is_some(), state.primary_keys.has_accounts());
     let removed = crate::http::write(&state, move |tx| {
         let removed = tx.delete_account(&target)?;
         keep_a_superuser(tx, token, had)?;
@@ -1211,7 +1211,7 @@ pub async fn revoke_key(
 ) -> ApiResult<StatusCode> {
     let key = manageable(&state, &name)?;
     let target = name.clone();
-    let (token, had) = (state.token.is_some(), state.keys.has_accounts());
+    let (token, had) = (state.token.is_some(), state.primary_keys.has_accounts());
     crate::http::write(&state, move |tx| {
         tx.delete_api_key(&target)?;
         let alone = key.account == target

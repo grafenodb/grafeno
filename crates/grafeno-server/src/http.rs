@@ -38,8 +38,13 @@ pub struct AppState {
     /// through the cluster's leader.
     pub writer: Arc<Writes>,
     pub token: Option<Arc<str>>,
-    /// Which key each secret is, loaded from the database.
+    /// Which key each secret is, loaded from this group's database, and
+    /// each account's rights there.
     pub keys: Arc<crate::auth::Credentials>,
+    /// The first group's credentials: whether the server has accounts
+    /// (an open server has none) is decided there, whatever group a
+    /// request reaches.
+    pub primary_keys: Arc<crate::auth::Credentials>,
     /// Failed sign-ins, for lockouts.
     pub throttle: Arc<crate::auth::Throttle>,
     /// Sessions' lives and lockouts.
@@ -182,6 +187,7 @@ impl AppState {
         token: Option<&str>,
         options: grafeno::WriterOptions,
     ) -> Self {
+        let keys = Arc::new(crate::auth::Credentials::load(&db).unwrap_or_default());
         Self {
             events: crate::events::Events::attach(&db),
             writer: Arc::new(Writes {
@@ -191,7 +197,8 @@ impl AppState {
                 split_cost: crate::cluster::DEFAULT_SPLIT_COST,
                 secret: None,
             }),
-            keys: Arc::new(crate::auth::Credentials::load(&db).unwrap_or_default()),
+            keys: keys.clone(),
+            primary_keys: keys,
             throttle: Arc::default(),
             audit_sampler: Arc::default(),
             auth: crate::accounts::AuthConfig::default(),
@@ -233,6 +240,9 @@ impl AppState {
             secret: self.writer.secret.clone(),
         });
         state.runners = Arc::default();
+        // A group's file has its own keys and accounts; a reload from it
+        // must not change what another group's file holds.
+        state.keys = Arc::new(crate::auth::Credentials::load(&db).unwrap_or_default());
         state.db = db;
         state
     }
@@ -334,7 +344,7 @@ pub async fn serve_on(
 ) -> std::io::Result<()> {
     let local = listener.local_addr()?;
     eprintln!("grafeno listening on http://{local}");
-    if state.token.is_none() && !state.keys.has_accounts() && !local.ip().is_loopback() {
+    if state.token.is_none() && !state.primary_keys.has_accounts() && !local.ip().is_loopback() {
         eprintln!(
             "warning: this server has no token and no account, and listens on {local}:              anyone who reaches it may do anything, and make its first superuser. Set a              token (grafeno config init) or create the first account before it is reachable              from a network."
         );
@@ -963,7 +973,7 @@ async fn auth(State(state): State<AppState>, request: Request, next: Next) -> Re
                 |o| o.0.path().to_owned(),
             ),
     );
-    let open = state.token.is_none() && !state.keys.has_accounts();
+    let open = state.token.is_none() && !state.primary_keys.has_accounts();
     let caller = match given {
         _ if open => Ok(Caller::Owner),
         Some(given)
@@ -2812,7 +2822,7 @@ async fn run_query_counted(
     // engine error and the query error itself is kept aside.
     let failure: Arc<std::sync::Mutex<Option<grafeno_query::QueryError>>> = Arc::default();
     let kept = failure.clone();
-    let (token, had) = (state.token.is_some(), state.keys.has_accounts());
+    let (token, had) = (state.token.is_some(), state.primary_keys.has_accounts());
     let outcome = write(state, move |tx| {
         // Written already under this key: the first result, nothing more.
         if let Some(key) = &key
