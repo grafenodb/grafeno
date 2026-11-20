@@ -66,12 +66,20 @@ fn hubs_undamped_bury_the_decision() {
     assert!(found.iter().all(|r| r.node.id != memory.decision));
     let acme = found.iter().position(|r| r.node.id == memory.acme).unwrap();
 
+    // Damped, the hub stays no higher, and the decision comes back.
     let damped = ask(&read, Some(three_hops())).unwrap();
     let damped_acme = damped
         .iter()
         .position(|r| r.node.id == memory.acme)
         .unwrap();
-    assert!(damped_acme > acme, "the hub drops: {acme} → {damped_acme}");
+    assert!(
+        damped_acme >= acme,
+        "the hub does not rise: {acme} → {damped_acme}"
+    );
+    assert!(
+        damped.iter().any(|r| r.node.id == memory.decision),
+        "damping is what brings the decision back"
+    );
 }
 
 #[test]

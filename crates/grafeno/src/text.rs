@@ -390,6 +390,7 @@ pub(crate) fn search(
 
 /// Checks the text index of a namespace against its stored texts. Returns
 /// the number of indexed texts.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn check(
     texts: &impl ReadableTable<RecordKey, &'static str>,
     lengths: &impl ReadableTable<RecordKey, u32>,

@@ -1,0 +1,1067 @@
+{
+  "about": "Memories an agent keeps over six projects, in Spanish and English, with the relations between them, and questions asked of them. Each question names the memories that answer it. Kinds: words (shares the answer's words), paraphrase (the same meaning in other words), crosslingual (the other language), multihop (the answer is one relation away from what the question names).",
+  "memories": [
+    {
+      "key": "fac-01",
+      "label": "Decision",
+      "text": "Decidimos migrar la base de datos de facturación a un clúster con réplica de lectura para que los informes no frenen los cobros."
+    },
+    {
+      "key": "fac-02",
+      "label": "Fact",
+      "text": "Los cobros de facturación se procesan cada noche a las 02:00 en lotes de mil clientes."
+    },
+    {
+      "key": "fac-03",
+      "label": "Experience",
+      "text": "El 4 de marzo los cobros duplicaron cargos a 37 clientes porque el reintento no comprobaba la clave de idempotencia.",
+      "links": [
+        [
+          "about",
+          "fac-02"
+        ]
+      ]
+    },
+    {
+      "key": "fac-04",
+      "label": "Decision",
+      "text": "Todo reintento de cobro debe llevar una clave de idempotencia guardada antes de llamar a la pasarela de pago.",
+      "links": [
+        [
+          "because_of",
+          "fac-03"
+        ]
+      ]
+    },
+    {
+      "key": "fac-05",
+      "label": "Person",
+      "text": "Lucía Ferrer es la responsable del servicio de facturación y aprueba los cambios en los cobros."
+    },
+    {
+      "key": "fac-06",
+      "label": "Fact",
+      "text": "El servicio de facturación lee los precios del catálogo a través de la cola de mensajes de pedidos.",
+      "links": [
+        [
+          "owned_by",
+          "fac-05"
+        ]
+      ]
+    },
+    {
+      "key": "fac-07",
+      "label": "Preference",
+      "text": "Lucía prefiere que los cambios de facturación se revisen en pareja y nunca un viernes por la tarde."
+    },
+    {
+      "key": "fac-08",
+      "label": "Fact",
+      "text": "Las facturas se emiten en PDF y en el formato electrónico que exige la autoridad fiscal, con firma digital."
+    },
+    {
+      "key": "fac-09",
+      "label": "Decision",
+      "text": "Los informes de ingresos se calculan desde la réplica de lectura, nunca desde la base principal.",
+      "links": [
+        [
+          "depends_on",
+          "fac-01"
+        ]
+      ]
+    },
+    {
+      "key": "fac-10",
+      "label": "Experience",
+      "text": "Una actualización del certificado de firma caducado detuvo la emisión de facturas durante tres horas en junio.",
+      "links": [
+        [
+          "about",
+          "fac-08"
+        ]
+      ]
+    },
+    {
+      "key": "fac-11",
+      "label": "Decision",
+      "text": "Los certificados de firma se renuevan con un mes de margen y una alarma avisa a falta de quince días.",
+      "links": [
+        [
+          "because_of",
+          "fac-10"
+        ]
+      ]
+    },
+    {
+      "key": "fac-12",
+      "label": "Fact",
+      "text": "Los clientes de la Unión Europea pagan el IVA de su país; el cálculo vive en el módulo de impuestos."
+    },
+    {
+      "key": "fac-13",
+      "label": "Fact",
+      "text": "El módulo de impuestos lo mantiene Andrés Gil, que también conoce las reglas de redondeo.",
+      "links": [
+        [
+          "owned_by",
+          "fac-14"
+        ]
+      ]
+    },
+    {
+      "key": "fac-14",
+      "label": "Person",
+      "text": "Andrés Gil, del equipo de finanzas, revisa cada cambio en impuestos y redondeos."
+    },
+    {
+      "key": "fac-15",
+      "label": "Fact",
+      "text": "La pasarela de pago devuelve un error 429 si se superan cincuenta peticiones por segundo."
+    },
+    {
+      "key": "fac-16",
+      "label": "Decision",
+      "text": "Los cobros nocturnos se limitan a cuarenta peticiones por segundo hacia la pasarela.",
+      "links": [
+        [
+          "depends_on",
+          "fac-15"
+        ]
+      ]
+    },
+    {
+      "key": "app-01",
+      "label": "Decision",
+      "text": "The mobile app stores the session token in the platform keychain, never in plain preferences."
+    },
+    {
+      "key": "app-02",
+      "label": "Fact",
+      "text": "The mobile app supports the last three major versions of each mobile operating system."
+    },
+    {
+      "key": "app-03",
+      "label": "Experience",
+      "text": "Release 4.2 crashed on start for users with an empty address book because a list was read without checking its length."
+    },
+    {
+      "key": "app-04",
+      "label": "Decision",
+      "text": "Every release goes to five percent of users for two days before reaching everyone.",
+      "links": [
+        [
+          "because_of",
+          "app-03"
+        ]
+      ]
+    },
+    {
+      "key": "app-05",
+      "label": "Person",
+      "text": "Priya Nair leads the mobile team and decides when a staged release goes to everyone."
+    },
+    {
+      "key": "app-06",
+      "label": "Fact",
+      "text": "Push notifications are sent through the notification service, which batches them every thirty seconds.",
+      "links": [
+        [
+          "owned_by",
+          "app-05"
+        ]
+      ]
+    },
+    {
+      "key": "app-07",
+      "label": "Preference",
+      "text": "Priya wants screenshots of every changed screen in light and dark themes attached to the review."
+    },
+    {
+      "key": "app-08",
+      "label": "Fact",
+      "text": "Offline edits are queued on the phone and sent again when the connection comes back, oldest first."
+    },
+    {
+      "key": "app-09",
+      "label": "Decision",
+      "text": "When an offline edit conflicts with the server, the server's version wins and the user sees what was replaced.",
+      "links": [
+        [
+          "depends_on",
+          "app-08"
+        ]
+      ]
+    },
+    {
+      "key": "app-10",
+      "label": "Fact",
+      "text": "The app's crash reports are kept for ninety days and stripped of names and emails."
+    },
+    {
+      "key": "app-11",
+      "label": "Decision",
+      "text": "Images are resized on the phone to at most 1600 pixels before upload, to save mobile data."
+    },
+    {
+      "key": "app-12",
+      "label": "Experience",
+      "text": "Battery use doubled on some phones when location was polled every minute; the team moved to significant-change updates."
+    },
+    {
+      "key": "app-13",
+      "label": "Fact",
+      "text": "Accessibility checks run on every pull request: contrast, touch target size and screen reader labels."
+    },
+    {
+      "key": "app-14",
+      "label": "Decision",
+      "text": "The app shows prices in the currency of the user's region, rounded the way the tax module says.",
+      "links": [
+        [
+          "depends_on",
+          "fac-12"
+        ]
+      ]
+    },
+    {
+      "key": "dat-01",
+      "label": "Fact",
+      "text": "El pipeline de datos carga los eventos de la web cada hora en el almacén analítico."
+    },
+    {
+      "key": "dat-02",
+      "label": "Decision",
+      "text": "Los eventos se guardan en formato columnar particionado por día para abaratar las consultas."
+    },
+    {
+      "key": "dat-03",
+      "label": "Experience",
+      "text": "Un cambio de esquema sin aviso dejó vacías las tablas de conversiones durante dos días en abril.",
+      "links": [
+        [
+          "about",
+          "dat-01"
+        ]
+      ]
+    },
+    {
+      "key": "dat-04",
+      "label": "Decision",
+      "text": "Todo cambio de esquema de eventos se anuncia con una semana de antelación y pasa por un contrato validado en CI.",
+      "links": [
+        [
+          "because_of",
+          "dat-03"
+        ]
+      ]
+    },
+    {
+      "key": "dat-05",
+      "label": "Person",
+      "text": "Marta Ruiz mantiene el pipeline de datos y el almacén analítico."
+    },
+    {
+      "key": "dat-06",
+      "label": "Fact",
+      "text": "El almacén analítico conserva los eventos crudos trece meses y los agregados para siempre.",
+      "links": [
+        [
+          "owned_by",
+          "dat-05"
+        ]
+      ]
+    },
+    {
+      "key": "dat-07",
+      "label": "Fact",
+      "text": "Los paneles de negocio se refrescan a las siete de la mañana con los datos del día anterior.",
+      "links": [
+        [
+          "depends_on",
+          "dat-01"
+        ]
+      ]
+    },
+    {
+      "key": "dat-08",
+      "label": "Decision",
+      "text": "Los identificadores de usuario se seudonimizan antes de entrar en el almacén; la tabla de correspondencias está en otra cuenta."
+    },
+    {
+      "key": "dat-09",
+      "label": "Preference",
+      "text": "Marta prefiere consultas con fechas explícitas en lugar de 'últimos siete días' para que los informes sean repetibles."
+    },
+    {
+      "key": "dat-10",
+      "label": "Fact",
+      "text": "Las tareas del pipeline se reintentan tres veces con espera creciente antes de avisar al equipo de guardia."
+    },
+    {
+      "key": "dat-11",
+      "label": "Experience",
+      "text": "El coste del almacén se triplicó en mayo por una consulta de un panel que leía todas las particiones."
+    },
+    {
+      "key": "dat-12",
+      "label": "Decision",
+      "text": "Toda consulta programada debe filtrar por la partición de fecha; una revisión automática rechaza las que no lo hacen.",
+      "links": [
+        [
+          "because_of",
+          "dat-11"
+        ]
+      ]
+    },
+    {
+      "key": "web-01",
+      "label": "Decision",
+      "text": "The marketing website is rendered ahead of time and served from the edge cache; only the search page runs on the server."
+    },
+    {
+      "key": "web-02",
+      "label": "Fact",
+      "text": "The website's pages must load in under two seconds on a mid-range phone over a slow connection."
+    },
+    {
+      "key": "web-03",
+      "label": "Experience",
+      "text": "A tracking script added by a campaign pushed the home page past four seconds and dropped sign-ups by eight percent.",
+      "links": [
+        [
+          "about",
+          "web-02"
+        ]
+      ]
+    },
+    {
+      "key": "web-04",
+      "label": "Decision",
+      "text": "Third-party scripts on the website need the web lead's approval and load only after the page is interactive.",
+      "links": [
+        [
+          "because_of",
+          "web-03"
+        ]
+      ]
+    },
+    {
+      "key": "web-05",
+      "label": "Person",
+      "text": "Tomás Vidal is the web lead and owns the website's performance budget."
+    },
+    {
+      "key": "web-06",
+      "label": "Fact",
+      "text": "The website's sign-up form posts to the accounts API and shows its errors next to each field.",
+      "links": [
+        [
+          "owned_by",
+          "web-05"
+        ]
+      ]
+    },
+    {
+      "key": "web-07",
+      "label": "Fact",
+      "text": "The website is translated into Spanish, English and Portuguese; copy changes go through the translation team."
+    },
+    {
+      "key": "web-08",
+      "label": "Decision",
+      "text": "Cookies that are not needed for the site to work stay off until the visitor accepts them."
+    },
+    {
+      "key": "web-09",
+      "label": "Preference",
+      "text": "Tomás asks for a before and after of the page weight in every pull request that touches the home page."
+    },
+    {
+      "key": "web-10",
+      "label": "Fact",
+      "text": "Search on the website reads from the product catalog index, rebuilt every fifteen minutes."
+    },
+    {
+      "key": "ops-01",
+      "label": "Fact",
+      "text": "Producción corre en dos regiones; si una cae, el tráfico pasa a la otra en menos de cinco minutos."
+    },
+    {
+      "key": "ops-02",
+      "label": "Decision",
+      "text": "Las copias de seguridad de las bases se hacen cada seis horas y se restauran a prueba cada lunes."
+    },
+    {
+      "key": "ops-03",
+      "label": "Experience",
+      "text": "En febrero una restauración de prueba falló porque las copias se cifraban con una clave rotada sin guardar la anterior.",
+      "links": [
+        [
+          "about",
+          "ops-02"
+        ]
+      ]
+    },
+    {
+      "key": "ops-04",
+      "label": "Decision",
+      "text": "Las claves de cifrado de copias se rotan conservando las tres anteriores durante un año.",
+      "links": [
+        [
+          "because_of",
+          "ops-03"
+        ]
+      ]
+    },
+    {
+      "key": "ops-05",
+      "label": "Person",
+      "text": "Diego Paredes coordina la guardia de infraestructura y los simulacros de caída de región."
+    },
+    {
+      "key": "ops-06",
+      "label": "Fact",
+      "text": "La guardia de infraestructura rota cada semana y cubre las veinticuatro horas.",
+      "links": [
+        [
+          "owned_by",
+          "ops-05"
+        ]
+      ]
+    },
+    {
+      "key": "ops-07",
+      "label": "Fact",
+      "text": "Los secretos de las aplicaciones se leen al arrancar desde el gestor de secretos; ninguno vive en el repositorio."
+    },
+    {
+      "key": "ops-08",
+      "label": "Decision",
+      "text": "Los despliegues a producción se hacen de martes a jueves, entre las diez y las cuatro, salvo urgencias."
+    },
+    {
+      "key": "ops-09",
+      "label": "Experience",
+      "text": "Un despliegue un viernes por la noche dejó sin servicio los pagos dos horas y nadie de facturación estaba disponible.",
+      "links": [
+        [
+          "about",
+          "ops-08"
+        ]
+      ]
+    },
+    {
+      "key": "ops-10",
+      "label": "Fact",
+      "text": "Cada servicio expone métricas de latencia y errores; una alerta salta si el p99 supera un segundo durante cinco minutos."
+    },
+    {
+      "key": "ops-11",
+      "label": "Decision",
+      "text": "Los simulacros de caída de región se hacen cada trimestre, avisando solo al equipo de guardia.",
+      "links": [
+        [
+          "depends_on",
+          "ops-01"
+        ]
+      ]
+    },
+    {
+      "key": "ops-12",
+      "label": "Fact",
+      "text": "La cola de mensajes de pedidos guarda los mensajes siete días; los consumidores lentos no pierden nada en ese plazo."
+    },
+    {
+      "key": "team-01",
+      "label": "Decision",
+      "text": "Changes over four hundred lines are split into smaller pull requests before review."
+    },
+    {
+      "key": "team-02",
+      "label": "Fact",
+      "text": "New dependencies are added through the dependency manager and need a second approval from the platform team."
+    },
+    {
+      "key": "team-03",
+      "label": "Preference",
+      "text": "The team writes commit messages in English and keeps the issue tracker in Spanish."
+    },
+    {
+      "key": "team-04",
+      "label": "Fact",
+      "text": "API errors are returned as JSON with a code, a message for people and the field that caused them."
+    },
+    {
+      "key": "team-05",
+      "label": "Decision",
+      "text": "Retrospectives happen every two weeks and their actions get an owner and a date."
+    },
+    {
+      "key": "team-06",
+      "label": "Fact",
+      "text": "Code review must start within one working day; a reviewer who cannot says so and hands it on."
+    },
+    {
+      "key": "team-07",
+      "label": "Person",
+      "text": "Elena Soto manages the platform team, which owns the build system and the dependency rules."
+    },
+    {
+      "key": "team-08",
+      "label": "Fact",
+      "text": "The build system caches dependencies per branch and rebuilds them when the lock file changes.",
+      "links": [
+        [
+          "owned_by",
+          "team-07"
+        ]
+      ]
+    },
+    {
+      "key": "team-09",
+      "label": "Decision",
+      "text": "Feature flags are removed within a month of reaching everyone; the tracker opens a task for it."
+    },
+    {
+      "key": "team-10",
+      "label": "Experience",
+      "text": "A forgotten feature flag kept an old checkout path alive for a year and broke when the tax module changed.",
+      "links": [
+        [
+          "about",
+          "team-09"
+        ]
+      ]
+    },
+    {
+      "key": "sup-01",
+      "label": "Decision",
+      "text": "La atención al cliente responde en menos de cuatro horas laborables; los incidentes de pagos tienen prioridad."
+    },
+    {
+      "key": "sup-02",
+      "label": "Fact",
+      "text": "Los tickets de soporte se clasifican por producto y gravedad al entrar; los de gravedad alta avisan a la guardia."
+    },
+    {
+      "key": "sup-03",
+      "label": "Person",
+      "text": "Sara Núñez dirige el equipo de soporte y decide qué incidentes se comunican a todos los clientes."
+    },
+    {
+      "key": "sup-04",
+      "label": "Fact",
+      "text": "La página de estado se actualiza a mano desde el canal de incidentes; la publica quien coordina el incidente.",
+      "links": [
+        [
+          "owned_by",
+          "sup-03"
+        ]
+      ]
+    },
+    {
+      "key": "sup-05",
+      "label": "Decision",
+      "text": "Tras un incidente grave se publica un informe en cinco días laborables, sin culpar a personas."
+    },
+    {
+      "key": "sup-06",
+      "label": "Preference",
+      "text": "Sara quiere que las respuestas a clientes eviten tecnicismos y digan cuándo se sabrá algo más."
+    }
+  ],
+  "questions": [
+    {
+      "q": "¿Por qué migramos la base de datos de facturación a un clúster con réplica?",
+      "kind": "words",
+      "answer": [
+        "fac-01"
+      ]
+    },
+    {
+      "q": "¿A qué hora se procesan los cobros de facturación?",
+      "kind": "words",
+      "answer": [
+        "fac-02"
+      ]
+    },
+    {
+      "q": "¿Qué pasó con los cargos duplicados por el reintento sin clave de idempotencia?",
+      "kind": "words",
+      "answer": [
+        "fac-03"
+      ]
+    },
+    {
+      "q": "¿Quién es la responsable del servicio de facturación?",
+      "kind": "words",
+      "answer": [
+        "fac-05"
+      ]
+    },
+    {
+      "q": "¿Desde dónde se calculan los informes de ingresos?",
+      "kind": "words",
+      "answer": [
+        "fac-09"
+      ]
+    },
+    {
+      "q": "Where does the mobile app store the session token?",
+      "kind": "words",
+      "answer": [
+        "app-01"
+      ]
+    },
+    {
+      "q": "Why did release 4.2 crash on start?",
+      "kind": "words",
+      "answer": [
+        "app-03"
+      ]
+    },
+    {
+      "q": "How are push notifications sent and batched?",
+      "kind": "words",
+      "answer": [
+        "app-06"
+      ]
+    },
+    {
+      "q": "¿Cada cuánto carga el pipeline de datos los eventos en el almacén analítico?",
+      "kind": "words",
+      "answer": [
+        "dat-01"
+      ]
+    },
+    {
+      "q": "¿Cuánto tiempo conserva el almacén analítico los eventos crudos?",
+      "kind": "words",
+      "answer": [
+        "dat-06"
+      ]
+    },
+    {
+      "q": "Who must approve third-party scripts on the website?",
+      "kind": "words",
+      "answer": [
+        "web-04"
+      ]
+    },
+    {
+      "q": "How fast must the website's pages load on a mid-range phone?",
+      "kind": "words",
+      "answer": [
+        "web-02"
+      ]
+    },
+    {
+      "q": "¿Cada cuánto se hacen las copias de seguridad de las bases y cuándo se restauran a prueba?",
+      "kind": "words",
+      "answer": [
+        "ops-02"
+      ]
+    },
+    {
+      "q": "¿Qué días se hacen los despliegues a producción?",
+      "kind": "words",
+      "answer": [
+        "ops-08"
+      ]
+    },
+    {
+      "q": "How are API errors returned?",
+      "kind": "words",
+      "answer": [
+        "team-04"
+      ]
+    },
+    {
+      "q": "When are changes split into smaller pull requests?",
+      "kind": "words",
+      "answer": [
+        "team-01"
+      ]
+    },
+    {
+      "q": "¿En cuánto tiempo responde la atención al cliente?",
+      "kind": "words",
+      "answer": [
+        "sup-01"
+      ]
+    },
+    {
+      "q": "¿Quién actualiza la página de estado durante un incidente?",
+      "kind": "words",
+      "answer": [
+        "sup-04"
+      ]
+    },
+    {
+      "q": "What does the app do when an offline edit conflicts with the server?",
+      "kind": "words",
+      "answer": [
+        "app-09"
+      ]
+    },
+    {
+      "q": "¿Cuántas peticiones por segundo aguanta la pasarela de pago antes de dar error 429?",
+      "kind": "words",
+      "answer": [
+        "fac-15"
+      ]
+    },
+    {
+      "q": "¿Qué evita que un cobro repetido se le haga dos veces al mismo cliente?",
+      "kind": "paraphrase",
+      "answer": [
+        "fac-04"
+      ]
+    },
+    {
+      "q": "¿Con cuánta antelación renovamos lo que firma las facturas?",
+      "kind": "paraphrase",
+      "answer": [
+        "fac-11"
+      ]
+    },
+    {
+      "q": "¿Qué impuesto pagan los compradores europeos?",
+      "kind": "paraphrase",
+      "answer": [
+        "fac-12"
+      ]
+    },
+    {
+      "q": "How do we keep a bad version from reaching all users at once?",
+      "kind": "paraphrase",
+      "answer": [
+        "app-04"
+      ]
+    },
+    {
+      "q": "What happens to changes made on the phone without internet?",
+      "kind": "paraphrase",
+      "answer": [
+        "app-08"
+      ]
+    },
+    {
+      "q": "Why did the app drain batteries, and what fixed it?",
+      "kind": "paraphrase",
+      "answer": [
+        "app-12"
+      ]
+    },
+    {
+      "q": "How large can photos be when the app sends them?",
+      "kind": "paraphrase",
+      "answer": [
+        "app-11"
+      ]
+    },
+    {
+      "q": "¿Qué pasó cuando cambió la estructura de los eventos sin avisar?",
+      "kind": "paraphrase",
+      "answer": [
+        "dat-03"
+      ]
+    },
+    {
+      "q": "¿Cómo protegemos la identidad de las personas en los datos de análisis?",
+      "kind": "paraphrase",
+      "answer": [
+        "dat-08"
+      ]
+    },
+    {
+      "q": "¿Por qué se disparó la factura del almacén y qué regla salió de ahí?",
+      "kind": "paraphrase",
+      "answer": [
+        "dat-11",
+        "dat-12"
+      ]
+    },
+    {
+      "q": "What slowed the home page down and cost us registrations?",
+      "kind": "paraphrase",
+      "answer": [
+        "web-03"
+      ]
+    },
+    {
+      "q": "When do non-essential cookies get turned on?",
+      "kind": "paraphrase",
+      "answer": [
+        "web-08"
+      ]
+    },
+    {
+      "q": "¿Qué ocurre si se cae una de las zonas donde corre producción?",
+      "kind": "paraphrase",
+      "answer": [
+        "ops-01"
+      ]
+    },
+    {
+      "q": "¿Por qué no se pudo recuperar una copia en febrero?",
+      "kind": "paraphrase",
+      "answer": [
+        "ops-03"
+      ]
+    },
+    {
+      "q": "¿Dónde están las contraseñas y claves de las aplicaciones cuando arrancan?",
+      "kind": "paraphrase",
+      "answer": [
+        "ops-07"
+      ]
+    },
+    {
+      "q": "Can I add a third-party library to the project on my own?",
+      "kind": "paraphrase",
+      "answer": [
+        "team-02"
+      ]
+    },
+    {
+      "q": "How soon should someone look at my pull request?",
+      "kind": "paraphrase",
+      "answer": [
+        "team-06"
+      ]
+    },
+    {
+      "q": "What do we do with toggles once a feature is fully out?",
+      "kind": "paraphrase",
+      "answer": [
+        "team-09"
+      ]
+    },
+    {
+      "q": "¿Qué se publica después de una caída grave y en cuánto tiempo?",
+      "kind": "paraphrase",
+      "answer": [
+        "sup-05"
+      ]
+    },
+    {
+      "q": "¿Cómo hay que escribir a los clientes según la jefa de soporte?",
+      "kind": "paraphrase",
+      "answer": [
+        "sup-06"
+      ]
+    },
+    {
+      "q": "When are billing charges processed each night?",
+      "kind": "crosslingual",
+      "answer": [
+        "fac-02"
+      ]
+    },
+    {
+      "q": "Who is in charge of the billing service?",
+      "kind": "crosslingual",
+      "answer": [
+        "fac-05"
+      ]
+    },
+    {
+      "q": "Why did invoice issuing stop for three hours in June?",
+      "kind": "crosslingual",
+      "answer": [
+        "fac-10"
+      ]
+    },
+    {
+      "q": "How many requests per second do the nightly charges send to the payment gateway?",
+      "kind": "crosslingual",
+      "answer": [
+        "fac-16"
+      ]
+    },
+    {
+      "q": "¿Cuántas versiones del sistema operativo soporta la app móvil?",
+      "kind": "crosslingual",
+      "answer": [
+        "app-02"
+      ]
+    },
+    {
+      "q": "¿Cuánto tiempo se guardan los informes de fallos de la app?",
+      "kind": "crosslingual",
+      "answer": [
+        "app-10"
+      ]
+    },
+    {
+      "q": "¿Qué comprobaciones de accesibilidad se hacen en cada pull request?",
+      "kind": "crosslingual",
+      "answer": [
+        "app-13"
+      ]
+    },
+    {
+      "q": "Who maintains the data pipeline?",
+      "kind": "crosslingual",
+      "answer": [
+        "dat-05"
+      ]
+    },
+    {
+      "q": "When are the business dashboards refreshed?",
+      "kind": "crosslingual",
+      "answer": [
+        "dat-07"
+      ]
+    },
+    {
+      "q": "How many times are pipeline jobs retried before paging on-call?",
+      "kind": "crosslingual",
+      "answer": [
+        "dat-10"
+      ]
+    },
+    {
+      "q": "¿Cómo se sirve la web de marketing?",
+      "kind": "crosslingual",
+      "answer": [
+        "web-01"
+      ]
+    },
+    {
+      "q": "¿A qué idiomas está traducida la web?",
+      "kind": "crosslingual",
+      "answer": [
+        "web-07"
+      ]
+    },
+    {
+      "q": "How long does the orders message queue keep messages?",
+      "kind": "crosslingual",
+      "answer": [
+        "ops-12"
+      ]
+    },
+    {
+      "q": "¿Cada cuánto se hacen las retrospectivas?",
+      "kind": "crosslingual",
+      "answer": [
+        "team-05"
+      ]
+    },
+    {
+      "q": "How are support tickets sorted when they arrive?",
+      "kind": "crosslingual",
+      "answer": [
+        "sup-02"
+      ]
+    },
+    {
+      "q": "¿Quién aprueba los cambios en el servicio que lee precios de la cola de pedidos?",
+      "kind": "multihop",
+      "answer": [
+        "fac-05"
+      ]
+    },
+    {
+      "q": "¿Quién conoce las reglas de redondeo del cálculo de impuestos?",
+      "kind": "multihop",
+      "answer": [
+        "fac-13",
+        "fac-14"
+      ]
+    },
+    {
+      "q": "Who decides when the notification batching service's team ships to everyone?",
+      "kind": "multihop",
+      "answer": [
+        "app-05"
+      ]
+    },
+    {
+      "q": "¿A quién pregunto por la retención de eventos crudos del almacén?",
+      "kind": "multihop",
+      "answer": [
+        "dat-05"
+      ]
+    },
+    {
+      "q": "Who owns the budget the sign-up form's page must respect?",
+      "kind": "multihop",
+      "answer": [
+        "web-05"
+      ]
+    },
+    {
+      "q": "¿Quién coordina la guardia que cubre las veinticuatro horas?",
+      "kind": "multihop",
+      "answer": [
+        "ops-05"
+      ]
+    },
+    {
+      "q": "Who manages the team behind the dependency cache of the build system?",
+      "kind": "multihop",
+      "answer": [
+        "team-07"
+      ]
+    },
+    {
+      "q": "¿Quién decide qué se comunica cuando se actualiza la página de estado?",
+      "kind": "multihop",
+      "answer": [
+        "sup-03"
+      ]
+    },
+    {
+      "q": "¿Qué regla salió del incidente de los cargos duplicados?",
+      "kind": "multihop",
+      "answer": [
+        "fac-04"
+      ]
+    },
+    {
+      "q": "What rule came out of the crash of release 4.2?",
+      "kind": "multihop",
+      "answer": [
+        "app-04"
+      ]
+    },
+    {
+      "q": "¿Qué cambió en los esquemas tras quedarse vacías las tablas de conversiones?",
+      "kind": "multihop",
+      "answer": [
+        "dat-04"
+      ]
+    },
+    {
+      "q": "What rule did the slow home page lead to?",
+      "kind": "multihop",
+      "answer": [
+        "web-04"
+      ]
+    },
+    {
+      "q": "¿Qué se decidió sobre las claves después del fallo de restauración?",
+      "kind": "multihop",
+      "answer": [
+        "ops-04"
+      ]
+    },
+    {
+      "q": "What did the forgotten feature flag incident teach us about removing flags?",
+      "kind": "multihop",
+      "answer": [
+        "team-09"
+      ]
+    },
+    {
+      "q": "What does the app's price rounding depend on?",
+      "kind": "multihop",
+      "answer": [
+        "fac-12"
+      ]
+    }
+  ]
+}

@@ -272,6 +272,11 @@ pub fn recall(read: &ReadTx, ns: &str, query: &RecallQuery) -> Result<Vec<Recall
         sort_by_score(&mut seeds);
         seeds.truncate(expansion.seeds);
         let mut degrees = HashMap::new();
+        // The best seed that reached each node: the graph lifts a node up to
+        // just below it, never past it. Direct scores are close to one
+        // another (by rank fusion), so a weak match next to the best one
+        // would otherwise overtake it.
+        let mut ceiling: HashMap<NodeId, f32> = HashMap::new();
         // What a node receives from several seeds adds up: being near
         // several matches is a reason to rank it, and damping keeps a hub
         // near all of them from collecting more than its share.
@@ -282,6 +287,16 @@ pub fn recall(read: &ReadTx, ns: &str, query: &RecallQuery) -> Result<Vec<Recall
                 let entry = scores.entry(node).or_default();
                 entry.0 += seed_score * share;
                 entry.1.push(Signal::Graph { seed, hops });
+                let top = ceiling.entry(node).or_insert(0.0);
+                *top = top.max(seed_score);
+            }
+        }
+        for (node, top) in ceiling {
+            let own = direct.get(&node).copied().unwrap_or(0.0);
+            if let Some(entry) = scores.get_mut(&node) {
+                // A node that matches better than its seed keeps its own
+                // score; any other stays below the seed.
+                entry.0 = own.max(entry.0.min(top * GRAPH_CEILING));
             }
         }
     }
@@ -421,6 +436,11 @@ fn spread(
     }
     Ok(out)
 }
+
+/// What share of the seed that reached it a node found through the graph
+/// gets at most: just below the seed, so the memory the question matched
+/// comes first and the one it leads to right after.
+const GRAPH_CEILING: f32 = 0.999;
 
 /// Damping counts a node's edges up to this many: past it, a node is a hub
 /// either way, and counting the rest would read all of them.
