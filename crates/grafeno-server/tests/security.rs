@@ -665,3 +665,36 @@ async fn a_refusal_is_answered_while_a_transaction_holds_the_writer() {
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
 }
+
+// F-006: an IPv6 address that carries an IPv4 one (NAT64, 6to4, Teredo,
+// the compatible and translated forms) passed for public whatever the IPv4
+// address was.
+#[test]
+fn an_ipv6_address_carrying_a_private_ipv4_one_is_not_public() {
+    use grafeno_server::events::public_address;
+    for private in [
+        "64:ff9b::a9fe:a9fe",
+        "64:ff9b::7f00:1",
+        "64:ff9b:1::a00:1",
+        "2002:a9fe:a9fe::",
+        "2002:7f00:1::",
+        "2001:0:0:0:0:0:5601:5601",
+        "2001::1",
+        "::7f00:1",
+        "::a9fe:a9fe",
+        "::ffff:0:7f00:1",
+        "::ffff:0:a00:1",
+    ] {
+        assert!(!public_address(private.parse().unwrap()), "{private}");
+    }
+    // The same prefixes around a public IPv4 address, and plain public
+    // IPv6 ones, still pass.
+    for public in [
+        "64:ff9b::808:808",
+        "2002:808:808::1",
+        "2606:4700:4700::1111",
+        "2a00:1450:4001::1",
+    ] {
+        assert!(public_address(public.parse().unwrap()), "{public}");
+    }
+}

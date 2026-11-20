@@ -400,13 +400,46 @@ pub fn public_address(address: std::net::IpAddr) -> bool {
             if let Some(v4) = v6.to_ipv4_mapped() {
                 return public_address(IpAddr::V4(v4));
             }
-            let first = v6.segments()[0];
-            !(v6.is_loopback()
-                || v6.is_unspecified()
-                || v6.is_multicast()
-                || (first & 0xfe00) == 0xfc00
-                || (first & 0xffc0) == 0xfe80
-                || (first == 0x2001 && v6.segments()[1] == 0x0db8))
+            let s = v6.segments();
+            if v6.is_loopback() || v6.is_unspecified() {
+                return false;
+            }
+            // An address that carries an IPv4 one is as public as that one:
+            // the compatible (::/96) and translated (::ffff:0:0/96) forms,
+            // NAT64 (64:ff9b::/96) and 6to4 (2002::/16).
+            let last = std::net::Ipv4Addr::new(
+                (s[6] >> 8) as u8,
+                s[6] as u8,
+                (s[7] >> 8) as u8,
+                s[7] as u8,
+            );
+            if s[..6] == [0; 6]
+                || s[..6] == [0, 0, 0, 0, 0xffff, 0]
+                || s[..6] == [0x64, 0xff9b, 0, 0, 0, 0]
+            {
+                return public_address(IpAddr::V4(last));
+            }
+            if s[0] == 0x2002 {
+                let carried = std::net::Ipv4Addr::new(
+                    (s[1] >> 8) as u8,
+                    s[1] as u8,
+                    (s[2] >> 8) as u8,
+                    s[2] as u8,
+                );
+                return public_address(IpAddr::V4(carried));
+            }
+            !(v6.is_multicast()
+                // Teredo (2001::/32) hides its IPv4 address, and local-use
+                // NAT64 (64:ff9b:1::/48) leads to a private network.
+                || (s[0] == 0x2001 && s[1] == 0)
+                || (s[0] == 0x64 && s[1] == 0xff9b && s[2] == 1)
+                // Discard-only (100::/64).
+                || s[..4] == [0x100, 0, 0, 0]
+                || (s[0] & 0xfe00) == 0xfc00
+                || (s[0] & 0xffc0) == 0xfe80
+                // Site-local, deprecated (fec0::/10).
+                || (s[0] & 0xffc0) == 0xfec0
+                || (s[0] == 0x2001 && s[1] == 0x0db8))
         }
     }
 }
