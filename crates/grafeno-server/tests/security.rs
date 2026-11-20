@@ -330,3 +330,58 @@ async fn an_import_writes_as_its_caller() {
     .await;
     assert_eq!(by["rows"], json!([["own"]]), "{by}");
 }
+
+// F-019: a webhook was sent whole records its creator could not read.
+#[tokio::test]
+async fn a_webhook_needs_read_access_to_the_whole_namespace() {
+    let db = Arc::new(Grafeno::in_memory().unwrap());
+    db.enable_events(true);
+    let app = router(AppState::new(db, Some(OWNER)));
+    ok(&app, "POST", "/v1/s/nodes", json!({ "labels": ["Public"] })).await;
+    // Reads only the `Public` nodes of `s`, and may follow its events.
+    ok(
+        &app,
+        "PUT",
+        "/v1/roles/narrow-role",
+        json!({ "privileges": [
+            { "action": "read", "object": { "on": "label", "namespace": "s", "label": "Public" } },
+            on_ns("events", "s"),
+        ] }),
+    )
+    .await;
+    ok(
+        &app,
+        "POST",
+        "/v1/accounts",
+        json!({ "name": "narrow", "kind": "service", "roles": ["narrow-role"] }),
+    )
+    .await;
+    let made = ok(
+        &app,
+        "POST",
+        "/v1/keys",
+        json!({ "name": "narrow-key", "account": "narrow" }),
+    )
+    .await;
+    let narrow = made["secret"].as_str().unwrap().to_owned();
+
+    let (code, body) = call(
+        &app,
+        &narrow,
+        "POST",
+        "/v1/s/query",
+        Some(json!({ "query": "CREATE EVENT SUBSCRIPTION leak ON NODES DELIVER TO WEBHOOK 'http://127.0.0.1:9/hook'" })),
+    )
+    .await;
+    assert_eq!(code, StatusCode::FORBIDDEN, "{body}");
+    // The owner, who reads everything, may.
+    let (code, body) = call(
+        &app,
+        OWNER,
+        "POST",
+        "/v1/s/query",
+        Some(json!({ "query": "CREATE EVENT SUBSCRIPTION all ON NODES DELIVER TO WEBHOOK 'http://127.0.0.1:9/hook'" })),
+    )
+    .await;
+    assert_eq!(code, StatusCode::OK, "{body}");
+}

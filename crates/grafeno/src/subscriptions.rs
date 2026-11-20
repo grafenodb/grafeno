@@ -351,6 +351,21 @@ impl WriteTx {
                 "a subscription needs a name and what it follows".into(),
             ));
         }
+        // A webhook is sent whole records as they change, by the server,
+        // without its creator's view: like reading events, it needs read
+        // access to the whole namespace.
+        if matches!(subscription.delivery, Delivery::Webhook { .. })
+            && self
+                .actor
+                .as_ref()
+                .and_then(|actor| actor.view.as_ref())
+                .is_some_and(|view| view.per_record(ns))
+        {
+            return Err(Error::Forbidden(
+                "a webhook is sent whole records: it needs read access to the whole namespace"
+                    .into(),
+            ));
+        }
         crate::namespace::ensure(&self.tx, ns)?;
         let mut subscription = subscription;
         if subscription.created_by.is_none() {
