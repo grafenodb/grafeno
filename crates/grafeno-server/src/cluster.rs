@@ -68,6 +68,8 @@ pub struct Peer {
 pub struct ClusterConfig {
     pub id: NodeId,
     pub addr: SocketAddr,
+    /// The members' shared secret; `GRAFENO_CLUSTER_SECRET` replaces it.
+    #[serde(default)]
     pub secret: String,
     #[serde(default)]
     pub voters: Vec<NodeId>,
@@ -217,7 +219,7 @@ const REFUSED_BODY: usize = 64 * 1024;
 /// as large as the database): a batch of log entries, each a write.
 const MAX_MESSAGE: usize = 1 << 30;
 
-/// Secrets of the example settings, which a member warns about.
+/// Secrets of the example settings, which a member refuses.
 const PLACEHOLDER_SECRETS: [&str; 1] = ["change-this-shared-secret"];
 
 /// Whether a request carries this cluster's secret.
@@ -376,11 +378,11 @@ pub async fn listen_groups(
             "[cluster] secret is empty: every member needs the same secret, and an empty one would let anyone in",
         ));
     }
-    if PLACEHOLDER_SECRETS.contains(&config.secret.as_str()) {
-        eprintln!(
-            "warning: [cluster] secret is the placeholder of the example settings ({:?}): anyone who has read them can speak for a member. Change it on every member.",
-            config.secret
-        );
+    if PLACEHOLDER_SECRETS.contains(&config.secret.trim()) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "[cluster] secret is the placeholder of the example settings: anyone who has read them could speak for a member. Set the same secret of your own on every member",
+        ));
     }
     let state = Listener {
         node,

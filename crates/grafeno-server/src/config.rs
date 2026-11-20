@@ -47,7 +47,7 @@
 //! [cluster]              # several servers kept in sync by Raft (13.2)
 //! id = 1
 //! addr = "10.0.0.1:7811" # where members talk to each other
-//! secret = "…"           # the same on every member
+//! secret = "…"           # the same on every member (or GRAFENO_CLUSTER_SECRET)
 //! voters = [1, 2, 3]     # the first members ([] when joining)
 //! peers = [{ id = 1, addr = "10.0.0.1:7811" }, { id = 2, addr = "10.0.0.2:7811" }]
 //!
@@ -446,7 +446,17 @@ impl Config {
     pub fn load(path: &Path) -> Result<Self, String> {
         let text = std::fs::read_to_string(path)
             .map_err(|error| format!("cannot read {}: {error}", path.display()))?;
-        toml::from_str(&text).map_err(|error| format!("invalid {}: {error}", path.display()))
+        let mut config: Self = toml::from_str(&text)
+            .map_err(|error| format!("invalid {}: {error}", path.display()))?;
+        // The members' secret can stay out of the file.
+        if let (Some(cluster), Ok(secret)) = (
+            config.cluster.as_mut(),
+            std::env::var("GRAFENO_CLUSTER_SECRET"),
+        ) && !secret.trim().is_empty()
+        {
+            cluster.secret = secret;
+        }
+        Ok(config)
     }
 
     /// The URL a client on this machine uses to reach the server.

@@ -18,7 +18,8 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 export MSYS_NO_PATHCONV=1
-export GRAFENO_TOKEN=${GRAFENO_TOKEN:-change-me}
+export GRAFENO_TOKEN=${GRAFENO_TOKEN:-$(openssl rand -hex 16)}
+export GRAFENO_CLUSTER_SECRET=${GRAFENO_CLUSTER_SECRET:-$(openssl rand -hex 32)}
 OLD=${OLD_IMAGE:-grafeno:13.5}
 NEW=${NEW_IMAGE:-grafeno:13.6}
 DRILL=${DRILL:-../../target/release/examples/drill}

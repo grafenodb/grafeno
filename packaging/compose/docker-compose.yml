@@ -5,11 +5,12 @@
 # down. Two Raft groups: group 0 (every namespace by default) and group 1.
 #
 #   cd packaging/compose
-#   GRAFENO_TOKEN=$(openssl rand -hex 16) docker compose up -d
+#   export GRAFENO_TOKEN=$(openssl rand -hex 16)
+#   export GRAFENO_CLUSTER_SECRET=$(openssl rand -hex 32)
+#   docker compose up -d
 #
-# There is no default token: compose refuses to start without one. The
-# members' secret (`secret` in m1.toml to m3.toml) is a placeholder the
-# members warn about: change it before using the cluster for anything.
+# There is no default token or members' secret: compose refuses to start
+# without them.
 #
 # The members' APIs are on the host at 127.0.0.1:17841, 17842 and 17843.
 # Each member's image and settings file can be
@@ -22,6 +23,7 @@ x-member: &member
   environment:
     GRAFENO_CONFIG: /etc/grafeno/grafeno.toml
     GRAFENO_TOKEN: ${GRAFENO_TOKEN:?set GRAFENO_TOKEN to a secret of your own}
+    GRAFENO_CLUSTER_SECRET: ${GRAFENO_CLUSTER_SECRET:?set GRAFENO_CLUSTER_SECRET to a secret of your own, the same for every member}
 
 services:
   m1:

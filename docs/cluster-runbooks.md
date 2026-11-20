@@ -25,14 +25,17 @@ encrypted.
 
   ```bash
   cd packaging/compose
-  GRAFENO_TOKEN=$(openssl rand -hex 16) docker compose up -d
+  export GRAFENO_TOKEN=$(openssl rand -hex 16)
+  export GRAFENO_CLUSTER_SECRET=$(openssl rand -hex 32)
+  docker compose up -d
   ```
 
   The APIs are at `127.0.0.1:17841` to `17843`. Compose refuses to start
-  without a token. The members' `secret` in the settings files is a
-  placeholder that each member warns about when it starts: change it
-  before using the cluster for anything real. A member with an empty
-  secret does not start.
+  without a token or a members' secret. `GRAFENO_CLUSTER_SECRET` replaces
+  `[cluster] secret` of the settings file, on any member. A member whose
+  secret is empty, or the placeholder of older example settings, does not
+  start. Images before 0.3.1 do not read `GRAFENO_CLUSTER_SECRET`: give
+  them `secret` in their settings file.
 
 - **Linux (systemd)**: install the package on each machine (`.deb` or
   `.rpm`), put the `[cluster]` section in `/etc/grafeno/grafeno.toml`,

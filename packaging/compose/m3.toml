@@ -5,7 +5,7 @@ addr = "0.0.0.0:7810"
 [cluster]
 id = 3
 addr = "0.0.0.0:7811"
-secret = "change-this-shared-secret"
+# secret: GRAFENO_CLUSTER_SECRET, from docker-compose.yml
 voters = [1, 2, 3]
 peers = [
   { id = 1, addr = "m1:7811", api = "m1:7810" },
