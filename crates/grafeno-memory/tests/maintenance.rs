@@ -382,3 +382,38 @@ fn duplicates_follow_identity_rules_in_tricky_cases() {
     // Mario/Maria, no Daniel/Daniela.
     assert_eq!(found.len(), 6, "{listed:#?}");
 }
+
+/// Two memories with the same words (case, accents and punctuation aside)
+/// are duplicates without embeddings; a very short text, or another kind of
+/// node with the same words, is not.
+#[test]
+fn duplicates_by_the_same_text_without_embeddings() {
+    let db = Grafeno::in_memory().unwrap();
+    let memory = |text: &str, label: &str| {
+        db.write(|tx| tx.create_node(NS, NewNode::new(label).text(text)))
+            .unwrap()
+    };
+    let a = memory("We ship the release on Fridays.", "Memory");
+    let b = memory("we ship the release on fridays", "Memory");
+    let c = memory("We ship the release on Mondays.", "Memory");
+    let task = memory("We ship the release on Fridays.", "Task");
+    let (ok1, ok2) = (memory("Ok", "Memory"), memory("ok.", "Memory"));
+
+    let read = db.begin_read().unwrap();
+    let found = find_duplicates(&read, NS, &DuplicateOptions::default()).unwrap();
+    let pair = |x: NodeId, y: NodeId| {
+        found
+            .iter()
+            .find(|d| (d.a.id == x && d.b.id == y) || (d.a.id == y && d.b.id == x))
+    };
+    let same = pair(a, b).expect("the same text is a duplicate");
+    assert_eq!(same.score, 1.0);
+    assert!(
+        same.reasons.iter().any(|r| r == "same text"),
+        "{:?}",
+        same.reasons
+    );
+    assert!(pair(a, c).is_none(), "another day is another memory");
+    assert!(pair(a, task).is_none(), "a task is not a memory");
+    assert!(pair(ok1, ok2).is_none(), "too short to tell");
+}

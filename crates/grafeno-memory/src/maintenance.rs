@@ -22,6 +22,10 @@ pub const DISTINCT_FROM: &str = "distinct_from";
 /// Words shared by more nodes than this are too common to suggest duplicates.
 const COMMON_WORD: usize = 50;
 
+/// Texts shorter than this, in words, are too short to call two memories
+/// the same ("ok", "done").
+const MIN_TEXT_WORDS: usize = 3;
+
 #[derive(Clone, Debug)]
 pub struct DuplicateOptions {
     /// Only nodes with this label (both nodes of a pair share a label anyway).
@@ -164,8 +168,9 @@ fn shares_label(a: &Node, b: &Node) -> bool {
 }
 
 /// Pairs of nodes that may be the same entity, best first: by a strong key
-/// (the same email), by name (equal, one inside the other, shared words,
-/// typos) and, with `vector_threshold`, by meaning.
+/// (the same email), by the same text (no embeddings needed), by name
+/// (equal, one inside the other, shared words, typos) and, with
+/// `vector_threshold`, by meaning.
 ///
 /// Names only suggest; identity rules decide against: pairs with
 /// different values of a strong key (namesakes), with labels that do not
@@ -234,6 +239,31 @@ pub fn find_duplicates(
                 let entry = pairs.entry(key(a, b)).or_insert((0.0, Vec::new()));
                 entry.0 = 1.0;
                 entry.1.push(format!("same {strong} \"{value}\""));
+            }
+        }
+    }
+    // The same text, word for word (case, accents and punctuation aside):
+    // one memory written twice, with or without embeddings.
+    let mut by_text: HashMap<String, Vec<NodeId>> = HashMap::new();
+    for node in &nodes {
+        let Some(text) = read.text(ns, node.id)? else {
+            continue;
+        };
+        let normal = crate::extract::normalize_with_offsets(&text).0;
+        if normal.split(' ').filter(|word| !word.is_empty()).count() < MIN_TEXT_WORDS {
+            continue;
+        }
+        by_text.entry(normal).or_default().push(node.id);
+    }
+    for ids in by_text.values().filter(|ids| ids.len() > 1) {
+        for (index, &a) in ids.iter().enumerate() {
+            for &b in &ids[index + 1..] {
+                if !shares_label(by_id[&a], by_id[&b]) {
+                    continue;
+                }
+                let entry = pairs.entry(key(a, b)).or_insert((0.0, Vec::new()));
+                entry.0 = 1.0;
+                entry.1.push("same text".to_owned());
             }
         }
     }
