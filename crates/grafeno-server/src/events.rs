@@ -331,11 +331,12 @@ fn deliver_events(
             .unwrap_or_default();
             // Made in GQ, where the server's settings are not known: its
             // address is checked here, before each delivery.
-            if state.background.webhooks_to_private {
-                post(url, secret.as_deref(), &body)
-            } else {
-                destination_allowed(url).and_then(|()| post(url, secret.as_deref(), &body))
-            }
+            post_checked(
+                url,
+                secret.as_deref(),
+                &body,
+                state.background.webhooks_to_private,
+            )
         };
         match outcome {
             Ok(()) => {
@@ -369,10 +370,7 @@ fn deliver_events(
 
 fn post_hook(hook: &Webhook, body: &[u8], private: bool) -> Result<(), String> {
     // Looked up again for each delivery: a name may point elsewhere now.
-    if !private {
-        destination_allowed(&hook.url)?;
-    }
-    post(&hook.url, hook.secret.as_deref(), body)
+    post_checked(&hook.url, hook.secret.as_deref(), body, private)
 }
 
 /// Whether an address is on the public internet: not this machine, a
@@ -447,8 +445,9 @@ pub fn public_address(address: std::net::IpAddr) -> bool {
 /// Refuses a webhook URL whose host is, or resolves to, an address that
 /// is not public ([`public_address`]). Every address the name has must be
 /// public, so that a name cannot answer with a public one at first and a
-/// private one later from the same lookup.
-pub fn destination_allowed(url: &str) -> Result<(), String> {
+/// private one later from the same lookup. Gives the addresses checked: a
+/// delivery connects to those, and looks nothing up again.
+pub fn destination_allowed(url: &str) -> Result<Vec<std::net::SocketAddr>, String> {
     use std::net::ToSocketAddrs;
     let uri: axum::http::Uri = url.parse().map_err(|_| format!("{url:?} is not a URL"))?;
     let host = uri
@@ -477,17 +476,75 @@ pub fn destination_allowed(url: &str) -> Result<(), String> {
             private.ip()
         ));
     }
-    Ok(())
+    Ok(addresses)
 }
 
-fn post(url: &str, secret: Option<&str>, body: &[u8]) -> Result<(), String> {
-    let agent: ureq::Agent = ureq::Agent::config_builder()
+/// Delivers `body` to a webhook: to the addresses its name has now, once
+/// they are checked, or anywhere when `private` lets it (the operator's
+/// own setting).
+fn post_checked(url: &str, secret: Option<&str>, body: &[u8], private: bool) -> Result<(), String> {
+    if private {
+        let agent: ureq::Agent = webhook_config(ureq::Agent::config_builder()).build().into();
+        send(&agent, url, secret, body)
+    } else {
+        let addresses = destination_allowed(url)?;
+        post_to(url, &addresses, secret, body)
+    }
+}
+
+/// Delivers `body` to `url` at `addresses`, whatever its name resolves
+/// to now, and through no proxy of the environment (which would look the
+/// name up itself).
+pub fn post_to(
+    url: &str,
+    addresses: &[std::net::SocketAddr],
+    secret: Option<&str>,
+    body: &[u8],
+) -> Result<(), String> {
+    let config = webhook_config(ureq::Agent::config_builder())
+        .proxy(None)
+        .build();
+    let agent = ureq::Agent::with_parts(
+        config,
+        ureq::unversioned::transport::DefaultConnector::default(),
+        Pinned(addresses.to_vec()),
+    );
+    send(&agent, url, secret, body)
+}
+
+fn webhook_config(
+    builder: ureq::config::ConfigBuilder<ureq::typestate::AgentScope>,
+) -> ureq::config::ConfigBuilder<ureq::typestate::AgentScope> {
+    builder
         .timeout_global(Some(Duration::from_secs(10)))
         .http_status_as_error(false)
         // A redirect would go to an address nobody checked.
         .max_redirects(0)
-        .build()
-        .into();
+}
+
+/// A resolver that answers the addresses already checked.
+#[derive(Debug)]
+struct Pinned(Vec<std::net::SocketAddr>);
+
+impl ureq::unversioned::resolver::Resolver for Pinned {
+    fn resolve(
+        &self,
+        _uri: &ureq::http::Uri,
+        _config: &ureq::config::Config,
+        _timeout: ureq::unversioned::transport::NextTimeout,
+    ) -> Result<ureq::unversioned::resolver::ResolvedSocketAddrs, ureq::Error> {
+        let mut addresses = self.empty();
+        for address in self.0.iter().take(16) {
+            addresses.push(*address);
+        }
+        if addresses.is_empty() {
+            return Err(ureq::Error::HostNotFound);
+        }
+        Ok(addresses)
+    }
+}
+
+fn send(agent: &ureq::Agent, url: &str, secret: Option<&str>, body: &[u8]) -> Result<(), String> {
     let mut request = agent
         .post(url)
         .header("Content-Type", "application/json")

@@ -698,3 +698,37 @@ fn an_ipv6_address_carrying_a_private_ipv4_one_is_not_public() {
         assert!(public_address(public.parse().unwrap()), "{public}");
     }
 }
+
+// F-004: a delivery looked the webhook's name up again, after the check,
+// and could reach an address the check never saw. It now connects to the
+// addresses that were checked: a name that cannot be looked up at all is
+// still delivered to them.
+#[test]
+fn a_delivery_connects_to_the_addresses_that_were_checked() {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let answered = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        // The whole request, its body ({}) included, before answering.
+        let mut request = Vec::new();
+        let mut chunk = [0u8; 4096];
+        while !request.ends_with(b"\r\n\r\n{}") {
+            let read = stream.read(&mut chunk).unwrap();
+            assert!(read > 0, "{}", String::from_utf8_lossy(&request));
+            request.extend_from_slice(&chunk[..read]);
+        }
+        stream
+            .write_all(b"HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+            .unwrap();
+        String::from_utf8_lossy(&request).into_owned()
+    });
+    let url = format!("http://hook.invalid:{}/hook", address.port());
+    grafeno_server::events::post_to(&url, &[address], None, b"{}").unwrap();
+    let request = answered.join().unwrap();
+    assert!(request.starts_with("POST /hook "), "{request}");
+    assert!(
+        request.to_ascii_lowercase().contains("host: hook.invalid"),
+        "{request}"
+    );
+}
