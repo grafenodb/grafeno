@@ -2778,6 +2778,37 @@ pub(crate) fn check_statement(
 }
 
 /// Runs a GQ query: reads on a snapshot, writes in the next group commit.
+/// Where a GQ write's result is kept under a client's idempotency key: a
+/// hash of who calls, the statement, its parameters and the key.
+fn idempotency_scope(
+    caller: &auth::Caller,
+    query: &str,
+    params: &grafeno_query::Params,
+    key: &str,
+) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hash = Sha256::new();
+    let who = match caller {
+        auth::Caller::Owner => "token".to_owned(),
+        auth::Caller::Anonymous => "anonymous".to_owned(),
+        auth::Caller::Account { account, .. } => format!("account:{}", account.name),
+    };
+    for part in [who.as_str(), query] {
+        hash.update(part.as_bytes());
+        hash.update([0]);
+    }
+    let mut entries: Vec<_> = params.iter().collect();
+    entries.sort_by(|a, b| a.0.cmp(b.0));
+    for (name, value) in entries {
+        hash.update(name.as_bytes());
+        hash.update([0]);
+        hash.update(format!("{value:?}").as_bytes());
+        hash.update([0]);
+    }
+    hash.update(key.as_bytes());
+    format!("{:x}", hash.finalize())
+}
+
 async fn run_query_counted(
     state: &AppState,
     ns: String,
@@ -2786,6 +2817,9 @@ async fn run_query_counted(
     key: Option<String>,
     split: Option<crate::cluster::SplitRequest>,
 ) -> ApiResult<Value> {
+    // A client's key stands for its own statement: another caller, or
+    // another statement, under the same key is another write.
+    let key = key.map(|key| idempotency_scope(&auth::current(), &query, &params, &key));
     let db = state.db.clone();
     // When the client goes away, this handler is dropped: the guard then
     // tells the query to stop.

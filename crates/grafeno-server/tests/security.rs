@@ -181,3 +181,67 @@ async fn a_batch_needs_the_right_to_retract_and_records_its_author() {
     .await;
     assert_eq!(code, StatusCode::OK, "{body}");
 }
+
+// F-020: a GQ write's idempotency key gave another writer the first
+// writer's result.
+#[tokio::test]
+async fn an_idempotency_key_belongs_to_its_caller_and_statement() {
+    let app = server();
+    let ana = principal(&app, "ana", "s", &["read", "create", "update", "delete"]).await;
+    let bob = principal(&app, "bob", "s", &["read", "create", "update", "delete"]).await;
+    let write = |text: &str| json!({ "query": text, "idempotency_key": "k1" });
+
+    let (code, first) = call(
+        &app,
+        &ana,
+        "POST",
+        "/v1/s/query",
+        Some(write("CREATE (n:Secret {code: 'ana-only'}) RETURN n.code")),
+    )
+    .await;
+    assert_eq!(code, StatusCode::OK, "{first}");
+    // Again, the same caller and statement: the first result, written once.
+    let (_, again) = call(
+        &app,
+        &ana,
+        "POST",
+        "/v1/s/query",
+        Some(write("CREATE (n:Secret {code: 'ana-only'}) RETURN n.code")),
+    )
+    .await;
+    assert_eq!(again["rows"], first["rows"]);
+
+    // Another caller with the same key gets its own write, not ana's rows.
+    let (code, theirs) = call(
+        &app,
+        &bob,
+        "POST",
+        "/v1/s/query",
+        Some(write("CREATE (n:Note {code: 'bob'}) RETURN n.code")),
+    )
+    .await;
+    assert_eq!(code, StatusCode::OK, "{theirs}");
+    assert_eq!(theirs["rows"][0][0], json!("bob"), "{theirs}");
+    // Even the same statement under the same key is bob's own write.
+    call(
+        &app,
+        &bob,
+        "POST",
+        "/v1/s/query",
+        Some(write("CREATE (n:Secret {code: 'ana-only'}) RETURN n.code")),
+    )
+    .await;
+
+    let counted = ok(
+        &app,
+        "POST",
+        "/v1/s/query",
+        json!({ "query": "MATCH (n:Secret) RETURN count(n)" }),
+    )
+    .await;
+    assert_eq!(
+        counted["rows"][0][0],
+        json!(2),
+        "ana once, bob once: {counted}"
+    );
+}
