@@ -25,6 +25,7 @@ use axum::body::Bytes;
 use axum::extract::{DefaultBodyLimit, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::routing::{get, post};
+use futures_util::StreamExt;
 use grafeno_cluster::{Node, NodeOptions, Storage, Transport};
 use grafeno_raft::{Envelope, Message, NodeId};
 use serde::{Deserialize, Serialize};
@@ -212,6 +213,10 @@ async fn receive_group(
 /// connection is closed.
 const REFUSED_BODY: usize = 64 * 1024;
 
+/// The longest a member's message may be, a snapshot's data apart (that is
+/// as large as the database): a batch of log entries, each a write.
+const MAX_MESSAGE: usize = 1 << 30;
+
 /// Secrets of the example settings, which a member warns about.
 const PLACEHOLDER_SECRETS: [&str; 1] = ["change-this-shared-secret"];
 
@@ -235,19 +240,44 @@ async fn receive(State(state): State<Listener>, request: axum::extract::Request)
         let _ = axum::body::to_bytes(body, REFUSED_BODY).await;
         return StatusCode::UNAUTHORIZED;
     }
-    let Ok(body) = axum::body::to_bytes(body, usize::MAX).await else {
+    // The message's length, then the message, read as they arrive: a
+    // length past MAX_MESSAGE is refused before the message is read.
+    let mut stream = body.into_data_stream();
+    let mut read: Vec<u8> = Vec::new();
+    let length = loop {
+        if read.len() >= 4 {
+            let length = u32::from_le_bytes([read[0], read[1], read[2], read[3]]) as usize;
+            if length > MAX_MESSAGE {
+                return StatusCode::PAYLOAD_TOO_LARGE;
+            }
+            if read.len() >= 4 + length {
+                break length;
+            }
+        }
+        match stream.next().await {
+            Some(Ok(chunk)) => read.extend_from_slice(&chunk),
+            _ => return StatusCode::BAD_REQUEST,
+        }
+    };
+    let Ok(envelope) = serde_json::from_slice::<Envelope>(&read[4..4 + length]) else {
         return StatusCode::BAD_REQUEST;
     };
-    let Some(length) = body.get(..4) else {
+    // What follows is a snapshot's data, and only a snapshot has any.
+    let mut rest = read.split_off(4 + length);
+    drop(read);
+    let is_snapshot = matches!(envelope.message, Message::Snapshot { .. });
+    while let Some(chunk) = stream.next().await {
+        let Ok(chunk) = chunk else {
+            return StatusCode::BAD_REQUEST;
+        };
+        if !is_snapshot && !chunk.is_empty() {
+            return StatusCode::BAD_REQUEST;
+        }
+        rest.extend_from_slice(&chunk);
+    }
+    if !is_snapshot && !rest.is_empty() {
         return StatusCode::BAD_REQUEST;
-    };
-    let length = u32::from_le_bytes([length[0], length[1], length[2], length[3]]) as usize;
-    let Some(json) = body.get(4..4 + length) else {
-        return StatusCode::BAD_REQUEST;
-    };
-    let Ok(envelope) = serde_json::from_slice::<Envelope>(json) else {
-        return StatusCode::BAD_REQUEST;
-    };
+    }
     // A member that says what it runs (members before 13.6 do not).
     if let Some(info) = headers
         .get(MEMBER_HEADER)
@@ -260,8 +290,7 @@ async fn receive(State(state): State<Listener>, request: axum::extract::Request)
             node.note_member(id, member.clone());
         }
     }
-    let rest = &body[4 + length..];
-    let snapshot = (!rest.is_empty()).then(|| Arc::new(rest.to_vec()));
+    let snapshot = (!rest.is_empty()).then(|| Arc::new(rest));
     state.node.deliver(envelope, snapshot);
     StatusCode::NO_CONTENT
 }

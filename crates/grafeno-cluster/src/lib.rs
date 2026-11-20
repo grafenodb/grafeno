@@ -733,6 +733,10 @@ impl Driver {
                 );
                 break;
             }
+            // A snapshot Raft accepted was installed just now; one it
+            // refused (an old term, an index already committed) is not
+            // kept until the process ends.
+            self.incoming.clear();
             // A leader can step down without a message to send.
             self.publish();
         }

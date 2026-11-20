@@ -471,6 +471,43 @@ fn only_members_speak_for_members() {
     let large = raft_call(raft_port, "POST", "/raft", None, vec![b'x'; 8 << 20]);
     assert!(matches!(large, 401 | 0), "{large}");
 
+    // With the secret (F-007): a message longer than a message may be is
+    // refused before it is read, and only a snapshot carries bytes after
+    // its message.
+    let framed = |message: &[u8], rest: &[u8]| {
+        let mut body = (message.len() as u32).to_le_bytes().to_vec();
+        body.extend_from_slice(message);
+        body.extend_from_slice(rest);
+        body
+    };
+    let reply = br#"{"from":99,"to":99,"message":{"VoteReply":{"term":0,"granted":false,"pre_vote":false}}}"#;
+    assert_eq!(
+        raft_call(
+            raft_port,
+            "POST",
+            "/raft",
+            Some("s3cret"),
+            framed(reply, b"")
+        ),
+        204
+    );
+    assert_eq!(
+        raft_call(
+            raft_port,
+            "POST",
+            "/raft",
+            Some("s3cret"),
+            framed(reply, &[b'x'; 1024])
+        ),
+        400
+    );
+    let mut claimed = u32::MAX.to_le_bytes().to_vec();
+    claimed.extend_from_slice(&[b'x'; 1024]);
+    assert_eq!(
+        raft_call(raft_port, "POST", "/raft", Some("s3cret"), claimed),
+        413
+    );
+
     // Two members go: the one left has no quorum.
     let survivor = (first + 1) % 3;
     for at in [first, (first + 2) % 3] {
