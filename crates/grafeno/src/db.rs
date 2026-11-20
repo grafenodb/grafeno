@@ -717,6 +717,7 @@ fn migrate_to_6(tx: &WriteTransaction) -> Result<()> {
     let meta = encode(&NamespaceMeta {
         created_at: Timestamp::now(),
         description: None,
+        language: None,
     })?;
     for name in &names {
         if registry.get(name.as_str()).map_err(storage)?.is_none() {
@@ -1272,7 +1273,9 @@ impl ReadTx {
     /// Full-text search ranked by BM25, best first.
     pub fn search_text(&self, ns: &str, query: &str, limit: usize) -> Result<Vec<Hit>> {
         self.visible_hits(ns, limit, |ask| {
-            text::search(&self.postings, &self.text_stats, ns, query, ask)
+            let language =
+                crate::namespace::read_meta(&self.registry, ns)?.and_then(|meta| meta.language);
+            text::search(&self.postings, &self.text_stats, ns, language, query, ask)
         })
     }
 

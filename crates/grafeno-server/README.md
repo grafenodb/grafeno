@@ -375,10 +375,10 @@ requests accept either that or an ISO 8601 string (`2024-05-01`,
 | `GET`    | `/health`                             |                                                         | `{status, version, layout}`   |
 | `GET`    | `/v1/about`                           | (public)                                                | `{product, version, api: {version, supported}, layout, capabilities, auth: {token, accounts, open, password_sign_in}, cluster}`: see *The API as a contract* |
 | `GET`    | `/v1/settings`                        | (superusers)                                            | the settings the server runs with, without the token or the cluster secret |
-| `GET`    | `/v1/namespaces`                      |                                                         | `[{name, nodes, edges, created_at, description?}]`, empty ones too |
-| `POST`   | `/v1/namespaces`                      | `{name, description?}`                                  | the namespace (201); 409 if it exists |
+| `GET`    | `/v1/namespaces`                      |                                                         | `[{name, nodes, edges, created_at, description?, language?}]`, empty ones too |
+| `POST`   | `/v1/namespaces`                      | `{name, description?, language?}`                       | the namespace (201); 409 if it exists |
 | `GET`    | `/v1/namespaces/{ns}`                 |                                                         | the namespace, or 404         |
-| `PATCH`  | `/v1/namespaces/{ns}`                 | `{description}` (`null` removes it)                     | the namespace                 |
+| `PATCH`  | `/v1/namespaces/{ns}`                 | `{description?, language?}` (`null` removes either; one left out stays) | the namespace; a new `language` indexes its node texts again |
 | `DELETE` | `/v1/namespaces/{ns}`                 |                                                         | `{nodes, edges}` deleted with it |
 | `GET`    | `/v1/backup`                          |                                                         | the whole database file, consistent (owners) |
 | `GET`    | `/v1/export`                          | `?ns=a,b` (all by default)                              | JSON Lines                    |
@@ -500,7 +500,11 @@ requests accept either that or an ISO 8601 string (`2024-05-01`,
   fact true now replaced has its score multiplied by `superseded_weight`
   (0.2 by default, 1 to leave it as it is), whoever recorded either, and
   says so in its signals; `touch` records an access to each result.
-  `context` ranks its memories the same way.
+  `context` ranks its memories the same way. In a namespace with a
+  `language` (`en` or `es`, set on `/v1/namespaces/{ns}`), the words of
+  node texts and of the question are reduced to their stem, verbs too:
+  "decidimos" finds "decidir", "revisiones" finds "revisión". Without one,
+  words match whole (accents and case aside).
 - **memory** (in node responses): `{importance, accesses, last_access}`.
 
 ### Batches

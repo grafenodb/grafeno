@@ -2253,6 +2253,8 @@ async fn namespaces(State(state): State<AppState>) -> ApiResult<Json<Vec<grafeno
 struct NewNamespace {
     name: String,
     description: Option<String>,
+    /// The language of its node texts: `en` or `es`.
+    language: Option<String>,
 }
 
 /// Creates an empty namespace: 201, or 409 if it exists.
@@ -2261,8 +2263,20 @@ async fn create_namespace(
     Body(input): Body<NewNamespace>,
 ) -> ApiResult<(StatusCode, Json<grafeno::NamespaceInfo>)> {
     require_all(&input.name, &[grafeno::Act::CreateNamespace])?;
+    let language = input
+        .language
+        .as_deref()
+        .map(|name| {
+            grafeno::Language::from_name(name).ok_or_else(|| {
+                ApiError::bad_request(format!("unknown language {name:?}: en or es"))
+            })
+        })
+        .transpose()?;
     let info = write(&state, move |tx| {
         tx.create_namespace(&input.name, input.description.as_deref())?;
+        if language.is_some() {
+            tx.set_namespace_language(&input.name, language)?;
+        }
         tx.namespace(&input.name)?
             .ok_or_else(|| Error::NamespaceNotFound(input.name.clone()))
     })
@@ -2283,20 +2297,46 @@ async fn get_namespace(
     Ok(Json(info))
 }
 
+/// A field that may be absent (left as it is), `null` (removed) or given.
+fn present<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::<T>::deserialize(deserializer).map(Some)
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct NamespacePatch {
-    description: Option<String>,
+    #[serde(default, deserialize_with = "present")]
+    description: Option<Option<String>>,
+    /// `en`, `es`, or `null` for none: the node texts are indexed again.
+    #[serde(default, deserialize_with = "present")]
+    language: Option<Option<String>>,
 }
 
-/// Sets the description (`null` removes it).
+/// Sets the description and the language of the node texts (`null`
+/// removes either; a field left out stays as it is).
 async fn describe_namespace(
     State(state): State<AppState>,
     Path(ns): Path<String>,
     Body(input): Body<NamespacePatch>,
 ) -> ApiResult<Json<grafeno::NamespaceInfo>> {
+    let language = match &input.language {
+        Some(Some(name)) => Some(Some(grafeno::Language::from_name(name).ok_or_else(
+            || ApiError::bad_request(format!("unknown language {name:?}: en or es")),
+        )?)),
+        Some(None) => Some(None),
+        None => None,
+    };
     let info = write(&state, move |tx| {
-        tx.describe_namespace(&ns, input.description.as_deref())?;
+        if let Some(description) = &input.description {
+            tx.describe_namespace(&ns, description.as_deref())?;
+        }
+        if let Some(language) = language {
+            tx.set_namespace_language(&ns, language)?;
+        }
         tx.namespace(&ns)?
             .ok_or_else(|| Error::NamespaceNotFound(ns.clone()))
     })

@@ -974,6 +974,7 @@ impl WriteTx {
                     .tx
                     .open_table(crate::namespace::NAMESPACES)
                     .map_err(storage)?;
+                let before = crate::namespace::read_meta(&table, ns)?.and_then(|m| m.language);
                 match meta {
                     Some(value) => {
                         table
@@ -983,6 +984,13 @@ impl WriteTx {
                     None => {
                         table.remove(ns.as_str()).map_err(storage)?;
                     }
+                }
+                let after = crate::namespace::read_meta(&table, ns)?.and_then(|m| m.language);
+                drop(table);
+                // Another language: this copy's texts are indexed again in
+                // it, as the source's were.
+                if before != after {
+                    crate::text::reindex_namespace(&self.tx, ns, after)?;
                 }
             }
             Op::MatchRule { ns, label, rule } => {

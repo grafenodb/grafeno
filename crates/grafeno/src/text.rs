@@ -33,6 +33,127 @@ const STOPWORDS: &[&str] = &[
     "yo",
 ];
 
+/// The language a namespace's node texts are written in: their words are
+/// reduced to their stem ("decisiones", "decisión" → "decision"), in the
+/// index and in the questions. Without one, words are kept whole.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub enum Language {
+    #[serde(rename = "en")]
+    English,
+    #[serde(rename = "es")]
+    Spanish,
+}
+
+impl Language {
+    /// `en` or `english`, `es` or `spanish` (any case).
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name.trim().to_ascii_lowercase().as_str() {
+            "en" | "english" => Some(Language::English),
+            "es" | "spanish" | "espanol" | "español" => Some(Language::Spanish),
+            _ => None,
+        }
+    }
+
+    /// Its code: `en` or `es`.
+    pub fn code(self) -> &'static str {
+        match self {
+            Language::English => "en",
+            Language::Spanish => "es",
+        }
+    }
+}
+
+/// [`tokenize`], then each term reduced to its stem in `language`.
+pub fn tokenize_in(language: Option<Language>, text: &str) -> Vec<String> {
+    let mut terms = tokenize(text);
+    if let Some(language) = language {
+        for term in &mut terms {
+            *term = crate::fulltext::stem_in(language, term);
+        }
+    }
+    terms
+}
+
+/// The language of `ns`'s node texts, as written so far in `tx`.
+pub(crate) fn language_of(tx: &WriteTransaction, ns: &str) -> Result<Option<Language>> {
+    let table = tx
+        .open_table(crate::namespace::NAMESPACES)
+        .map_err(storage)?;
+    Ok(crate::namespace::read_meta(&table, ns)?.and_then(|meta| meta.language))
+}
+
+/// Indexes every node text of `ns` again in `language`, which the
+/// namespace now has: its postings and lengths are written anew.
+pub(crate) fn reindex_namespace(
+    tx: &WriteTransaction,
+    ns: &str,
+    language: Option<Language>,
+) -> Result<usize> {
+    let texts: Vec<(u128, String)> = {
+        let table = tx.open_table(TEXTS).map_err(storage)?;
+        let mut texts = Vec::new();
+        for item in table.range((ns, 0u128)..).map_err(storage)? {
+            let (key, value) = item.map_err(storage)?;
+            let (key_ns, id) = key.value();
+            if key_ns != ns {
+                break;
+            }
+            texts.push((id, value.value().to_owned()));
+        }
+        texts
+    };
+    // Every posting of the namespace goes: they were made in another
+    // language.
+    {
+        let mut postings = tx.open_table(POSTINGS).map_err(storage)?;
+        let stale: Vec<(String, u128)> = {
+            let mut stale = Vec::new();
+            for item in postings.range((ns, "", 0u128)..).map_err(storage)? {
+                let (key, _) = item.map_err(storage)?;
+                let (key_ns, term, id) = key.value();
+                if key_ns != ns {
+                    break;
+                }
+                stale.push((term.to_owned(), id));
+            }
+            stale
+        };
+        for (term, id) in &stale {
+            postings.remove((ns, term.as_str(), *id)).map_err(storage)?;
+        }
+    }
+    let mut postings: Vec<(String, u128, u32, u32)> = Vec::new();
+    let mut lengths = Vec::with_capacity(texts.len());
+    let mut total_terms = 0u64;
+    for (id, text) in &texts {
+        let terms = tokenize_in(language, text);
+        let length = terms.len() as u32;
+        total_terms += u64::from(length);
+        lengths.push((*id, length));
+        for (term, frequency) in term_frequencies(&terms) {
+            postings.push((term.to_owned(), *id, frequency, length));
+        }
+    }
+    postings.sort_unstable_by(|a, b| (a.0.as_str(), a.1).cmp(&(b.0.as_str(), b.1)));
+    let mut table = tx.open_table(POSTINGS).map_err(storage)?;
+    for (term, id, frequency, length) in &postings {
+        table
+            .insert((ns, term.as_str(), *id), (*frequency, *length))
+            .map_err(storage)?;
+    }
+    drop(table);
+    let mut table = tx.open_table(TEXT_LENGTHS).map_err(storage)?;
+    for (id, length) in lengths {
+        table.insert((ns, id), length).map_err(storage)?;
+    }
+    drop(table);
+    tx.open_table(TEXT_STATS)
+        .map_err(storage)?
+        .insert(ns, (texts.len() as u64, total_terms))
+        .map_err(storage)?;
+    Ok(texts.len())
+}
+
 /// Splits text into lowercase terms without accents ("Canción" → "cancion").
 /// Terms of one character, longer than 64, or stopwords are dropped.
 ///
@@ -76,7 +197,7 @@ pub(crate) fn term_frequencies(terms: &[String]) -> HashMap<&str, u32> {
 pub(crate) fn index(tx: &WriteTransaction, ns: &str, node: NodeId, text: &str) -> Result<()> {
     remove(tx, ns, node)?;
     let id = node.as_u128();
-    let terms = tokenize(text);
+    let terms = tokenize_in(language_of(tx, ns)?, text);
     let length = terms.len() as u32;
     let mut postings = tx.open_table(POSTINGS).map_err(storage)?;
     for (term, frequency) in term_frequencies(&terms) {
@@ -117,11 +238,12 @@ pub(crate) fn index_many(
     for node in existing {
         remove(tx, ns, node)?;
     }
+    let language = language_of(tx, ns)?;
     let mut postings: Vec<(String, u128, u32, u32)> = Vec::new();
     let mut lengths = Vec::with_capacity(texts.len());
     let mut total_terms = 0i64;
     for (node, text) in texts {
-        let terms = tokenize(text);
+        let terms = tokenize_in(language, text);
         let length = terms.len() as u32;
         total_terms += i64::from(length);
         lengths.push((node.as_u128(), length));
@@ -167,7 +289,7 @@ pub(crate) fn remove(tx: &WriteTransaction, ns: &str, node: NodeId) -> Result<bo
         return Ok(false);
     };
     drop(texts);
-    let terms = tokenize(&text);
+    let terms = tokenize_in(language_of(tx, ns)?, &text);
     let mut postings = tx.open_table(POSTINGS).map_err(storage)?;
     for term in term_frequencies(&terms).keys() {
         postings.remove((ns, *term, id)).map_err(storage)?;
@@ -215,6 +337,7 @@ pub(crate) fn search(
     postings: &impl ReadableTable<PostingKey, (u32, u32)>,
     stats: &impl ReadableTable<&'static str, (u64, u64)>,
     ns: &str,
+    language: Option<Language>,
     query: &str,
     limit: usize,
 ) -> Result<Vec<Hit>> {
@@ -226,7 +349,7 @@ pub(crate) fn search(
     }
     let documents = documents as f32;
     let average_length = (total_terms as f32 / documents).max(1.0);
-    let mut terms = tokenize(query);
+    let mut terms = tokenize_in(language, query);
     terms.sort();
     terms.dedup();
 
@@ -273,6 +396,7 @@ pub(crate) fn check(
     postings: &impl ReadableTable<PostingKey, (u32, u32)>,
     stats: &impl ReadableTable<&'static str, (u64, u64)>,
     ns: &str,
+    language: Option<Language>,
     nodes: &std::collections::HashSet<u128>,
     problems: &mut Vec<String>,
 ) -> Result<u64> {
@@ -288,7 +412,7 @@ pub(crate) fn check(
         if !nodes.contains(&id) {
             problems.push(format!("text of missing node {node}"));
         }
-        let terms = tokenize(value.value());
+        let terms = tokenize_in(language, value.value());
         total_terms += terms.len() as u64;
         let frequencies = term_frequencies(&terms);
         expected_postings += frequencies.len() as u64;

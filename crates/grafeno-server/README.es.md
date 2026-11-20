@@ -385,10 +385,10 @@ Los ids son UUID. Los tiempos en las respuestas son microsegundos desde la
 | `GET`    | `/health`                             |                                                         | `{status, version, layout}`   |
 | `GET`    | `/v1/about`                           | (público)                                               | `{product, version, api: {version, supported}, layout, capabilities, auth: {token, accounts, open, password_sign_in}, cluster}`: ver *La API como contrato* |
 | `GET`    | `/v1/settings`                        | (superusuarios)                                         | la configuración con la que corre el servidor, sin el token ni el secreto del clúster |
-| `GET`    | `/v1/namespaces`                      |                                                         | `[{name, nodes, edges, created_at, description?}]`, también los vacíos |
-| `POST`   | `/v1/namespaces`                      | `{name, description?}`                                  | el namespace (201); 409 si existe |
+| `GET`    | `/v1/namespaces`                      |                                                         | `[{name, nodes, edges, created_at, description?, language?}]`, también los vacíos |
+| `POST`   | `/v1/namespaces`                      | `{name, description?, language?}`                       | el namespace (201); 409 si existe |
 | `GET`    | `/v1/namespaces/{ns}`                 |                                                         | el namespace, o 404           |
-| `PATCH`  | `/v1/namespaces/{ns}`                 | `{description}` (`null` la quita)                       | el namespace                  |
+| `PATCH`  | `/v1/namespaces/{ns}`                 | `{description?, language?}` (`null` quita cualquiera; el que no se envía queda igual) | el namespace; un `language` nuevo vuelve a indexar sus textos |
 | `DELETE` | `/v1/namespaces/{ns}`                 |                                                         | `{nodes, edges}` eliminados con él |
 | `GET`    | `/v1/backup`                          |                                                         | todo el archivo de la base, consistente (owners) |
 | `GET`    | `/v1/export`                          | `?ns=a,b` (todos por defecto)                           | JSON Lines                    |
@@ -513,7 +513,11 @@ Los ids son UUID. Los tiempos en las respuestas son microsegundos desde la
   multiplicada por `superseded_weight` (0,2 por defecto, 1 la deja como
   está), sin importar quién grabó cada uno, y lo dice en sus señales;
   `touch` registra un acceso a cada resultado. `context` ordena sus
-  recuerdos del mismo modo.
+  recuerdos del mismo modo. En un namespace con `language` (`en` o `es`,
+  fijado en `/v1/namespaces/{ns}`), las palabras de los textos y de la
+  pregunta se reducen a su raíz, también los verbos: «decidimos» encuentra
+  «decidir», «revisiones» encuentra «revisión». Sin él, las palabras
+  coinciden enteras (sin importar acentos ni mayúsculas).
 - **memory** (en las respuestas de nodos): `{importance, accesses,
   last_access}`.
 

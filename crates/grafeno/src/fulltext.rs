@@ -181,6 +181,23 @@ fn stopword(analyzer: Analyzer, word: &str) -> bool {
     }
 }
 
+/// A word reduced to its stem in `language` (a node text's terms), by the
+/// Snowball stemmers: verbs too ("decidimos", "decidir" → "decid"). The
+/// word comes without accents, as [`crate::text::tokenize`] leaves it, in
+/// the index and in the question alike.
+pub(crate) fn stem_in(language: crate::text::Language, word: &str) -> String {
+    use std::sync::OnceLock;
+    static ENGLISH: OnceLock<rust_stemmers::Stemmer> = OnceLock::new();
+    static SPANISH: OnceLock<rust_stemmers::Stemmer> = OnceLock::new();
+    let stemmer = match language {
+        crate::text::Language::English => ENGLISH
+            .get_or_init(|| rust_stemmers::Stemmer::create(rust_stemmers::Algorithm::English)),
+        crate::text::Language::Spanish => SPANISH
+            .get_or_init(|| rust_stemmers::Stemmer::create(rust_stemmers::Algorithm::Spanish)),
+    };
+    stemmer.stem(word).into_owned()
+}
+
 /// A word as the analyzer keeps it.
 fn stem(analyzer: Analyzer, word: &str) -> String {
     match analyzer {

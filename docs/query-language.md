@@ -697,7 +697,8 @@ only one list finds counts in the other as if it ranked there four times
 lower (by rank), or with half its scaled score (weighted): a node with no
 word in common with the question (another language, a synonym) that the
 vector list ranks high stays near the top. Without `index` the text side
-is the node text. Recall (`POST /v1/{ns}/recall`,
+is the node text, stemmed in the namespace's `language` (`en` or `es`) if
+it has one. Recall (`POST /v1/{ns}/recall`,
 MCP `recall`) takes the same `index`, `mode`, `fusion`, `k` and
 `text_weight`.
 

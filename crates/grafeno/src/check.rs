@@ -410,12 +410,15 @@ impl ReadTx {
             }
         }
 
+        let language =
+            crate::namespace::read_meta(&self.registry, ns)?.and_then(|meta| meta.language);
         let texts = text::check(
             &self.texts,
             &self.text_lengths,
             &self.postings,
             &self.text_stats,
             ns,
+            language,
             &ids,
             &mut problems,
         )?;

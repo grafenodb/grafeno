@@ -19,6 +19,9 @@ pub struct NamespaceInfo {
     pub created_at: Timestamp,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    /// The language its node texts are stemmed in (`en`, `es`), if any.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub language: Option<crate::text::Language>,
 }
 
 /// What a namespace holds, by label and by index.
@@ -126,6 +129,7 @@ pub(crate) fn namespaces(
             edges,
             created_at: meta.created_at,
             description: meta.description,
+            language: meta.language,
         });
     }
     Ok(out)

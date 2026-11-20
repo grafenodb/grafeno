@@ -44,6 +44,9 @@ pub(crate) struct NamespaceMeta {
     pub(crate) created_at: Timestamp,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) description: Option<String>,
+    /// The language of its node texts (their words are stemmed in it).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) language: Option<crate::text::Language>,
 }
 
 pub(crate) fn read_meta(
@@ -64,6 +67,7 @@ pub(crate) fn ensure(tx: &WriteTransaction, ns: &str) -> Result<()> {
         let meta = NamespaceMeta {
             created_at: Timestamp::now(),
             description: None,
+            language: None,
         };
         table
             .insert(ns, encode(&meta)?.as_slice())
@@ -134,6 +138,7 @@ impl ReadTx {
             edges,
             created_at: meta.created_at,
             description: meta.description,
+            language: meta.language,
         }))
     }
 }
@@ -154,6 +159,7 @@ impl WriteTx {
                 .map(str::trim)
                 .filter(|d| !d.is_empty())
                 .map(str::to_owned),
+            language: None,
         };
         table
             .insert(ns, encode(&meta)?.as_slice())
@@ -172,10 +178,12 @@ impl WriteTx {
         check_namespace(ns)?;
         self.note(crate::replication::Touch::Namespace(ns.to_owned()));
         let mut table = self.tx.open_table(NAMESPACES).map_err(storage)?;
-        let created_at = read_meta(&table, ns)?.map_or(created_at, |meta| meta.created_at);
+        let existing = read_meta(&table, ns)?;
         let meta = NamespaceMeta {
-            created_at,
+            created_at: existing.as_ref().map_or(created_at, |meta| meta.created_at),
             description,
+            // Its texts stay indexed in the language they were.
+            language: existing.and_then(|meta| meta.language),
         };
         table
             .insert(ns, encode(&meta)?.as_slice())
@@ -217,7 +225,31 @@ impl WriteTx {
             edges,
             created_at: meta.created_at,
             description: meta.description,
+            language: meta.language,
         }))
+    }
+
+    /// Sets (or, with `None`, removes) the language of a namespace's node
+    /// texts, and indexes them again in it. Returns how many texts were
+    /// indexed.
+    pub fn set_namespace_language(
+        &mut self,
+        ns: &str,
+        language: Option<crate::text::Language>,
+    ) -> Result<usize> {
+        self.note(crate::replication::Touch::Namespace(ns.to_owned()));
+        let mut table = self.tx.open_table(NAMESPACES).map_err(storage)?;
+        let mut meta =
+            read_meta(&table, ns)?.ok_or_else(|| Error::NamespaceNotFound(ns.to_owned()))?;
+        if meta.language == language {
+            return Ok(0);
+        }
+        meta.language = language;
+        table
+            .insert(ns, encode(&meta)?.as_slice())
+            .map_err(storage)?;
+        drop(table);
+        crate::text::reindex_namespace(&self.tx, ns, language)
     }
 
     /// Deletes a namespace and everything in it: nodes, edges, texts,

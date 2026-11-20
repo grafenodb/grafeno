@@ -90,7 +90,7 @@ pub use rights::{
 };
 pub use stats::{NamespaceInfo, NamespaceStats};
 pub use subscriptions::{ChangeValues, Delivery, EventTarget, Subscription};
-pub use text::tokenize;
+pub use text::{Language, tokenize, tokenize_in};
 pub use traverse::{Direction, EdgeFilter, Neighbor, Path, Subgraph};
 pub use vector::Similarity;
 pub use vindex::{BuildProgress, Building, VectorFilter, VectorSearch, VectorSpec};
