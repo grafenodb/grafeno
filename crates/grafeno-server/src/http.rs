@@ -3264,14 +3264,24 @@ async fn interchange_body(request: Request) -> ApiResult<axum::body::Bytes> {
         .map_err(|error| ApiError::bad_request(format!("cannot read the file: {error}")))
 }
 
+/// An import writes as its caller, from where it came, like any write.
+fn import_options() -> grafeno::InterchangeOptions {
+    grafeno::InterchangeOptions {
+        actor: auth::current().actor(),
+        origin: crate::audit::origin(),
+        ..Default::default()
+    }
+}
+
 async fn import_graphml(
     State(state): State<AppState>,
     Path(ns): Path<String>,
     request: Request,
 ) -> ApiResult<Json<grafeno::InterchangeStats>> {
     let body = interchange_body(request).await?;
+    let options = import_options();
     let stats = blocking(&state, move |db| {
-        db.import_graphml(&ns, body.as_ref(), &grafeno::InterchangeOptions::default())
+        db.import_graphml(&ns, body.as_ref(), &options)
     })
     .await?;
     Ok(Json(stats))
@@ -3283,8 +3293,9 @@ async fn import_nodes_csv(
     request: Request,
 ) -> ApiResult<Json<grafeno::InterchangeStats>> {
     let body = interchange_body(request).await?;
+    let options = import_options();
     let stats = blocking(&state, move |db| {
-        db.import_nodes_csv(&ns, body.as_ref(), &grafeno::InterchangeOptions::default())
+        db.import_nodes_csv(&ns, body.as_ref(), &options)
     })
     .await?;
     Ok(Json(stats))
@@ -3296,8 +3307,9 @@ async fn import_edges_csv(
     request: Request,
 ) -> ApiResult<Json<grafeno::InterchangeStats>> {
     let body = interchange_body(request).await?;
+    let options = import_options();
     let stats = blocking(&state, move |db| {
-        db.import_edges_csv(&ns, body.as_ref(), &grafeno::InterchangeOptions::default())
+        db.import_edges_csv(&ns, body.as_ref(), &options)
     })
     .await?;
     Ok(Json(stats))

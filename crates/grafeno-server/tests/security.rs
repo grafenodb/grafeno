@@ -245,3 +245,88 @@ async fn an_idempotency_key_belongs_to_its_caller_and_statement() {
         "ana once, bob once: {counted}"
     );
 }
+
+async fn raw(
+    app: &Router,
+    key: &str,
+    method: &str,
+    uri: &str,
+    body: Vec<u8>,
+) -> (StatusCode, String) {
+    let request = Request::builder()
+        .method(method)
+        .uri(uri)
+        .header(header::AUTHORIZATION, format!("Bearer {key}"))
+        .body(Body::from(body))
+        .unwrap();
+    let response = app.clone().oneshot(request).await.unwrap();
+    let status = response.status();
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    (status, String::from_utf8_lossy(&bytes).into_owned())
+}
+
+// F-003: an import replaced records the caller may not change.
+#[tokio::test]
+async fn an_import_writes_as_its_caller() {
+    let app = server();
+    ok(
+        &app,
+        "POST",
+        "/v1/s/query",
+        json!({ "query": "CREATE (:Person {name: 'Ana'})" }),
+    )
+    .await;
+    let made = ok(
+        &app,
+        "POST",
+        "/v1/keys",
+        json!({ "name": "own", "grants": [{ "namespace": "s", "role": "admin" }], "own_only": true }),
+    )
+    .await;
+    let own = made["secret"].as_str().unwrap().to_owned();
+
+    // The owner's node, renamed in a file and imported by a key that may
+    // change only what it recorded.
+    let (_, nodes) = raw(&app, OWNER, "GET", "/v1/s/export/nodes.csv", Vec::new()).await;
+    assert!(nodes.contains("Ana"), "{nodes}");
+    let renamed = nodes.replace("Ana", "Mallory");
+    let (code, report) = raw(
+        &app,
+        &own,
+        "POST",
+        "/v1/s/import/nodes.csv",
+        renamed.into_bytes(),
+    )
+    .await;
+    assert!(
+        code != StatusCode::OK || report.contains("\"failed\":1"),
+        "{code} {report}"
+    );
+    let names = ok(
+        &app,
+        "POST",
+        "/v1/s/query",
+        json!({ "query": "MATCH (p:Person) RETURN p.name" }),
+    )
+    .await;
+    assert_eq!(names["rows"], json!([["Ana"]]), "{names}");
+
+    // What it imports as new is recorded as its own.
+    let (code, report) = raw(
+        &app,
+        &own,
+        "POST",
+        "/v1/s/import/nodes.csv",
+        b":LABEL,name\nNote,fresh\n".to_vec(),
+    )
+    .await;
+    assert_eq!(code, StatusCode::OK, "{report}");
+    let by = ok(
+        &app,
+        "POST",
+        "/v1/s/query",
+        json!({ "query": "MATCH (n:Note) RETURN n.@recorded_by" }),
+    )
+    .await;
+    assert_eq!(by["rows"], json!([["own"]]), "{by}");
+}

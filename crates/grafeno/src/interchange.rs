@@ -70,6 +70,13 @@ pub struct InterchangeOptions {
     pub default_label: String,
     /// The label of edges without one.
     pub default_edge_label: String,
+    /// Who writes: what it may change is checked and what it writes is
+    /// recorded as its (none: the database itself).
+    #[serde(skip)]
+    pub actor: Option<crate::Actor>,
+    /// Where the writes come from, for the audit and change logs.
+    #[serde(skip)]
+    pub origin: Option<crate::Origin>,
 }
 
 impl Default for InterchangeOptions {
@@ -77,6 +84,8 @@ impl Default for InterchangeOptions {
         Self {
             default_label: "Node".into(),
             default_edge_label: "RELATED_TO".into(),
+            actor: None,
+            origin: None,
         }
     }
 }
@@ -585,9 +594,12 @@ fn write_nodes(
     ns: &str,
     nodes: Vec<InNode>,
     stats: &mut InterchangeStats,
+    options: &InterchangeOptions,
 ) -> Result<()> {
     for chunk in nodes.chunks(CHUNK) {
         let written = db.write(|tx| {
+            tx.act_as(options.actor.clone());
+            tx.set_origin(options.origin.clone());
             let mut written = 0;
             for node in chunk {
                 let new = NewNode {
@@ -637,9 +649,12 @@ fn write_edges(
     ns: &str,
     edges: Vec<InEdge>,
     stats: &mut InterchangeStats,
+    options: &InterchangeOptions,
 ) -> Result<()> {
     for chunk in edges.chunks(CHUNK) {
         let (written, errors) = db.write(|tx| {
+            tx.act_as(options.actor.clone());
+            tx.set_origin(options.origin.clone());
             let mut written = 0;
             let mut errors = Vec::new();
             for edge in chunk {
@@ -788,7 +803,7 @@ impl Grafeno {
             }
             nodes.push(node);
         }
-        write_nodes(self, ns, nodes, &mut stats)?;
+        write_nodes(self, ns, nodes, &mut stats, options)?;
         Ok(stats)
     }
 
@@ -889,7 +904,7 @@ impl Grafeno {
             }
             edges.push(edge);
         }
-        write_edges(self, ns, edges, &mut stats)?;
+        write_edges(self, ns, edges, &mut stats, options)?;
         Ok(stats)
     }
 
@@ -901,8 +916,8 @@ impl Grafeno {
         options: &InterchangeOptions,
     ) -> Result<InterchangeStats> {
         let (nodes, edges, mut stats) = parse_graphml(input, options)?;
-        write_nodes(self, ns, nodes, &mut stats)?;
-        write_edges(self, ns, edges, &mut stats)?;
+        write_nodes(self, ns, nodes, &mut stats, options)?;
+        write_edges(self, ns, edges, &mut stats, options)?;
         Ok(stats)
     }
 }
