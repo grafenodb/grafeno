@@ -1380,8 +1380,23 @@ impl SearchHit {
     }
 }
 
+/// How much lower a node one list lacks counts in it than in the list that
+/// has it: absent from the text list (no word in common: another language,
+/// a synonym) is weak evidence against a node the vector list ranks high,
+/// and a node only one list finds must not fall below every node both
+/// lists find a little.
+const MISSING_FACTOR: f32 = 4.0;
+
+/// The same for weighted fusion, on scores scaled to 0..1, where a list's
+/// weakest matches are stretched over the whole range.
+const MISSING_SHARE: f32 = 0.5;
+
 /// Scores of two ranked lists put together (`mode` text or vector: that
-/// list's own scores).
+/// list's own scores). In a hybrid, a node one list lacks counts there as
+/// if that list ranked it [`MISSING_FACTOR`] times lower than the other
+/// one does (by rank), or gave it [`MISSING_SHARE`] of the other's scaled
+/// score (weighted); when
+/// one list is empty, the other's order is kept.
 pub fn fuse(
     text: &[(NodeId, f32)],
     vector: &[(NodeId, f32)],
@@ -1393,31 +1408,65 @@ pub fn fuse(
         SearchMode::Vector => return vector.to_vec(),
         SearchMode::Hybrid => {}
     }
+    let both = !text.is_empty() && !vector.is_empty();
     let mut scores: HashMap<NodeId, f32> = HashMap::new();
     match fusion {
         Fusion::Rank { k } => {
-            for list in [text, vector] {
-                for (rank, (node, _)) in list.iter().enumerate() {
-                    *scores.entry(*node).or_default() += 1.0 / (k + rank as f32 + 1.0);
+            let rank_in = |list: &[(NodeId, f32)]| -> HashMap<NodeId, f32> {
+                list.iter()
+                    .enumerate()
+                    .map(|(rank, (node, _))| (*node, rank as f32 + 1.0))
+                    .collect()
+            };
+            let (in_text, in_vector) = (rank_in(text), rank_in(vector));
+            for node in in_text.keys().chain(in_vector.keys()) {
+                if scores.contains_key(node) {
+                    continue;
                 }
+                let score = match (in_text.get(node), in_vector.get(node)) {
+                    (Some(t), Some(v)) => 1.0 / (k + t) + 1.0 / (k + v),
+                    (Some(r), None) | (None, Some(r)) if both => {
+                        1.0 / (k + r) + 1.0 / (k + MISSING_FACTOR * r)
+                    }
+                    (Some(r), None) | (None, Some(r)) => 1.0 / (k + r),
+                    (None, None) => continue,
+                };
+                scores.insert(*node, score);
             }
         }
         Fusion::Weighted { text: weight } => {
             let weight = weight.clamp(0.0, 1.0);
-            for (list, share) in [(text, weight), (vector, 1.0 - weight)] {
+            let scaled = |list: &[(NodeId, f32)]| -> HashMap<NodeId, f32> {
                 let low = list.iter().map(|(_, s)| *s).fold(f32::INFINITY, f32::min);
                 let high = list
                     .iter()
                     .map(|(_, s)| *s)
                     .fold(f32::NEG_INFINITY, f32::max);
-                for (node, score) in list {
-                    let scaled = if high > low {
-                        (score - low) / (high - low)
-                    } else {
-                        1.0
-                    };
-                    *scores.entry(*node).or_default() += share * scaled;
+                list.iter()
+                    .map(|(node, score)| {
+                        let scaled = if high > low {
+                            (score - low) / (high - low)
+                        } else {
+                            1.0
+                        };
+                        (*node, scaled)
+                    })
+                    .collect()
+            };
+            let (in_text, in_vector) = (scaled(text), scaled(vector));
+            for node in in_text.keys().chain(in_vector.keys()) {
+                if scores.contains_key(node) {
+                    continue;
                 }
+                let (t, v) = match (in_text.get(node), in_vector.get(node)) {
+                    (Some(t), Some(v)) => (*t, *v),
+                    (Some(t), None) if both => (*t, t * MISSING_SHARE),
+                    (None, Some(v)) if both => (v * MISSING_SHARE, *v),
+                    (Some(t), None) => (*t, 0.0),
+                    (None, Some(v)) => (0.0, *v),
+                    (None, None) => continue,
+                };
+                scores.insert(*node, weight * t + (1.0 - weight) * v);
             }
         }
     }
@@ -1516,5 +1565,37 @@ mod tests {
             Fusion::Weighted { text: 1.0 },
         );
         assert_eq!(weighted[0].0, a, "text alone");
+    }
+
+    /// A node the vector list ranks near the top and the text list lacks
+    /// (another language) stays among the first, ahead of nodes both lists
+    /// find only further down: by rank and weighted.
+    #[test]
+    fn a_strong_match_in_one_list_is_not_lost() {
+        let nodes: Vec<NodeId> = (0..30).map(|_| NodeId::new()).collect();
+        let target = nodes[0];
+        // The text list: 20 weak matches of a common word, not the target.
+        let text: Vec<(NodeId, f32)> = nodes[1..21]
+            .iter()
+            .enumerate()
+            .map(|(i, n)| (*n, 2.0 - i as f32 * 0.05))
+            .collect();
+        // The vector list: everything, the target second.
+        let mut order: Vec<NodeId> = nodes[1..].to_vec();
+        order.insert(1, target);
+        let vector: Vec<(NodeId, f32)> = order
+            .iter()
+            .enumerate()
+            .map(|(i, n)| (*n, 0.9 - i as f32 * 0.02))
+            .collect();
+        for fusion in [Fusion::default(), Fusion::Weighted { text: 0.5 }] {
+            let fused = fuse(&text, &vector, SearchMode::Hybrid, fusion);
+            // Before, it fell to 20th by rank and 14th weighted, below
+            // nodes of the text list's tail: now only nodes both lists rank
+            // high come first.
+            let at = fused.iter().position(|(n, _)| *n == target).unwrap();
+            let within = if fusion == Fusion::default() { 5 } else { 8 };
+            assert!(at < within, "{fusion:?}: at {at}");
+        }
     }
 }

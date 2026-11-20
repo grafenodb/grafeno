@@ -692,8 +692,12 @@ CALL db.search('graph memory', {mode: 'hybrid', embedding: $e, fusion: 'weighted
 Hybrid search takes `candidates` (50) from each list and fuses them: by
 rank (`fusion: 'rank'`, the default: each list adds `1 / (k + rank)`,
 `k` 60), or by score (`fusion: 'weighted'`: each list's scores scaled to
-0..1, then `text × text_weight + vector × (1 − text_weight)`). Without
-`index` the text side is the node text. Recall (`POST /v1/{ns}/recall`,
+0..1, then `text × text_weight + vector × (1 − text_weight)`). A node
+only one list finds counts in the other as if it ranked there four times
+lower (by rank), or with half its scaled score (weighted): a node with no
+word in common with the question (another language, a synonym) that the
+vector list ranks high stays near the top. Without `index` the text side
+is the node text. Recall (`POST /v1/{ns}/recall`,
 MCP `recall`) takes the same `index`, `mode`, `fusion`, `k` and
 `text_weight`.
 
