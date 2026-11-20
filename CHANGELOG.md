@@ -42,6 +42,12 @@ Fixes from a review of 0.3.0 focused on access; see
   gets a reference, and the message goes to the log.
 - **Fixed**: secrets are compared in a time that tells nothing of their
   length.
+- **Fixed**: while an explicit write transaction was open, a refused
+  request (a wrong credential, a missing right, a failed sign-in) was not
+  answered until the transaction ended, since its audit event waited for
+  the writer. The answer waits for the event 200 ms at most; the event is
+  written once the writer is free, with 64 waiting at most and the rest
+  counted as left out.
 
 ## 0.3.0 (2026-11-13)
 

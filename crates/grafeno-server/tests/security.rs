@@ -528,18 +528,16 @@ async fn an_account_named_owner_is_not_the_servers_token() {
     let impostor = principal(&app, "owner", "s", &["read", "create", "update", "delete"]).await;
     let begun = ok(&app, "POST", "/v1/s/transactions", json!({})).await;
     let id = begun["id"].as_str().unwrap().to_owned();
-    // A refusal is audited, and the audit waits for the writer the open
-    // transaction holds: the attempts run aside until the owner ends it.
-    let attempt = |path: String, body: Option<Value>| {
-        let (app, impostor) = (app.clone(), impostor.clone());
-        tokio::spawn(async move { call(&app, &impostor, "POST", &path, body).await })
-    };
-    let query = attempt(
-        format!("/v1/s/transactions/{id}/query"),
-        Some(json!({ "query": "CREATE (:Stolen)" })),
-    );
-    let commit = attempt(format!("/v1/s/transactions/{id}/commit"), None);
-    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    for (path, body) in [
+        (
+            format!("/v1/s/transactions/{id}/query"),
+            Some(json!({ "query": "CREATE (:Stolen)" })),
+        ),
+        (format!("/v1/s/transactions/{id}/commit"), None),
+    ] {
+        let (code, body) = call(&app, &impostor, "POST", &path, body).await;
+        assert_eq!(code, StatusCode::FORBIDDEN, "{body}");
+    }
     ok(
         &app,
         "POST",
@@ -547,10 +545,6 @@ async fn an_account_named_owner_is_not_the_servers_token() {
         json!({}),
     )
     .await;
-    for attempt in [query, commit] {
-        let (code, body) = attempt.await.unwrap();
-        assert_eq!(code, StatusCode::FORBIDDEN, "{body}");
-    }
     let rows = ok(
         &app,
         "POST",
@@ -617,4 +611,57 @@ async fn the_static_token_is_compared_whole() {
     }
     let (code, _) = call(&app, OWNER, "GET", "/v1/whoami", None).await;
     assert_eq!(code, StatusCode::OK);
+}
+
+// A refusal is audited, and an explicit write transaction holds the
+// writer: the refusal must still be answered while it is open, and its
+// event written once the writer is free.
+#[tokio::test]
+async fn a_refusal_is_answered_while_a_transaction_holds_the_writer() {
+    let app = server();
+    let reader = principal(&app, "reader", "s", &["read"]).await;
+    let begun = ok(&app, "POST", "/v1/s/transactions", json!({})).await;
+    let id = begun["id"].as_str().unwrap().to_owned();
+    let within = std::time::Duration::from_secs(5);
+    let refused = tokio::time::timeout(
+        within,
+        call(
+            &app,
+            &reader,
+            "POST",
+            "/v1/s/nodes",
+            Some(json!({ "labels": ["Note"] })),
+        ),
+    )
+    .await
+    .expect("a refusal waited for the open transaction");
+    assert_eq!(refused.0, StatusCode::FORBIDDEN, "{}", refused.1);
+    let unknown = tokio::time::timeout(within, call(&app, "not-a-key", "GET", "/v1/whoami", None))
+        .await
+        .expect("a wrong credential waited for the open transaction");
+    assert_eq!(unknown.0, StatusCode::UNAUTHORIZED, "{}", unknown.1);
+    ok(
+        &app,
+        "POST",
+        &format!("/v1/s/transactions/{id}/rollback"),
+        json!({}),
+    )
+    .await;
+
+    // Both refusals reach the audit log once the writer is free.
+    let deadline = std::time::Instant::now() + within;
+    loop {
+        let (_, audit) = call(&app, OWNER, "GET", "/v1/audit", None).await;
+        let refused = audit["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|e| e["kind"] == "refused")
+            .count();
+        if refused >= 2 {
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline, "{audit}");
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
 }

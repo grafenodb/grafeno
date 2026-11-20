@@ -122,6 +122,7 @@ fixed below, each with a test that failed before the change
 | An account named `owner` shared the static token's transactions | Medium | Fixed: transactions belong to a caller by kind and name. |
 | A task's failure message reached the client | Low | Fixed: a reference, the message in the log. |
 | A secret's comparison ended early on a different length | Low | Fixed: hashes compared whole. |
+| A refused request waited while an explicit transaction held the writer (found while fixing the above) | — | Fixed: the refusal is answered; its event is written once the writer is free, 64 at most waiting, the rest counted as left out. |
 
 ## Open decisions
 

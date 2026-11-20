@@ -461,7 +461,7 @@ pub async fn signin(
                 .target(input.name.clone())
                 .outcome(Outcome::Refused);
             event.address = address.clone();
-            crate::audit::record(&state, event).await;
+            crate::audit::record_refusal(&state, event).await;
         }
         return Err(unauthorized("unauthorized", "wrong name or password"));
     };

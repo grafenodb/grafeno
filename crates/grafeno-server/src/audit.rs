@@ -204,9 +204,33 @@ pub async fn record_sampled(state: &AppState, source: &str, mut event: NewAuditE
                 }
                 event.detail["left_out_before"] = json!(left_out);
             }
-            record(state, event).await;
+            record_refusal(state, event).await;
         }
     }
+}
+
+/// How many refusals may wait to be written to the audit log at once;
+/// past it they are counted as left out.
+pub const PENDING_REFUSALS: usize = 64;
+
+/// How long the answer to a refused request waits for its event.
+const REFUSAL_WAIT: Duration = Duration::from_millis(200);
+
+/// Writes a refusal's event without holding its answer back for long: an
+/// explicit transaction may hold the writer, and a refusal (a wrong
+/// credential, a missing right) must still be answered. The event is
+/// written once the writer is free; a few dozen wait at most.
+pub async fn record_refusal(state: &AppState, event: NewAuditEvent) {
+    let Ok(permit) = state.audit_pending.clone().try_acquire_owned() else {
+        state.metrics.audit_left_out();
+        return;
+    };
+    let aside = state.clone();
+    let written = tokio::spawn(async move {
+        record(&aside, event).await;
+        drop(permit);
+    });
+    let _ = tokio::time::timeout(REFUSAL_WAIT, written).await;
 }
 
 pub fn refusal(method: &str, path: &str, code: &str, message: &str) -> NewAuditEvent {

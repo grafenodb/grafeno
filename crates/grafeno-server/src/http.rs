@@ -74,6 +74,8 @@ pub struct AppState {
     pub transactions: Arc<crate::transactions::Transactions>,
     /// Which refusals reach the audit log, per source.
     pub audit_sampler: Arc<crate::audit::Sampler>,
+    /// Room for refusals still being written to the audit log.
+    pub audit_pending: Arc<tokio::sync::Semaphore>,
 }
 
 /// Where writes go: the group-commit writer of a single server, or the
@@ -201,6 +203,7 @@ impl AppState {
             primary_keys: keys,
             throttle: Arc::default(),
             audit_sampler: Arc::default(),
+            audit_pending: Arc::new(tokio::sync::Semaphore::new(crate::audit::PENDING_REFUSALS)),
             auth: crate::accounts::AuthConfig::default(),
             db,
             token: token.map(Arc::from),
