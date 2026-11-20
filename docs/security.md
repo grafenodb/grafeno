@@ -104,9 +104,9 @@ has a test that fails without it.
 ## Review of version 0.3.0
 
 A review of 0.3.0, focused on who may do what. Its access findings are
-fixed below, each with a test that failed before the change
-(`crates/grafeno-server/tests/security.rs`,
-`crates/grafeno-server/tests/groups_open.rs`); the rest follow.
+and network findings are fixed below, each with a test that failed
+before the change (`crates/grafeno-server/tests/security.rs`,
+`groups_open.rs` and `cluster.rs` there); the rest follow.
 
 | Finding | Severity given | What was done |
 | --- | --- | --- |
@@ -122,6 +122,9 @@ fixed below, each with a test that failed before the change
 | An account named `owner` shared the static token's transactions | Medium | Fixed: transactions belong to a caller by kind and name. |
 | A task's failure message reached the client | Low | Fixed: a reference, the message in the log. |
 | A secret's comparison ended early on a different length | Low | Fixed: hashes compared whole. |
+| A webhook delivery looked its name up again after the check, or let a proxy of the environment do it | High | Fixed: it connects to the addresses checked, through no proxy. |
+| IPv6 addresses carrying a private IPv4 one (NAT64, 6to4, Teredo, compatible and translated forms) passed for public | Medium | Fixed: as public as the address they carry; Teredo and local-use NAT64 refused. |
+| With the cluster secret, `/raft` read a body of any size and kept each refused snapshot | Medium | Fixed: a message is refused past 1 GiB before it is read, only a snapshot carries data, and a refused snapshot is dropped. |
 | A refused request waited while an explicit transaction held the writer (found while fixing the above) | — | Fixed: the refusal is answered; its event is written once the writer is free, 64 at most waiting, the rest counted as left out. |
 
 ## Open decisions

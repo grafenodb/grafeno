@@ -13,7 +13,7 @@ version (now 18) is upgraded in place, with a copy kept first.
 
 ## Unreleased
 
-Fixes from a review of 0.3.0 focused on access; see
+Fixes from a review of 0.3.0, on access and the network; see
 [docs/security.md](docs/security.md#review-of-version-030).
 
 - **Fixed**: on a cluster member with several groups and no static token,
@@ -42,6 +42,19 @@ Fixes from a review of 0.3.0 focused on access; see
   gets a reference, and the message goes to the log.
 - **Fixed**: secrets are compared in a time that tells nothing of their
   length.
+- **Fixed**: a webhook delivery checked that its name had only public
+  addresses, then let the HTTP client, or a proxy of the environment, look
+  it up again, and could reach an address nobody checked. It connects to
+  the addresses checked, through no proxy; with `[background]
+  webhooks_to_private = true` deliveries go as before.
+- **Fixed**: IPv6 addresses that carry an IPv4 one (NAT64, 6to4, the
+  compatible and translated forms) passed the webhook check whatever that
+  address was; they are as public as it is. Teredo and local-use NAT64
+  are refused.
+- **Fixed**: with the cluster secret, `POST /raft` read a body of any size
+  and kept each snapshot Raft refused until the process ended. A message
+  is refused past 1 GiB before it is read, only a snapshot carries data
+  after its message, and a snapshot Raft does not install is dropped.
 - **Fixed**: while an explicit write transaction was open, a refused
   request (a wrong credential, a missing right, a failed sign-in) was not
   answered until the transaction ended, since its audit event waited for
