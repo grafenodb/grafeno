@@ -1243,3 +1243,65 @@ pub async fn revoke_key(
     state.keys.reload(&state.db)?;
     Ok(StatusCode::NO_CONTENT)
 }
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TokenInput {
+    current_token: String,
+}
+
+/// `POST /v1/auth/token`: replaces the server's static token with a new
+/// one, kept in its settings file. Only the token itself may, and it is
+/// asked again in the body; an account, a superuser's too, may not.
+pub async fn rotate_token(
+    State(state): State<AppState>,
+    ClientAddress(address): ClientAddress,
+    Body(input): Body<TokenInput>,
+) -> ApiResult<Json<Value>> {
+    const WHO: &str = "(static token)";
+    let Some(token) = state.token.clone() else {
+        return Err(ApiError::with_status(
+            StatusCode::CONFLICT,
+            "no_token",
+            "this server has no static token: give it one in its settings file",
+        ));
+    };
+    if !matches!(auth::current(), Caller::Owner) {
+        return Err(ApiError::forbidden_message(
+            "only the static token can change the static token",
+        ));
+    }
+    state
+        .throttle
+        .check(state.auth.lockout, WHO, address.as_deref())
+        .map_err(|message| {
+            ApiError::with_status(StatusCode::TOO_MANY_REQUESTS, "locked", message)
+        })?;
+    if input.current_token.len() > auth::MAX_PASSWORD_BYTES {
+        state.throttle.failed(WHO, address.as_deref());
+        return Err(unauthorized("unauthorized", "the current token is wrong"));
+    }
+    let rotated = tokio::task::spawn_blocking(move || token.rotate(&input.current_token))
+        .await
+        .map_err(crate::http::joined)?;
+    match rotated {
+        Ok(new) => {
+            let mut event = NewAuditEvent::new("token_rotated").target(WHO);
+            event.address = address;
+            crate::audit::record(&state, event).await;
+            Ok(Json(json!({ "token": new })))
+        }
+        Err(auth::RotateError::Wrong) => {
+            state.throttle.failed(WHO, address.as_deref());
+            Err(unauthorized("unauthorized", "the current token is wrong"))
+        }
+        Err(auth::RotateError::NotFromFile) => Err(ApiError::with_status(
+            StatusCode::CONFLICT,
+            "token_not_in_file",
+            "the token was given by --token or GRAFENO_TOKEN: change it there and restart the server",
+        )),
+        Err(auth::RotateError::File(message)) => Err(ApiError::internal(format!(
+            "the token was not changed: {message}"
+        ))),
+    }
+}

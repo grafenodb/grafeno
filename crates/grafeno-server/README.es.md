@@ -307,6 +307,15 @@ cuentas está abierto a cualquiera que llegue a él; su primera cuenta
 (`grafeno users create … --superuser`, o el primer registro) debe ser un
 superusuario, y desde entonces cada petición necesita una credencial.
 
+El token estático (`token` en el archivo de configuración, o `--token`) es
+el administrador: no necesita cuenta y puede hacerlo todo, entre ello
+crear cuentas con sus roles y permisos. Las cuentas entran con nombre y
+contraseña. El token se cambia con `POST /v1/auth/token`, que pide el
+actual, o con `grafeno config token --rotate`: el nuevo vale al instante y
+queda escrito en el archivo de configuración. Un token dado por `--token`
+o `GRAFENO_TOKEN` se cambia ahí, y se reinicia el servidor. En un clúster,
+cada miembro guarda el suyo.
+
 ### Cuentas e inicio de sesión (14.1)
 
 | Método | Ruta | Cuerpo | Devuelve |
@@ -319,6 +328,7 @@ superusuario, y desde entonces cada petición necesita una credencial.
 | `GET` | `/v1/auth/sessions` | `?account=` (superusuarios; `*` para todas) | las sesiones, con `current` marcando la de quien llama |
 | `DELETE` | `/v1/auth/sessions/{id}` | | termina una de las de quien llama (un superusuario: la de cualquiera) |
 | `POST` | `/v1/auth/password` | `{current_password, new_password}` | la cambia; las demás sesiones terminan |
+| `POST` | `/v1/auth/token` | `{current_token}` | solo el token estático: `{token}`, uno nuevo, al instante y en el archivo de configuración del que se leyó; 409 si lo dio `--token` o `GRAFENO_TOKEN` |
 | `GET`, `POST` | `/v1/accounts` | `{name, kind: user\|service, password?, grants, roles, superuser, own_only, description}` | `manage_accounts`; solo los superusuarios crean superusuarios |
 | `GET`, `PATCH`, `DELETE` | `/v1/accounts/{name}` | `{password?, grants?, roles?, superuser?, own_only?, disabled?, description?}` | `manage_accounts`, no sobre superusuarios; deshabilitarla o una contraseña nueva terminan sus sesiones |
 | `GET` | `/v1/privileges` | | cada acción por objeto, y los niveles predefinidos (cualquiera con sesión) |

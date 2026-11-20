@@ -1005,3 +1005,77 @@ mod tests {
         assert_ne!(hash_secret(&secret), hash_secret(&new_secret()));
     }
 }
+
+// ----------------------------------------------------------- static token
+
+/// The server's static token: the administrator's credential, which needs
+/// no account. It can be changed while the server runs, by whoever shows
+/// the current one, and the change is kept in the settings file it came
+/// from.
+pub struct StaticToken {
+    current: RwLock<Arc<str>>,
+    /// The settings file the token was read from; `None` when it came from
+    /// `--token` or `GRAFENO_TOKEN`, which the server cannot change.
+    file: Option<std::path::PathBuf>,
+}
+
+/// Why a token was not changed.
+#[derive(Debug, PartialEq, Eq)]
+pub enum RotateError {
+    /// The current token given is not the server's.
+    Wrong,
+    /// The token comes from the command line or the environment.
+    NotFromFile,
+    /// The settings file could not be read or written.
+    File(String),
+}
+
+impl StaticToken {
+    pub fn new(token: &str, file: Option<std::path::PathBuf>) -> Self {
+        Self {
+            current: RwLock::new(Arc::from(token)),
+            file,
+        }
+    }
+
+    /// Whether `given` is the token, compared in a time that tells nothing
+    /// of either.
+    pub fn matches(&self, given: &[u8]) -> bool {
+        let current = self
+            .current
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        crate::http::constant_time_eq(given, current.as_bytes())
+    }
+
+    /// The token as it is now.
+    pub fn current(&self) -> Arc<str> {
+        self.current
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
+    /// The settings file it is kept in, if any.
+    pub fn file(&self) -> Option<&std::path::Path> {
+        self.file.as_deref()
+    }
+
+    /// Replaces the token with a new one, given the current one: the new
+    /// token is written to the settings file first, and takes effect at
+    /// once. Returns the new token.
+    pub fn rotate(&self, current: &str) -> Result<String, RotateError> {
+        let mut token = self.current.write().unwrap_or_else(|e| e.into_inner());
+        if !crate::http::constant_time_eq(current.as_bytes(), token.as_bytes()) {
+            return Err(RotateError::Wrong);
+        }
+        let Some(file) = &self.file else {
+            return Err(RotateError::NotFromFile);
+        };
+        let new = crate::config::new_token().map_err(RotateError::File)?;
+        crate::config::replace_token(file, &new).map_err(RotateError::File)?;
+        *token = Arc::from(new.as_str());
+        Ok(new)
+    }
+}

@@ -37,7 +37,9 @@ pub struct AppState {
     /// Commits concurrent writes in groups, or, on a cluster member,
     /// through the cluster's leader.
     pub writer: Arc<Writes>,
-    pub token: Option<Arc<str>>,
+    /// The static token (the administrator's), which can be changed while
+    /// the server runs.
+    pub token: Option<Arc<crate::auth::StaticToken>>,
     /// Which key each secret is, loaded from this group's database, and
     /// each account's rights there.
     pub keys: Arc<crate::auth::Credentials>,
@@ -206,7 +208,7 @@ impl AppState {
             audit_pending: Arc::new(tokio::sync::Semaphore::new(crate::audit::PENDING_REFUSALS)),
             auth: crate::accounts::AuthConfig::default(),
             db,
-            token: token.map(Arc::from),
+            token: token.map(|token| Arc::new(crate::auth::StaticToken::new(token, None))),
             limits: grafeno_query::Limits::standard(),
             in_flight: Arc::new(tokio::sync::Semaphore::new(MAX_REQUESTS)),
             metrics: Arc::default(),
@@ -308,6 +310,19 @@ impl AppState {
     }
 
     /// What `GET /v1/settings` reports.
+    /// Keeps a change of the static token in the settings file `path` it
+    /// was read from.
+    pub fn with_token_file(mut self, path: Option<std::path::PathBuf>) -> Self {
+        if let (Some(token), Some(path)) = (&self.token, path) {
+            let current = token.current();
+            self.token = Some(Arc::new(crate::auth::StaticToken::new(
+                &current,
+                Some(path),
+            )));
+        }
+        self
+    }
+
     pub fn with_settings(mut self, settings: Value) -> Self {
         self.settings = Arc::new(settings);
         self
@@ -540,6 +555,10 @@ pub fn router_with(state: AppState, options: &Options) -> Router {
             post(crate::accounts::signin).layer(DefaultBodyLimit::max(AUTH_BODY_LIMIT)),
         )
         .route("/auth/refresh", post(crate::accounts::refresh))
+        .route(
+            "/auth/token",
+            post(crate::accounts::rotate_token).layer(DefaultBodyLimit::max(AUTH_BODY_LIMIT)),
+        )
         .route("/auth/signout", post(crate::accounts::signout))
         .route(
             "/auth/password",
@@ -983,7 +1002,7 @@ async fn auth(State(state): State<AppState>, request: Request, next: Next) -> Re
             if state
                 .token
                 .as_ref()
-                .is_some_and(|token| constant_time_eq(given.as_bytes(), token.as_bytes())) =>
+                .is_some_and(|token| token.matches(given.as_bytes())) =>
         {
             Ok(Caller::Owner)
         }

@@ -300,6 +300,15 @@ token nor accounts is open to anyone who reaches it; its first account
 (`grafeno users create … --superuser`, or the first sign-up) must be a
 superuser, and from then on every request needs a credential.
 
+The static token (`token` in the settings file, or `--token`) is the
+administrator: it needs no account and may do anything, making accounts
+with their roles and grants among it. Accounts sign in with a name and a
+password. The token changes with `POST /v1/auth/token`, which asks for
+the current one, or `grafeno config token --rotate`: the new one takes
+effect at once and is written to the settings file. A token given by
+`--token` or `GRAFENO_TOKEN` is changed there, and the server restarted.
+On a cluster, each member keeps its own.
+
 ### Accounts and sign-in (14.1)
 
 | Method | Path | Body | Returns |
@@ -312,6 +321,7 @@ superuser, and from then on every request needs a credential.
 | `GET` | `/v1/auth/sessions` | `?account=` (superusers; `*` for all) | the sessions, `current` marking the caller's |
 | `DELETE` | `/v1/auth/sessions/{id}` | | ends one of the caller's (a superuser: anyone's) |
 | `POST` | `/v1/auth/password` | `{current_password, new_password}` | changes it; the other sessions end |
+| `POST` | `/v1/auth/token` | `{current_token}` | the static token only: `{token}`, a new one, at once and in the settings file it was read from; 409 when `--token` or `GRAFENO_TOKEN` gave it |
 | `GET`, `POST` | `/v1/accounts` | `{name, kind: user\|service, password?, grants, roles, superuser, own_only, description}` | `manage_accounts`; only superusers make superusers |
 | `GET`, `PATCH`, `DELETE` | `/v1/accounts/{name}` | `{password?, grants?, roles?, superuser?, own_only?, disabled?, description?}` | `manage_accounts`, not on superusers; disabling or a new password ends its sessions |
 | `GET` | `/v1/privileges` | | every action by object, and the built-in levels (anyone signed in) |

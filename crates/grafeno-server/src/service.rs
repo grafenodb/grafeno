@@ -21,6 +21,10 @@ pub struct ServerSettings {
     pub db: Option<PathBuf>,
     pub addr: SocketAddr,
     pub token: Option<String>,
+    /// The settings file the token was read from: a change of the token
+    /// (`POST /v1/auth/token`) is kept there. `None` when `--token` or
+    /// `GRAFENO_TOKEN` gave it.
+    pub token_file: Option<PathBuf>,
     pub options: Options,
     /// Limits for each GQ query.
     pub limits: grafeno_query::Limits,
@@ -87,6 +91,7 @@ impl ServerSettings {
                 .token
                 .or(config.token)
                 .filter(|token| !token.is_empty()),
+            token_file: None,
             options: Options { cors_origins },
             limits: config.query.limits(),
             scan_threads: config.query.scan_threads.unwrap_or(0),
@@ -200,6 +205,7 @@ pub fn run(
     db.enable_events(settings.events);
     db.set_audit_retention(settings.audit);
     let mut state = AppState::with_writer(db.clone(), settings.token.as_deref(), settings.writer)
+        .with_token_file(settings.token_file.clone())
         .with_background(settings.background.clone())
         .with_transactions(settings.transactions)
         .with_import_chunk(settings.import_chunk)
@@ -468,8 +474,14 @@ pub mod windows {
             })
         };
 
-        let settings = Config::load(config_path)
-            .map(|config| ServerSettings::resolve(Some(config), Overrides::default()));
+        let settings = Config::load(config_path).map(|config| {
+            let from_file = config.token.as_deref().is_some_and(|t| !t.is_empty());
+            let mut settings = ServerSettings::resolve(Some(config), Overrides::default());
+            if from_file {
+                settings.token_file = Some(config_path.to_path_buf());
+            }
+            settings
+        });
         let result = match settings {
             Ok(settings) => {
                 report(ServiceState::Running, 0)?;

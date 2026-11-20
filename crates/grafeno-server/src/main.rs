@@ -355,6 +355,33 @@ enum ClusterCommand {
     },
 }
 
+/// Asks the server at `url` to replace its static token, given the
+/// current one; returns the new one.
+fn rotate_token(url: &str, current: &str) -> Result<String, String> {
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .http_status_as_error(false)
+        .build()
+        .into();
+    let url = format!("{}/v1/auth/token", url.trim_end_matches('/'));
+    let mut response = agent
+        .post(&url)
+        .header("Authorization", &format!("Bearer {current}"))
+        .send_json(serde_json::json!({ "current_token": current }))
+        .map_err(|error| format!("{url}: {error} (is the server running?)"))?;
+    let status = response.status();
+    let body: serde_json::Value = response
+        .body_mut()
+        .read_json()
+        .map_err(|error| format!("{url}: {error}"))?;
+    match body["token"].as_str() {
+        Some(token) if status.is_success() => Ok(token.to_owned()),
+        _ => Err(format!(
+            "{url} answered {status}: {}",
+            body["error"]["message"].as_str().unwrap_or("no token")
+        )),
+    }
+}
+
 fn cluster_call(
     target: &MemberTarget,
     method: &str,
@@ -617,6 +644,10 @@ enum ConfigCommand {
     Token {
         #[arg(long)]
         path: Option<PathBuf>,
+        /// Have the running server replace it with a new one (the current
+        /// one is read from the file), and print the new one.
+        #[arg(long)]
+        rotate: bool,
     },
 }
 
@@ -871,7 +902,16 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             cors_origins,
             stop_with_stdin,
         } => {
-            let config = config.map(|path| Config::load(&path)).transpose()?;
+            let path = config;
+            let config = path.as_ref().map(|path| Config::load(path)).transpose()?;
+            // A token read from the settings file is changed there.
+            let token_file = path.filter(|_| {
+                token.is_none()
+                    && config
+                        .as_ref()
+                        .and_then(|c| c.token.as_deref())
+                        .is_some_and(|t| !t.is_empty())
+            });
             let overrides = Overrides {
                 db,
                 memory,
@@ -880,7 +920,8 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 no_studio,
                 cors_origins,
             };
-            let settings = ServerSettings::resolve(config, overrides);
+            let mut settings = ServerSettings::resolve(config, overrides);
+            settings.token_file = token_file;
             if stop_with_stdin {
                 service::run_until_signal_or_stdin(settings)?;
             } else {
@@ -905,11 +946,16 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 println!("Wrote {}.", path.display());
             }
             ConfigCommand::Path => println!("{}", config::default_path().display()),
-            ConfigCommand::Token { path } => {
+            ConfigCommand::Token { path, rotate } => {
                 let path = path.unwrap_or_else(config::default_path);
-                match Config::load(&path)?.token {
-                    Some(token) => println!("{token}"),
-                    None => return Err(format!("{} has no token", path.display()).into()),
+                let config = Config::load(&path)?;
+                let Some(token) = config.token.clone() else {
+                    return Err(format!("{} has no token", path.display()).into());
+                };
+                if rotate {
+                    println!("{}", rotate_token(&config.local_url(), &token)?);
+                } else {
+                    println!("{token}");
                 }
             }
         },

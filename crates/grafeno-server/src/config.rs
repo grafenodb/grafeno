@@ -496,6 +496,50 @@ pub fn new_token() -> Result<String, String> {
         .collect())
 }
 
+/// Puts `token` in place of the token of the settings file at `path`,
+/// leaving the rest of the file (its comments too) as it was. The file is
+/// read back: if it does not give the new token, the old text is restored.
+pub fn replace_token(path: &Path, token: &str) -> Result<(), String> {
+    let old = std::fs::read_to_string(path)
+        .map_err(|error| format!("cannot read {}: {error}", path.display()))?;
+    let mut replaced = false;
+    let mut top = true;
+    let mut lines: Vec<String> = Vec::new();
+    for line in old.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with('[') {
+            top = false;
+        }
+        let key = trimmed.split('=').next().unwrap_or("").trim();
+        if top && !replaced && key == "token" && trimmed.contains('=') {
+            lines.push(format!("token = \"{token}\""));
+            replaced = true;
+        } else {
+            lines.push(line.to_owned());
+        }
+    }
+    if !replaced {
+        return Err(format!("{} has no token to replace", path.display()));
+    }
+    let ending = if old.contains("\r\n") { "\r\n" } else { "\n" };
+    let mut text = lines.join(ending);
+    if old.ends_with('\n') {
+        text.push_str(ending);
+    }
+    std::fs::write(path, &text)
+        .map_err(|error| format!("cannot write {}: {error}", path.display()))?;
+    match Config::load(path) {
+        Ok(config) if config.token.as_deref() == Some(token) => Ok(()),
+        _ => {
+            let _ = std::fs::write(path, &old);
+            Err(format!(
+                "{} did not take the new token; it was left as it was",
+                path.display()
+            ))
+        }
+    }
+}
+
 /// Writes a new configuration with a fresh token. Refuses to replace an
 /// existing file unless `force`.
 pub fn init(path: &Path, db: &Path, addr: SocketAddr, force: bool) -> Result<Config, String> {
