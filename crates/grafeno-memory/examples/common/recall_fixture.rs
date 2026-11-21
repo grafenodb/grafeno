@@ -18,6 +18,8 @@ pub struct Memory {
     /// `(relation, other key)`.
     pub links: Vec<(String, String)>,
     pub embedding: Vec<f32>,
+    /// When it was written (long term), as ISO 8601.
+    pub at: Option<String>,
 }
 
 /// A question, and the keys of the memories that answer it.
@@ -114,6 +116,7 @@ fn memories(items: &Value, embeddings: Vec<Vec<f32>>, label: Option<&str>) -> Ve
                 text: m["text"].as_str().unwrap().to_owned(),
                 links,
                 embedding,
+                at: m["at"].as_str().map(str::to_owned),
             }
         })
         .collect()
@@ -195,7 +198,17 @@ pub fn load(db: &Grafeno, ns: &str, memories: &[Memory]) -> HashMap<String, Node
             ids.insert(m.key.clone(), id);
         }
     }
+    // Each memory as old as it is: its last access is when it was written.
     db.write(|tx| {
+        for m in memories.iter().filter(|m| m.at.is_some()) {
+            let at = grafeno::Timestamp::parse(m.at.as_deref().unwrap())?;
+            let state = grafeno::MemoryState {
+                importance: grafeno::DEFAULT_IMPORTANCE,
+                accesses: 0,
+                last_access: at,
+            };
+            tx.restore_memory(ns, ids[&m.key], state)?;
+        }
         for m in memories {
             for (relation, other) in &m.links {
                 tx.create_edge(ns, NewEdge::new(ids[&m.key], relation.as_str(), ids[other]))?;

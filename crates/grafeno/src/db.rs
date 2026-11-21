@@ -1279,6 +1279,54 @@ impl ReadTx {
         })
     }
 
+    /// [`ReadTx::search_text`] among the nodes with any of `labels` (all
+    /// nodes when empty): the `limit` best of those, not the best of all
+    /// then filtered, so a labeled node a crowd of others outscores is
+    /// still found.
+    pub fn search_text_labeled(
+        &self,
+        ns: &str,
+        query: &str,
+        limit: usize,
+        labels: &[String],
+    ) -> Result<Vec<Hit>> {
+        if labels.is_empty() {
+            return self.search_text(ns, query, limit);
+        }
+        let language =
+            crate::namespace::read_meta(&self.registry, ns)?.and_then(|meta| meta.language);
+        let all = text::search(
+            &self.postings,
+            &self.text_stats,
+            ns,
+            language,
+            query,
+            usize::MAX,
+        )?;
+        let mut labeled = Vec::new();
+        for hit in all {
+            let id = hit.node.as_u128();
+            let mut any = false;
+            for label in labels {
+                if self
+                    .labels
+                    .get((ns, label.as_str(), id))
+                    .map_err(storage)?
+                    .is_some()
+                {
+                    any = true;
+                    break;
+                }
+            }
+            if any {
+                labeled.push(hit);
+            }
+        }
+        self.visible_hits(ns, limit, |ask| {
+            Ok(labeled.iter().take(ask).cloned().collect())
+        })
+    }
+
     /// Approximate nearest neighbors by cosine similarity, best first.
     pub fn search_vector(&self, ns: &str, query: &[f32], limit: usize) -> Result<Vec<Hit>> {
         self.search_vector_with(ns, query, limit, limit.saturating_mul(4).max(64))

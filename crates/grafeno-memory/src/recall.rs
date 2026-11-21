@@ -212,22 +212,47 @@ pub fn recall(read: &ReadTx, ns: &str, query: &RecallQuery) -> Result<Vec<Recall
                 .map(|hit| (hit.node, hit.score))
                 .collect(),
         };
+        // With labels, their own best candidates join the list after the
+        // others: a node of the label a crowd of others outscores is still
+        // found, and the others still lead to it through the graph.
+        if query.index.is_none() && !query.labels.is_empty() {
+            let labeled = read.search_text_labeled(ns, text, query.candidates, &query.labels)?;
+            append_new(
+                &mut text_hits,
+                labeled.into_iter().map(|h| (h.node, h.score)),
+            );
+        }
     }
     let mut vector_hits: Vec<(NodeId, f32)> = Vec::new();
     if let Some(embedding) = query.embedding.as_ref().filter(|_| use_vector) {
-        let found = match &query.vector_index {
-            Some(index) => read.vector_search(
+        let search = |filter: Option<grafeno::VectorFilter>| match (&query.vector_index, filter) {
+            (None, None) => read.search_vector(ns, embedding, query.candidates),
+            (index, filter) => read.vector_search(
                 ns,
                 embedding,
                 &grafeno::VectorSearch {
-                    index: Some(index.clone()),
+                    index: index.clone(),
                     limit: query.candidates,
+                    filter,
                     ..grafeno::VectorSearch::default()
                 },
-            )?,
-            None => read.search_vector(ns, embedding, query.candidates)?,
+            ),
         };
-        vector_hits = found.into_iter().map(|hit| (hit.node, hit.score)).collect();
+        vector_hits = search(None)?
+            .into_iter()
+            .map(|hit| (hit.node, hit.score))
+            .collect();
+        // The labels' own nearest join after the others, as for the text.
+        if !query.labels.is_empty() {
+            let labeled = search(Some(grafeno::VectorFilter {
+                labels: query.labels.clone(),
+                ..grafeno::VectorFilter::default()
+            }))?;
+            append_new(
+                &mut vector_hits,
+                labeled.into_iter().map(|h| (h.node, h.score)),
+            );
+        }
     }
     for (index, (node, score)) in text_hits.iter().enumerate() {
         scores.entry(*node).or_default().1.push(Signal::Text {
@@ -435,6 +460,12 @@ fn spread(
         }
     }
     Ok(out)
+}
+
+/// Adds to `list` the hits it does not have yet, after its own.
+fn append_new(list: &mut Vec<(NodeId, f32)>, more: impl IntoIterator<Item = (NodeId, f32)>) {
+    let have: HashSet<NodeId> = list.iter().map(|(id, _)| *id).collect();
+    list.extend(more.into_iter().filter(|(id, _)| !have.contains(id)));
 }
 
 /// What share of the seed that reached it a node found through the graph
