@@ -211,6 +211,114 @@ fn routes(
     ]
 }
 
+/// The namespace routes `routes` leaves out: memory tools, transactions,
+/// the change log and events, exports and imports, webhooks, communities,
+/// merges, reviews, ingestion and the rest. Bodies are enough to be read;
+/// what matters is the answer to a key of another namespace.
+fn more_routes(ns: &str, node: &str, edge: &str) -> Vec<(&'static str, String, Option<Value>)> {
+    let p = |rest: &str| format!("/v1/{ns}/{rest}");
+    let any = || Some(json!({}));
+    vec![
+        ("POST", p("search"), Some(json!({ "text": "plans" }))),
+        ("POST", p("similar"), Some(json!({ "id": node }))),
+        ("GET", p("tools"), None),
+        ("POST", p("tools/recall"), Some(json!({ "query": "plans" }))),
+        (
+            "POST",
+            p("tools/context"),
+            Some(json!({ "query": "plans" })),
+        ),
+        ("POST", p("tools/palace_map"), any()),
+        (
+            "POST",
+            p("query/part"),
+            Some(json!({ "query": "MATCH (n) RETURN n" })),
+        ),
+        ("GET", p("vectors/recall?sample=1"), None),
+        ("GET", p("vectors/health"), None),
+        ("POST", p("compact"), None),
+        ("GET", p("fuzzy?text=Ana"), None),
+        (
+            "POST",
+            p("match"),
+            Some(json!({ "label": "Person", "props": { "name": "Ana" } })),
+        ),
+        ("GET", p("matches"), None),
+        ("GET", p("constraints"), None),
+        ("GET", p("contradictions"), None),
+        ("GET", p(&format!("nodes/{node}/history/name")), None),
+        ("GET", p("export.graphml"), None),
+        ("GET", p("export/nodes.csv"), None),
+        ("GET", p("export/edges.csv"), None),
+        ("POST", p("import/graphml"), Some(json!("<graphml/>"))),
+        ("POST", p("transactions"), any()),
+        ("GET", p("changes"), None),
+        ("GET", p("events/anything"), None),
+        ("POST", p("ingest"), any()),
+        ("GET", p("webhooks"), None),
+        (
+            "POST",
+            p("webhooks"),
+            Some(json!({ "url": "https://example.com/hook" })),
+        ),
+        ("GET", p("communities"), None),
+        ("POST", p("communities/refresh"), any()),
+        ("POST", p("extract"), any()),
+        ("GET", p("review"), None),
+        (
+            "POST",
+            p(&format!("nodes/{node}/mentions")),
+            Some(json!({ "mentions": [] })),
+        ),
+        ("GET", p("match-rules"), None),
+        (
+            "POST",
+            p("merge"),
+            Some(json!({ "keep": node, "remove": node })),
+        ),
+        ("GET", p("merges"), None),
+        ("POST", p("archive"), Some(json!({ "ids": [node] }))),
+        ("POST", p("summaries"), any()),
+        ("POST", p(&format!("edges/{edge}/retract")), any()),
+        ("DELETE", p(&format!("edges/{edge}")), None),
+        ("DELETE", p(&format!("nodes/{node}")), None),
+        (
+            "POST",
+            p("edges"),
+            Some(json!({ "from": node, "to": node, "label": "x" })),
+        ),
+        ("POST", p("algo/louvain"), any()),
+    ]
+}
+
+/// Found by a security pass: every route of a namespace, not only the
+/// common ones, refuses a key of another namespace, and says nothing of
+/// what is there.
+#[tokio::test]
+async fn every_route_of_a_namespace_refuses_another_namespaces_key() {
+    let (app, ids) = world().await;
+    let alice = key(
+        &app,
+        "alice",
+        json!([{ "namespace": "a", "role": "admin" }]),
+        false,
+    )
+    .await;
+    let b = &ids[1];
+    for (method, uri, body) in more_routes("b", &b.0, &b.2) {
+        let (status, answer) = call(&app, &alice, method, &uri, body).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{method} {uri}: {answer}");
+        let text = answer.to_string();
+        assert!(
+            !text.contains("Ana b") && !text.contains("secret plans"),
+            "{method} {uri} leaks: {answer}"
+        );
+    }
+    // And b's records are untouched.
+    let (status, node) = call(&app, OWNER, "GET", &format!("/v1/b/nodes/{}", b.0), None).await;
+    assert_eq!(status, StatusCode::OK, "{node}");
+}
+
 #[tokio::test]
 async fn keys_see_only_their_namespaces() {
     let (app, ids) = world().await;
