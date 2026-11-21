@@ -18,7 +18,8 @@ in a role, stored as records of their own with an incidence index, in the
 Rust API of the `grafeno` crate (docs/hyperedges.md), in GQ, and in the
 replication log, so clusters and replicas hold them, and in HTTP routes
 and MCP tools of their own; the change log and event subscriptions
-follow them. Recall and exports do not know them yet.
+follow them, and JSON lines exports carry them. Recall does not know them
+yet.
 
 - **Added**: `HyperEdge`, `Participant`, `NewHyperEdge` and `HyperEdgeId`;
   on `WriteTx`, `create_hyperedge`, `set_hyperedge_props`,
@@ -63,6 +64,11 @@ follow them. Recall and exports do not know them yet.
   its `nodes` in each entry), through the reader's view; event
   subscriptions follow them with `ON HYPEREDGES` (`hyperedges`), with
   their properties before and after.
+- **Added**: JSON lines exports carry hyperedges (`"type":"hyperedge"`,
+  after each namespace's edges) and imports restore them
+  (`WriteTx::restore_hyperedge`); `DumpStats` counts them. An export with
+  a hyperedge has version 3; one without keeps version 2, which 0.4
+  reads.
 
 ## 0.4.0 (2026-11-20)
 

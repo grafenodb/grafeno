@@ -132,6 +132,7 @@ pub enum Op {
     },
     /// A hyperedge (format 8): its record; members derive its index
     /// entries.
+    #[serde(rename = "hyperedge")]
     HyperEdge {
         ns: String,
         id: HyperEdgeId,

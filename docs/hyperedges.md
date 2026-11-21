@@ -15,8 +15,8 @@ HTTP API has routes of its own for them and MCP has three tools
 ([below](#http-and-mcp)).
 The replication log carries them, so cluster members and read replicas
 hold them too, and the change log and event subscriptions record their
-changes. Recall and context and exports do not know hyperedges yet (see
-[Limits](#limits)).
+changes, and exports (JSON lines) carry them. Recall and context do not
+know hyperedges yet (see [Limits](#limits)).
 
 ## When to use one
 
@@ -227,8 +227,8 @@ node in a hyperedge, so no hyperedge is ever left naming a missing node.
 These are not done in this stage, and the engine refuses rather than
 dropping data silently where it can:
 
-- **Exports and imports** (JSON lines, CSV, GraphML) leave hyperedges out.
-  A backup keeps them.
+- **CSV and GraphML** leave hyperedges out; JSON lines exports and
+  backups keep them.
 - **Constraints, property indexes and property history** do not apply to
   hyperedges.
 - **Merging nodes** fails for a merged node that takes part in a hyperedge,
@@ -246,7 +246,7 @@ dropping data silently where it can:
    needed: hyperedges inside ordinary patterns and `EXISTS { … }`,
    `MERGE HYPEREDGE`, statistics for the planner, and splitting across
    cluster members.
-2. **Exports.**
+2. **CSV and GraphML**, if a tool needs them there.
 3. **The client SDK** (`@grafenodb/client`): methods for the routes.
 4. **Memory.** A hyperedge could be a unit of episodic memory: recall could
    return a whole event (who did what, about which task, on what evidence)
@@ -288,6 +288,22 @@ MCP tools, for agents (also through `POST /v1/{ns}/tools/{name}`):
 
 `relate_group` and `forget_group` write, so a read-only server refuses
 them.
+
+## Exports
+
+A JSON lines export (`ReadTx::export`, `GET /v1/export`, `grafeno export`)
+writes each namespace's hyperedges after its nodes and edges, one line
+each, as they are (id, participants, times), as the reader sees them:
+
+```text
+{"type":"hyperedge","ns":"team","hyperedge":{"id":"…","label":"decision","participants":[{"node":"…","role":"proposer"},…],…}}
+```
+
+An export with a hyperedge has version 3; one without keeps version 2, so
+Grafeno 0.4 still reads it (and refuses version 3 rather than lose the
+hyperedges). An import writes them as they were, checking their
+participants exist (a missing one fails the import with the line), and
+replaces a hyperedge with the same id.
 
 ## The change log and events
 

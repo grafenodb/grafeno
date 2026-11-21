@@ -1,9 +1,9 @@
 //! Export and import: a JSON Lines dump of nodes (with their text and
-//! embedding) and edges, for backups, migrations and test data.
+//! embedding), edges and hyperedges, for backups, migrations and test data.
 //!
 //! The first line is a header; then, per namespace, the namespace itself,
-//! its indexes, its nodes and then its edges, so every edge comes after both
-//! of its ends:
+//! its indexes, its nodes, its edges and then its hyperedges, so every
+//! edge and hyperedge comes after the nodes it names:
 //!
 //! ```text
 //! {"type":"header","format":"grafeno-export","version":2,"exported_at":1793664000000000}
@@ -11,6 +11,7 @@
 //! {"type":"node","ns":"vault","node":{"id":"…","labels":["Note"],…},"text":"…","embedding":[…]}
 //! {"type":"edge","ns":"vault","edge":{"id":"…","label":"links_to","from":"…","to":"…",…}}
 //! {"type":"index","ns":"vault","index":{"name":"Note_title","label":"Note","key":"title","unique":false}}
+//! {"type":"hyperedge","ns":"vault","hyperedge":{"id":"…","label":"decision","participants":[…],…}}
 //! ```
 //!
 //! Records keep their ids and timestamps. Embeddings are exported normalized.
@@ -18,7 +19,7 @@
 use std::collections::BTreeSet;
 use std::io::{BufRead, Write};
 
-use grafeno_core::{Edge, Error, Node, NodeId, Result, Timestamp};
+use grafeno_core::{Edge, Error, HyperEdge, Node, NodeId, Result, Timestamp};
 use serde::{Deserialize, Serialize};
 
 use crate::db::{Durability, Grafeno, ReadTx, WriteTx};
@@ -28,8 +29,10 @@ use crate::store::{decode, storage};
 
 pub const EXPORT_FORMAT: &str = "grafeno-export";
 /// The newest export version this build writes and reads. Version 2 adds
-/// namespace records; version 1 exports import as before.
-pub const EXPORT_VERSION: u32 = 2;
+/// namespace records, version 3 hyperedge records; earlier exports import
+/// as before. An export is written with version 3 only when it holds a
+/// hyperedge, so an older Grafeno still reads the others.
+pub const EXPORT_VERSION: u32 = 3;
 
 /// One line of an export.
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -67,6 +70,12 @@ pub enum Record {
         ns: String,
         index: IndexDef,
     },
+    /// A hyperedge (version 3), after the namespace's nodes.
+    #[serde(rename = "hyperedge")]
+    HyperEdge {
+        ns: String,
+        hyperedge: HyperEdge,
+    },
 }
 
 /// A line as read. Deserializing it directly (instead of through serde's
@@ -88,6 +97,7 @@ struct RawRecord {
     memory: Option<MemoryState>,
     edge: Option<Edge>,
     index: Option<IndexDef>,
+    hyperedge: Option<HyperEdge>,
 }
 
 impl RawRecord {
@@ -119,6 +129,10 @@ impl RawRecord {
                 ns: self.ns.clone().ok_or_else(|| missing("ns"))?,
                 index: self.index.clone().ok_or_else(|| missing("index"))?,
             },
+            "hyperedge" => Record::HyperEdge {
+                ns: self.ns.clone().ok_or_else(|| missing("ns"))?,
+                hyperedge: self.hyperedge.clone().ok_or_else(|| missing("hyperedge"))?,
+            },
             other => return Err(format!("unknown record type {other:?}")),
         })
     }
@@ -130,6 +144,7 @@ pub struct DumpStats {
     pub namespaces: usize,
     pub nodes: u64,
     pub edges: u64,
+    pub hyperedges: u64,
 }
 
 fn write_record(out: &mut impl Write, record: &Record) -> Result<()> {
@@ -150,11 +165,16 @@ impl ReadTx {
         } else {
             namespaces.to_vec()
         };
+        // Version 3 only when a hyperedge is in it (as the reader sees).
+        let mut hyperedges = false;
+        for ns in &names {
+            hyperedges |= !self.hyperedge_ids(ns, None, 1)?.is_empty();
+        }
         write_record(
             out,
             &Record::Header {
                 format: EXPORT_FORMAT.into(),
-                version: EXPORT_VERSION,
+                version: if hyperedges { EXPORT_VERSION } else { 2 },
                 exported_at: Timestamp::now(),
             },
         )?;
@@ -223,6 +243,25 @@ impl ReadTx {
                     },
                 )?;
                 stats.edges += 1;
+            }
+            let mut after = None;
+            loop {
+                let page = self.hyperedges_page(ns, after, 1_000)?;
+                let full = page.len() == 1_000;
+                after = page.last().map(|edge| edge.id).or(after);
+                for hyperedge in page {
+                    write_record(
+                        out,
+                        &Record::HyperEdge {
+                            ns: ns.clone(),
+                            hyperedge,
+                        },
+                    )?;
+                    stats.hyperedges += 1;
+                }
+                if !full {
+                    break;
+                }
             }
         }
         out.flush()
@@ -433,6 +472,12 @@ impl Import {
                 tx.restore_edge(&ns, edge).map_err(|e| at(e.to_string()))?;
                 self.namespaces.insert(ns);
                 self.stats.edges += 1;
+            }
+            Record::HyperEdge { ns, hyperedge } => {
+                tx.restore_hyperedge(&ns, hyperedge)
+                    .map_err(|e| at(e.to_string()))?;
+                self.namespaces.insert(ns);
+                self.stats.hyperedges += 1;
             }
         }
         Ok(())

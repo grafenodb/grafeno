@@ -413,6 +413,31 @@ impl WriteTx {
         Ok(edge.id)
     }
 
+    /// Writes a hyperedge exactly as given, id and timestamps included,
+    /// replacing any with its id: what an import does. Its participants are
+    /// checked as on creation (and sorted).
+    pub fn restore_hyperedge(&mut self, ns: &str, mut edge: HyperEdge) -> Result<()> {
+        check_namespace(ns)?;
+        check_label(&edge.label)?;
+        check_interval(edge.valid_from, edge.valid_to)?;
+        edge.participants = self.checked_participants(ns, edge.participants)?;
+        let written: Vec<&str> = edge.props.keys().map(String::as_str).collect();
+        let previous = self.hyperedge(ns, edge.id)?;
+        if let Some(old) = &previous {
+            self.allow_hyperedge(crate::Act::Update, ns, Some(old), Some(&edge), &written)?;
+        } else {
+            self.allow_hyperedge(crate::Act::Create, ns, None, Some(&edge), &written)?;
+        }
+        match previous {
+            // Another label: its entries go and come back under the new one.
+            Some(old) if old.label != edge.label => {
+                self.remove_hyperedge(ns, &old)?;
+                self.put_hyperedge(ns, &edge, None)
+            }
+            previous => self.put_hyperedge(ns, &edge, previous.as_ref()),
+        }
+    }
+
     /// Merges `props` into the hyperedge (a `null` value is stored as `null`).
     pub fn set_hyperedge_props(&mut self, ns: &str, id: HyperEdgeId, props: Props) -> Result<()> {
         let before = self.hyperedge_to_act(crate::Act::Update, ns, id)?;

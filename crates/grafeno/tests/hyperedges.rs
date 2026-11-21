@@ -916,7 +916,7 @@ fn the_replication_log_carries_hyperedges() {
     let entry = &entries[0].1;
     assert_eq!(entry.format, grafeno::ENTRY_FORMAT);
     let text = serde_json::to_string(entry).unwrap();
-    assert!(text.contains("\"op\":\"hyper_edge\""), "{text}");
+    assert!(text.contains("\"op\":\"hyperedge\""), "{text}");
 }
 
 #[test]
@@ -1368,4 +1368,88 @@ fn hidden_hyperedges_stay_out_of_the_change_log() {
     let seen: Vec<Option<HyperEdgeId>> = page.changes.iter().map(|c| c.hyperedge).collect();
     assert!(seen.contains(&Some(shown)));
     assert!(!seen.contains(&Some(hidden)), "{seen:?}");
+}
+
+fn export_text(db: &Grafeno) -> String {
+    let mut out = Vec::new();
+    db.begin_read().unwrap().export(&[], &mut out).unwrap();
+    String::from_utf8(out).unwrap()
+}
+
+#[test]
+fn exports_carry_hyperedges_and_imports_restore_them() {
+    let db = Grafeno::in_memory().unwrap();
+    let n = nodes(&db, NS, 3);
+    // Without hyperedges the export keeps version 2, which 0.4 reads.
+    assert!(
+        export_text(&db)
+            .lines()
+            .next()
+            .unwrap()
+            .contains("\"version\":2")
+    );
+    let id = db
+        .write(|tx| {
+            tx.create_hyperedge(
+                NS,
+                NewHyperEdge::new("decision")
+                    .member(n[0], "proposer")
+                    .member(n[0], "reviewer")
+                    .node(n[1])
+                    .node(n[2])
+                    .prop("summary", "one writer")
+                    .valid_from(Timestamp::parse("2026-01-01").unwrap()),
+            )
+        })
+        .unwrap();
+    db.write(|tx| tx.retract_hyperedge(NS, id)).unwrap();
+    let text = export_text(&db);
+    assert!(text.lines().next().unwrap().contains("\"version\":3"));
+    let last = text.lines().last().unwrap();
+    assert!(last.contains("\"type\":\"hyperedge\""), "{last}");
+
+    for options in [
+        grafeno::ImportOptions::default(),
+        grafeno::ImportOptions { chunk: Some(2) },
+    ] {
+        let copy = Grafeno::in_memory().unwrap();
+        let stats = copy.import_with(text.as_bytes(), &options).unwrap();
+        assert_eq!((stats.nodes, stats.edges, stats.hyperedges), (3, 0, 1));
+        assert_eq!(hyperedges_of(&copy, NS), hyperedges_of(&db, NS));
+        let read = copy.begin_read().unwrap();
+        // Retracted, as it was, and its indexes in place.
+        assert!(read.hyperedge(NS, id).unwrap().unwrap().is_retracted());
+        assert_eq!(read.hyperedge_ids_of(NS, n[2], None).unwrap(), vec![id]);
+        drop(read);
+        check(&copy, NS);
+        // Importing again replaces it, nothing doubles.
+        copy.import(text.as_bytes()).unwrap();
+        assert_eq!(hyperedges_of(&copy, NS).len(), 1);
+        check(&copy, NS);
+    }
+}
+
+#[test]
+fn an_import_refuses_a_hyperedge_without_its_nodes() {
+    let db = Grafeno::in_memory().unwrap();
+    let n = nodes(&db, NS, 2);
+    db.write(|tx| tx.create_hyperedge(NS, NewHyperEdge::new("x").node(n[0]).node(n[1])))
+        .unwrap();
+    let text = export_text(&db);
+    // Only the header and the hyperedge: its nodes are missing.
+    let broken: String = text
+        .lines()
+        .filter(|line| line.contains("\"header\"") || line.contains("\"hyperedge\""))
+        .map(|line| format!("{line}\n"))
+        .collect();
+    let copy = Grafeno::in_memory().unwrap();
+    let error = copy.import(broken.as_bytes()).unwrap_err().to_string();
+    assert!(error.contains("line 2"), "{error}");
+    assert!(
+        copy.begin_read()
+            .unwrap()
+            .hyperedges_page(NS, None, 10)
+            .unwrap()
+            .is_empty()
+    );
 }
