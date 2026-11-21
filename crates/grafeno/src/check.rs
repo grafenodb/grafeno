@@ -38,6 +38,7 @@ pub struct CheckReport {
     /// searches never return them. A few appear as vectors change;
     /// [`WriteTx::compact_vectors`] reconnects them.
     pub unreachable_vectors: u64,
+    pub hyperedges: u64,
     /// Inconsistencies found, at most 100 (the last line counts the rest).
     pub problems: Vec<String>,
 }
@@ -60,6 +61,10 @@ pub struct RebuildReport {
     pub dropped_edges: u64,
     pub dropped_texts: u64,
     pub dropped_vectors: u64,
+    pub hyperedges: u64,
+    /// Hyperedges dropped because fewer than two of their nodes exist (the
+    /// rest lose the nodes that do not).
+    pub dropped_hyperedges: u64,
 }
 
 impl ReadTx {
@@ -479,6 +484,8 @@ impl ReadTx {
             }
         }
 
+        let hyperedges = self.check_hyperedges(ns, &mut problems)?;
+
         if problems.len() > MAX_PROBLEMS {
             let rest = problems.len() - MAX_PROBLEMS;
             problems.truncate(MAX_PROBLEMS);
@@ -492,6 +499,7 @@ impl ReadTx {
             vectors,
             dangling_links,
             unreachable_vectors,
+            hyperedges,
             problems,
         })
     }
@@ -718,6 +726,9 @@ impl WriteTx {
                 report.dropped_vectors += 1;
             }
         }
+        let (kept, dropped) = self.rebuild_hyperedges(ns)?;
+        report.hyperedges = kept;
+        report.dropped_hyperedges = dropped;
         Ok(report)
     }
 

@@ -88,6 +88,9 @@ short-lived agents.
 | `indexes`      | `(ns, index name)`            | index definition (JSON)    |
 | `index_entries` | `(ns, index, sortable value, node_id)` | `()`: also a full-text index's terms (term, field, length, frequency, positions in the key) |
 | `fulltext_stats` | `(ns, index)`               | documents and terms per field of a full-text index (JSON), for BM25 |
+| `hyperedges`   | `(ns, hyperedge_id)`          | `HyperEdge` record: a fact relating two or more nodes in roles (layout 19) |
+| `hyperedge_incidence` | `(ns, node_id, label, hyperedge_id)` | `()`, once per distinct node that takes part |
+| `hyperedge_labels` | `(ns, label, hyperedge_id)` | `()` |
 
 The vector tables (`vectors`, `vectors_q8`, `hnsw_links`, `vector_meta`)
 are keyed by a space: a namespace (its node embeddings) or `ns\0index`
@@ -101,7 +104,7 @@ are keyed by a space: a namespace (its node embeddings) or `ns\0index`
 | `constraints`  | `(ns, name)`                  | a constraint on facts (one per source, target or pair) or a functional property (JSON) |
 | `state`        | `(ns, kind, key)`             | bytes kept by features on the engine (extraction's text hashes, review queue and decisions) |
 
-- The layout has a version (`SCHEMA_VERSION`, now 18) in `meta`. Opening an
+- The layout has a version (`SCHEMA_VERSION`, now 19) in `meta`. Opening an
   older file upgrades it in one transaction: version 1 gets its counters
   computed, version 2 gets the new adjacency and posting tables (built from
   the records) and loses the old ones, version 3 gets the names index,
@@ -111,7 +114,9 @@ are keyed by a space: a namespace (its node embeddings) or `ns\0index`
   rules and the possibility of fuzzy indexes (whose trigram entries an
   older Grafeno would read as values), version 9 the (empty) state
   table, version 10 the (empty) constraints, and version 11 the (empty)
-  change log, which starts with the first commit after. A newer layout is
+  change log, which starts with the first commit after. Later versions
+  are listed at `SCHEMA_VERSION`; version 18 gets the (empty) hyperedge
+  tables ([docs/hyperedges.md](docs/hyperedges.md)). A newer layout is
   refused.
 - Adjacency entries hold the edge's record time and valid time
   (`recorded_at`, `expired_at`, `valid_from`, `valid_to`), so traversals

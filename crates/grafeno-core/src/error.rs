@@ -1,4 +1,4 @@
-use crate::{EdgeId, NodeId};
+use crate::{EdgeId, HyperEdgeId, NodeId};
 
 #[derive(Clone, Debug, thiserror::Error)]
 pub enum Error {
@@ -6,6 +6,8 @@ pub enum Error {
     NodeNotFound(NodeId),
     #[error("edge {0} not found")]
     EdgeNotFound(EdgeId),
+    #[error("hyperedge {0} not found")]
+    HyperEdgeNotFound(HyperEdgeId),
     #[error("namespace {0:?} not found")]
     NamespaceNotFound(String),
     /// The principal may not do this.

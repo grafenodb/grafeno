@@ -31,6 +31,7 @@ mod constraints;
 mod db;
 mod dump;
 mod fulltext;
+mod hyperedge;
 mod index;
 mod interchange;
 mod memory;
@@ -73,6 +74,7 @@ pub use fulltext::{
     Analyzer, Fragment, Fulltext, FulltextHit, Fusion, SearchHit, SearchMode, SearchRequest, fuse,
 };
 pub use grafeno_core::*;
+pub use hyperedge::{DEFAULT_MAX_PARTICIPANTS, HyperEdgeFilter, OnHyperEdges, ParticipantMatch};
 pub use index::{FuzzyHit, IndexDef, IndexInfo, IndexRange};
 pub use interchange::{IMPORT_ID, InterchangeOptions, InterchangeStats};
 pub use memory::{DEFAULT_IMPORTANCE, MemoryState, names_of, normalize_name};

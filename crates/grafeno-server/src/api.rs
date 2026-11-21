@@ -427,9 +427,10 @@ pub enum ErrorKind {
 
 pub fn error_kind(error: &Error) -> ErrorKind {
     match error {
-        Error::NodeNotFound(_) | Error::EdgeNotFound(_) | Error::NamespaceNotFound(_) => {
-            ErrorKind::NotFound
-        }
+        Error::NodeNotFound(_)
+        | Error::EdgeNotFound(_)
+        | Error::HyperEdgeNotFound(_)
+        | Error::NamespaceNotFound(_) => ErrorKind::NotFound,
         Error::Conflict(_) => ErrorKind::Conflict,
         Error::Forbidden(_) => ErrorKind::Forbidden,
         Error::Invalid(_) => ErrorKind::BadRequest,

@@ -9,7 +9,34 @@ the release workflow refuses a tag whose version has no section.
 What the engine speaks to clients is versioned apart from it: the HTTP
 API version (`GET /v1/about`, now 1) changes only when a change would
 break a client of the previous one, and the database files' layout
-version (now 18) is upgraded in place, with a copy kept first.
+version (now 19) is upgraded in place, with a copy kept first.
+
+## Unreleased
+
+Hyperedges, first stage: facts that relate two or more nodes at once, each
+in a role, stored as records of their own with an incidence index, in the
+Rust API of the `grafeno` crate (docs/hyperedges.md). GQ, MCP, HTTP,
+recall, exports and the replication log do not know them yet.
+
+- **Added**: `HyperEdge`, `Participant`, `NewHyperEdge` and `HyperEdgeId`;
+  on `WriteTx`, `create_hyperedge`, `set_hyperedge_props`,
+  `remove_hyperedge_props`, `set_hyperedge_participants`,
+  `invalidate_hyperedge`, `retract_hyperedge`, `delete_hyperedge` and
+  `delete_node_with` (`OnHyperEdges::Restrict`, `Cascade` or `Detach`); on
+  `ReadTx`, `hyperedge`, `node_hyperedges`, `hyperedges_with_label` (in
+  pages), `hyperedges_by_participants` (`ParticipantMatch::Contains` or
+  `Exact`) and `hyperedges_page`, through the snapshot's view;
+  `Grafeno::set_max_participants` (256 by default). `check` and
+  `rebuild_indexes` cover the hyperedge indexes, and backups copy them.
+- **Changed**: the database layout is 19 (three new tables, empty until
+  used). Files of earlier layouts are upgraded when opened, with a copy
+  kept first; Grafeno 0.4 refuses a file of layout 19. `delete_node`
+  refuses a node that takes part in a hyperedge (`Error::Conflict`), and so
+  do the routes, GQ `DELETE` and merges that delete one. `Error` has a new
+  variant, `HyperEdgeNotFound`; `CheckReport` and `RebuildReport` have
+  hyperedge counts.
+- **Not yet**: while the replication log is on, hyperedges cannot be
+  written, and it cannot be turned on while one exists.
 
 ## 0.4.0 (2026-11-20)
 

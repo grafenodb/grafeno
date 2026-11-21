@@ -100,6 +100,10 @@ id_type!(
     EdgeId
 );
 id_type!(
+    /// Identifier of a hyperedge.
+    HyperEdgeId
+);
+id_type!(
     /// Identifier of a recorded merge of two nodes.
     MergeId
 );

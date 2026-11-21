@@ -93,18 +93,33 @@ fn verify(db: &Grafeno, version: u64) {
     }
     if version >= 5 {
         let indexes = read.indexes(NS).unwrap();
-        // Layout 17 files may hold an index on several properties (16.5).
-        assert_eq!(indexes.len(), if version >= 17 { 2 } else { 1 });
+        // Layout 17 files may hold an index on several properties (16.5),
+        // layout 18 files a full-text index (16.6).
+        let expected = match version {
+            18.. => 3,
+            17 => 2,
+            _ => 1,
+        };
+        assert_eq!(indexes.len(), expected, "v{version}");
         assert!(
-            indexes.iter().all(|index| index.entries == 40),
+            indexes
+                .iter()
+                .filter(|index| index.def.name != "Company_name_text")
+                .all(|index| index.entries == 40),
             "v{version}"
         );
+        if version >= 18 {
+            let found = read
+                .fulltext_search(NS, "Company_name_text", "acme", 5, false)
+                .unwrap();
+            assert_eq!(found.len(), 1, "v{version}");
+        }
     }
     if version >= 7 {
         // Principals became service accounts with a key each (layout 15).
         let accounts = read.accounts().unwrap();
         let expected = match version {
-            15..=17 => 2,
+            15.. => 2,
             14 => 3,
             _ => 1,
         };
@@ -180,12 +195,19 @@ fn verify(db: &Grafeno, version: u64) {
 
 #[test]
 fn every_past_layout_upgrades() {
-    for version in 1..=17 {
+    for version in 1..=18 {
         let path = fixture(version);
         assert_eq!(Grafeno::file_layout(&path).unwrap(), Some(version));
         {
             let db = Grafeno::open(&path).unwrap_or_else(|e| panic!("v{version}: {e}"));
             verify(&db, version);
+            // No hyperedges yet (layout 19): the reads answer empty.
+            let read = db.begin_read().unwrap();
+            let acme = read.search_text(NS, "engines", 1).unwrap()[0].node;
+            let any = grafeno::HyperEdgeFilter::any();
+            assert!(read.node_hyperedges(NS, acme, &any).unwrap().is_empty());
+            assert!(read.hyperedges_page(NS, None, 10).unwrap().is_empty());
+            drop(read);
             // It is a normal database now: it takes writes.
             db.write(|tx| tx.create_node(NS, NewNode::new("Note").text("after the upgrade")))
                 .unwrap();
@@ -207,6 +229,32 @@ fn every_past_layout_upgrades() {
         assert_eq!(read.changes(NS, 0, 10).unwrap().last, logged, "v{version}");
         assert!(read.check(NS).unwrap().is_ok());
         assert_eq!(read.search_text(NS, "upgrade", 5).unwrap().len(), 1);
+        drop(read);
+        // A hyperedge (layout 19) between upgraded nodes, and its node
+        // cannot be deleted from under it.
+        let people = db
+            .begin_read()
+            .unwrap()
+            .nodes_with_label(NS, "Person")
+            .unwrap();
+        let team = db
+            .write(|tx| {
+                tx.create_hyperedge(
+                    NS,
+                    grafeno::NewHyperEdge::new("team")
+                        .member(people[0], "lead")
+                        .node(people[1])
+                        .node(people[2]),
+                )
+            })
+            .unwrap();
+        assert!(db.write(|tx| tx.delete_node(NS, people[1])).is_err());
+        let read = db.begin_read().unwrap();
+        let found = read
+            .node_hyperedges(NS, people[1], &grafeno::HyperEdgeFilter::any())
+            .unwrap();
+        assert_eq!(found.len(), 1, "v{version}");
+        assert_eq!(found[0].id, team);
         drop(read);
         // A full-text index (layout 18) on the upgraded data.
         db.write(|tx| {

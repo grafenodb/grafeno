@@ -182,6 +182,9 @@ pub(crate) fn restore_into(from: &ReadTransaction, to: &WriteTransaction) -> Res
         CONSTRAINTS,
         CHANGES,
         crate::replication::REPLICATION_LOG,
+        crate::hyperedge::HYPEREDGES,
+        crate::hyperedge::HYPEREDGE_INCIDENCE,
+        crate::hyperedge::HYPEREDGE_LABELS,
     );
     Ok(entries)
 }
@@ -234,6 +237,9 @@ impl ReadTx {
                 CONSTRAINTS.name(),
                 CHANGES.name(),
                 crate::replication::REPLICATION_LOG.name(),
+                crate::hyperedge::HYPEREDGES.name(),
+                crate::hyperedge::HYPEREDGE_INCIDENCE.name(),
+                crate::hyperedge::HYPEREDGE_LABELS.name(),
             ];
             for table in from.list_tables().map_err(storage)? {
                 if !known.contains(&table.name()) {
@@ -278,14 +284,17 @@ impl ReadTx {
             entries += copy(from, &tx, CONSTRAINTS)?;
             entries += copy(from, &tx, CHANGES)?;
             entries += copy(from, &tx, crate::replication::REPLICATION_LOG)?;
+            entries += copy(from, &tx, crate::hyperedge::HYPEREDGES)?;
+            entries += copy(from, &tx, crate::hyperedge::HYPEREDGE_INCIDENCE)?;
+            entries += copy(from, &tx, crate::hyperedge::HYPEREDGE_LABELS)?;
             tx.commit().map_err(storage)?;
             drop(db);
-            Ok(entries)
+            Ok((entries, known.len()))
         })();
-        let entries = outcome?;
+        let (entries, tables) = outcome?;
         let bytes = publish(partial, path)?;
         Ok(BackupStats {
-            tables: 27,
+            tables,
             entries,
             bytes,
         })

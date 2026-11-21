@@ -1275,3 +1275,42 @@ memory is on every member). About 6 s for both.
   should batch.
 - **Edge filters by label alone** (`edges_page` with a label) scan the
   namespace's edges.
+
+## Hyperedges (`crates/grafeno/examples/hyperedge_bench.rs`)
+
+A file with 10 000 nodes; for each size, 5 000 hyperedges whose
+participants are distinct random nodes (one `lead`, the rest `member`),
+half labeled `even`, half `odd`. Writes go in transactions of 500 with
+eventual durability (no fsync per commit); reads are single calls on one
+snapshot, timed one by one. Release build, Windows 11 development machine,
+2026-11-21, one run. Binary edges, created the same way between random
+nodes: 43 263 a second (23.1 µs each), 447 bytes each for the record and
+both adjacency entries.
+
+| Participants | Create /s (µs each) | By id p50 / p99 µs | A node's hyperedges p50 / p99 µs | A label's page of 100 p50 / p99 µs | Contains 2 nodes p50 / p99 µs | Exact p50 / p99 µs | Replace one participant /s | Delete /s |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 3 | 54 687 (18.3) | 3.3 / 6.0 | 6.3 / 13.6 | 159 / 184 | 8.6 / 12.4 | 10.9 / 14.9 | 55 712 | 68 388 |
+| 10 | 21 354 (46.8) | 4.6 / 5.6 | 18.9 / 38.3 | 281 / 287 | 10.8 / 18.6 | 34.4 / 44.9 | 26 381 | 30 363 |
+| 50 | 4 443 (225) | 10.5 / 15.6 | 238 / 423 | 916 / 1 162 | 22.6 / 39.9 | 303 / 461 | 7 059 | 6 440 |
+| 100 | 2 051 (488) | 18.1 / 32.5 | 828 / 1 466 | 1 605 / 1 771 | 38.5 / 103 | 919 / 1 170 | 3 781 | 2 878 |
+
+Bytes stored with B-tree metadata, per hyperedge:
+
+| Participants | `hyperedges` | `hyperedge_incidence` | `hyperedge_labels` |
+| --- | --- | --- | --- |
+| 3 | 409 | 143 (48 a participant) | 31 |
+| 10 | 865 | 477 | 31 |
+| 50 | 3 466 | 2 387 | 31 |
+| 100 | 6 666 | 4 774 | 31 |
+
+A three-node hyperedge costs about what one binary edge does, to write and
+to store, and holds what three edges and a node would. Cost grows with the
+participants, as each needs an incidence entry and its part of the record.
+The reads that return many records (a node's hyperedges, where each node
+of the 100-participant run is in about 50; a label's page; exact matches,
+which read every hyperedge the first nodes share) spend their time decoding
+JSON records with many participants: the incidence ranges themselves are
+short. "Contains" with two nodes stays under 40 µs at p50 because the
+intersection leaves few records to read. If those reads matter, the next
+step is a binary encoding of participants or ids-only reads, measured
+against these numbers.

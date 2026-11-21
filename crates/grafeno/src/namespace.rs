@@ -252,7 +252,7 @@ impl WriteTx {
         crate::text::reindex_namespace(&self.tx, ns, language)
     }
 
-    /// Deletes a namespace and everything in it: nodes, edges, texts,
+    /// Deletes a namespace and everything in it: nodes, edges, hyperedges, texts,
     /// vectors, indexes and counters. It cannot be undone (an export first
     /// keeps a copy).
     pub fn drop_namespace(&mut self, ns: &str) -> Result<DropStats> {
@@ -324,6 +324,21 @@ impl WriteTx {
         );
         clear!(crate::state::STATE, (ns, "", ""), (end.as_str(), "", ""));
         clear!(crate::changes::CHANGES, (ns, 0u64), (end.as_str(), 0u64));
+        clear!(
+            crate::hyperedge::HYPEREDGES,
+            (ns, 0u128),
+            (end.as_str(), 0u128)
+        );
+        clear!(
+            crate::hyperedge::HYPEREDGE_INCIDENCE,
+            (ns, 0u128, "", 0u128),
+            (end.as_str(), 0u128, "", 0u128)
+        );
+        clear!(
+            crate::hyperedge::HYPEREDGE_LABELS,
+            (ns, "", 0u128),
+            (end.as_str(), "", 0u128)
+        );
         let empty: &[u8] = &[];
         clear!(
             INDEX_ENTRIES,

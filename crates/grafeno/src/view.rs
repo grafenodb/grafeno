@@ -19,7 +19,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
-use grafeno_core::{Edge, Error, Node, NodeId, Props, Result};
+use grafeno_core::{Edge, Error, HyperEdge, Node, NodeId, Props, Result};
 use serde_json::Value;
 
 use crate::access::Account;
@@ -329,6 +329,103 @@ impl View {
             } else {
                 edge.from
             }));
+        }
+        Ok(())
+    }
+
+    /// Whether the caller may see `edge`: its label is read as an edge
+    /// label is, and every node in it must be visible.
+    pub fn hyperedge_visible(
+        &self,
+        ns: &str,
+        edge: &HyperEdge,
+        visible: impl Fn(NodeId) -> Result<bool>,
+    ) -> Result<bool> {
+        let (readable, per_record) = self.namespace(ns);
+        if !per_record {
+            return Ok(readable);
+        }
+        if !self
+            .rights
+            .on_labels(Act::Read, ns, std::slice::from_ref(&edge.label), true)
+            || !self.policies_hold(ns, None, &edge.props, edge.recorded_by.as_deref(), false)
+        {
+            return Ok(false);
+        }
+        for node in edge.nodes() {
+            if !visible(node)? {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
+    /// `edge` as the caller sees it, given whether its nodes are visible.
+    pub fn hyperedge(
+        &self,
+        ns: &str,
+        mut edge: HyperEdge,
+        visible: impl Fn(NodeId) -> Result<bool>,
+    ) -> Result<Option<HyperEdge>> {
+        if !self.hyperedge_visible(ns, &edge, visible)? {
+            return Ok(None);
+        }
+        if self.per_record(ns) {
+            let labels = [edge.label.clone()];
+            edge.props
+                .retain(|key, _| !self.rights.property_denied(Act::Read, ns, &labels, key));
+        }
+        Ok(Some(edge))
+    }
+
+    /// [`View::may_change_edge`] for a hyperedge: its label and properties
+    /// are checked as an edge's, and every node in it must be visible.
+    pub fn may_change_hyperedge(
+        &self,
+        action: Act,
+        ns: &str,
+        before: Option<&HyperEdge>,
+        after: Option<&HyperEdge>,
+        keys: &[&str],
+        visible: impl Fn(NodeId) -> Result<bool>,
+    ) -> Result<()> {
+        if self.rights.superuser {
+            return Ok(());
+        }
+        if let Some(edge) = before
+            && !self.hyperedge_visible(ns, edge, &visible)?
+        {
+            return Err(Error::HyperEdgeNotFound(edge.id));
+        }
+        for edge in [before, after].into_iter().flatten() {
+            let labels = std::slice::from_ref(&edge.label);
+            if !self.rights.on_labels(action, ns, labels, true) {
+                return Err(self.refuse(
+                    &action.name(),
+                    format!("hyperedges {} in {ns:?}", edge.label),
+                ));
+            }
+            for key in keys {
+                if self.rights.property_denied(action, ns, labels, key) {
+                    return Err(self.refuse(
+                        "write",
+                        format!("the property {key} of {} hyperedges in {ns:?}", edge.label),
+                    ));
+                }
+            }
+            if !self.policies_hold(ns, None, &edge.props, edge.recorded_by.as_deref(), true) {
+                return Err(Error::Forbidden(format!(
+                    "a record policy of {} does not let it change this hyperedge in {ns:?}",
+                    self.account.as_deref().unwrap_or("the caller")
+                )));
+            }
+        }
+        if let Some(edge) = after {
+            for node in edge.nodes() {
+                if !visible(node)? {
+                    return Err(Error::NodeNotFound(node));
+                }
+            }
         }
         Ok(())
     }

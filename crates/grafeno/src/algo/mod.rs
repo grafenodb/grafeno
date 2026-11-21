@@ -562,6 +562,8 @@ pub(crate) struct Shared {
     pub(crate) replication: std::sync::atomic::AtomicBool,
     /// How much of the audit log is kept (14.5).
     pub(crate) audit_retention: crate::audit::Retention,
+    /// How many participants a hyperedge may have.
+    pub(crate) max_participants: std::sync::atomic::AtomicUsize,
 }
 
 impl Default for Shared {
@@ -574,6 +576,9 @@ impl Default for Shared {
             audit_retention: crate::audit::Retention::default(),
             planner: crate::planstats::Cache::default(),
             replication: std::sync::atomic::AtomicBool::new(false),
+            max_participants: std::sync::atomic::AtomicUsize::new(
+                crate::hyperedge::DEFAULT_MAX_PARTICIPANTS,
+            ),
         }
     }
 }

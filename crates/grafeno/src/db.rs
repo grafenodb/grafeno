@@ -63,7 +63,10 @@ use crate::{Hit, text, vector};
 /// 18. Allows indexes on several properties, on edges and over several
 ///     labels (16.5) and full-text indexes (16.6), whose entries an older
 ///     Grafeno would read as values, and adds `fulltext_stats`.
-pub const SCHEMA_VERSION: u64 = 18;
+/// 19. Adds hyperedges (`hyperedges`, `hyperedge_incidence`,
+///     `hyperedge_labels`), empty until one is created. An older Grafeno
+///     would delete a node without its hyperedges and leave them naming it.
+pub const SCHEMA_VERSION: u64 = 19;
 
 /// The tables replaced in version 3, by name (their types no longer matter).
 const OLD_ADJ_OUT: TableDefinition<AdjKey, u128> = TableDefinition::new("adj_out");
@@ -369,6 +372,12 @@ impl Grafeno {
         tx.open_table(CHANGES).map_err(storage)?;
         tx.open_table(crate::replication::REPLICATION_LOG)
             .map_err(storage)?;
+        tx.open_table(crate::hyperedge::HYPEREDGES)
+            .map_err(storage)?;
+        tx.open_table(crate::hyperedge::HYPEREDGE_INCIDENCE)
+            .map_err(storage)?;
+        tx.open_table(crate::hyperedge::HYPEREDGE_LABELS)
+            .map_err(storage)?;
 
         let stored = tx
             .open_table(META)
@@ -540,8 +549,21 @@ impl Grafeno {
     /// Turns the replication log on, for good: from the next commit, every
     /// write transaction is appended to it (see [`ReadTx::log_entries`]).
     /// Members that will apply it start from a backup taken after this.
+    ///
+    /// Hyperedges are not replicated yet: it is refused while one exists.
     pub fn enable_replication_log(&self) -> Result<()> {
         let tx = self.db.begin_write().map_err(storage)?;
+        if !tx
+            .open_table(crate::hyperedge::HYPEREDGES)
+            .map_err(storage)?
+            .is_empty()
+            .map_err(storage)?
+        {
+            return Err(Error::Invalid(
+                "hyperedges are not replicated yet: delete them before turning the                  replication log on"
+                    .into(),
+            ));
+        }
         tx.open_table(META)
             .map_err(storage)?
             .insert(crate::replication::ENABLED, 1)
@@ -1488,7 +1510,11 @@ impl WriteTx {
 
     /// Fails if the actor may change only its own records and this one is
     /// someone else's.
-    fn guard(&self, recorded_by: Option<&str>, what: impl FnOnce() -> String) -> Result<()> {
+    pub(crate) fn guard(
+        &self,
+        recorded_by: Option<&str>,
+        what: impl FnOnce() -> String,
+    ) -> Result<()> {
         match &self.actor {
             Some(actor) if actor.own_only && recorded_by != Some(actor.name.as_str()) => {
                 Err(Error::Forbidden(format!(
@@ -1504,7 +1530,7 @@ impl WriteTx {
 
     /// The actor's view, when its writes are checked record by record (not
     /// while applying a replicated entry).
-    fn view(&self) -> Option<Arc<crate::View>> {
+    pub(crate) fn view(&self) -> Option<Arc<crate::View>> {
         if self.applying {
             return None;
         }
@@ -1587,7 +1613,7 @@ impl WriteTx {
         self.node_to_act(crate::Act::Update, ns, id)
     }
 
-    fn node_to_act(&self, action: crate::Act, ns: &str, id: NodeId) -> Result<Node> {
+    pub(crate) fn node_to_act(&self, action: crate::Act, ns: &str, id: NodeId) -> Result<Node> {
         let node = self.node(ns, id)?.ok_or(Error::NodeNotFound(id))?;
         self.guard_node_for(action, ns, &node)?;
         Ok(node)
@@ -1886,10 +1912,15 @@ impl WriteTx {
 
     /// Deletes the node, its edges and its indexed text and embedding, without
     /// keeping history.
+    ///
+    /// A node that takes part in a hyperedge is not deleted
+    /// ([`Error::Conflict`]): [`WriteTx::delete_node_with`] says what to do
+    /// with its hyperedges.
     pub fn delete_node(&mut self, ns: &str, id: NodeId) -> Result<()> {
         // Its edges go too: with `own_only`, each must be the actor's, and
         // each must be one the actor may delete.
         let node = self.node_to_act(crate::Act::Delete, ns, id)?;
+        self.settle_hyperedges_of(ns, id, crate::OnHyperEdges::Restrict)?;
         let mut edges: Vec<EdgeId> = Vec::new();
         for definition in [ADJ_OUT, ADJ_IN] {
             let table = self.tx.open_table(definition).map_err(storage)?;
@@ -2245,7 +2276,7 @@ fn normalize_labels(labels: Vec<String>) -> Result<Vec<String>> {
 }
 
 /// Merges `changes` into `target`: nulls are values like any other.
-fn merge_props(target: &mut Props, changes: Props) {
+pub(crate) fn merge_props(target: &mut Props, changes: Props) {
     target.extend(changes);
 }
 
