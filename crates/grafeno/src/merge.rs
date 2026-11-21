@@ -4,7 +4,9 @@
 
 use std::collections::BTreeSet;
 
-use grafeno_core::{Edge, EdgeId, Error, MergeId, Node, NodeId, Result, Timestamp, Value};
+use grafeno_core::{
+    Edge, EdgeId, Error, HyperEdge, MergeId, Node, NodeId, Participant, Result, Timestamp, Value,
+};
 use redb::{ReadableTable, TableDefinition};
 use serde::{Deserialize, Serialize};
 
@@ -199,6 +201,10 @@ pub struct MergeReport {
     /// Edges dropped: between the two nodes, or the same as one the kept
     /// node already had.
     pub edges_dropped: u64,
+    /// Hyperedges of the merged node that now name the kept one instead.
+    pub hyperedges_moved: u64,
+    /// Hyperedges left with one node (the two merged were all it had).
+    pub hyperedges_dropped: u64,
     /// The conflicts merged over with `force` (the kept node's values won).
     pub conflicts: Vec<Conflict>,
 }
@@ -231,6 +237,13 @@ pub struct MergeRecord {
     pub moved: Vec<Edge>,
     /// Edges dropped (between the two, or repeating one of the kept node).
     pub dropped: Vec<Edge>,
+    /// Hyperedges that named the merged node and now name the kept one,
+    /// as they were.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub moved_hyperedges: Vec<HyperEdge>,
+    /// Hyperedges deleted because only the two merged nodes were in them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dropped_hyperedges: Vec<HyperEdge>,
     /// The kept node's `updated_at` right after the merge: undoing needs it
     /// unchanged since.
     pub kept_updated_at: Timestamp,
@@ -546,6 +559,40 @@ impl WriteTx {
         };
         let kept_updated_at = node.updated_at;
 
+        // Its hyperedges name the kept node instead, each (node, role) once;
+        // one left with a single node goes.
+        let (mut moved_hyperedges, mut dropped_hyperedges) = (Vec::new(), Vec::new());
+        for id in self.incident_hyperedges(ns, merged)? {
+            let Some(original) = self.hyperedge(ns, id)? else {
+                continue;
+            };
+            let mut participants: Vec<Participant> = original
+                .participants
+                .iter()
+                .map(|p| Participant {
+                    node: if p.node == merged { kept } else { p.node },
+                    role: p.role.clone(),
+                })
+                .collect();
+            participants.sort();
+            participants.dedup();
+            let mut nodes: Vec<NodeId> = participants.iter().map(|p| p.node).collect();
+            nodes.dedup();
+            if nodes.len() < 2 {
+                self.allow_merge_hyperedge(crate::Act::Delete, ns, &original, None)?;
+                self.remove_merged_hyperedge(ns, &original)?;
+                dropped_hyperedges.push(original);
+                report.hyperedges_dropped += 1;
+            } else {
+                let mut changed = original.clone();
+                changed.participants = participants;
+                self.allow_merge_hyperedge(crate::Act::Update, ns, &original, Some(&changed))?;
+                self.put_merged_hyperedge(ns, &changed, &original)?;
+                moved_hyperedges.push(original);
+                report.hyperedges_moved += 1;
+            }
+        }
+
         self.delete_node(ns, merged)?;
         self.restore_node(ns, node, text.as_deref(), embedding.as_deref())?;
         self.put_memory(ns, kept, state)?;
@@ -562,6 +609,8 @@ impl WriteTx {
             merged_before,
             moved,
             dropped,
+            moved_hyperedges,
+            dropped_hyperedges,
             kept_updated_at,
             undone_at: None,
             undone_by: None,
@@ -587,7 +636,8 @@ impl WriteTx {
     /// Undoes a merge: the merged node comes back as it was (same id, text,
     /// embedding and memory), the kept node returns to its state before the
     /// merge, moved edges return to the merged node and dropped ones are
-    /// restored. Edges added to the kept node since stay with it.
+    /// restored, and so do hyperedges. Edges added to the kept node since
+    /// stay with it.
     ///
     /// Refuses with [`Error::Conflict`] if the kept node changed after the
     /// merge (its later changes would be lost) unless `force`.
@@ -633,6 +683,23 @@ impl WriteTx {
             let dropped = record.dropped.contains(edge);
             if ends_exist && (moved_still_there || dropped) {
                 self.restore_edge(ns, edge.clone())?;
+            }
+        }
+        // Hyperedges as they were: a moved one still there, a dropped one
+        // still gone, when all their nodes exist.
+        for (edge, moved) in record
+            .moved_hyperedges
+            .iter()
+            .map(|edge| (edge, true))
+            .chain(record.dropped_hyperedges.iter().map(|edge| (edge, false)))
+        {
+            let mut nodes_exist = true;
+            for node in edge.nodes() {
+                nodes_exist &= self.node(ns, node)?.is_some();
+            }
+            let there = self.hyperedge(ns, edge.id)?.is_some();
+            if nodes_exist && there == moved {
+                self.restore_hyperedge(ns, edge.clone())?;
             }
         }
         record.undone_at = Some(Timestamp::now());

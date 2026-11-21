@@ -438,6 +438,37 @@ impl WriteTx {
         }
     }
 
+    /// May the actor change `before` into `after` (`None`: delete it) as
+    /// part of a merge?
+    pub(crate) fn allow_merge_hyperedge(
+        &self,
+        action: crate::Act,
+        ns: &str,
+        before: &HyperEdge,
+        after: Option<&HyperEdge>,
+    ) -> Result<()> {
+        self.allow_hyperedge(action, ns, Some(before), None, &[])?;
+        if let Some(after) = after {
+            self.allow_hyperedge(action, ns, None, Some(after), &[])?;
+        }
+        Ok(())
+    }
+
+    /// Writes a hyperedge a merge changed (participants already checked).
+    pub(crate) fn put_merged_hyperedge(
+        &mut self,
+        ns: &str,
+        edge: &HyperEdge,
+        previous: &HyperEdge,
+    ) -> Result<()> {
+        self.put_hyperedge(ns, edge, Some(previous))
+    }
+
+    /// Deletes a hyperedge a merge left with one node.
+    pub(crate) fn remove_merged_hyperedge(&mut self, ns: &str, edge: &HyperEdge) -> Result<()> {
+        self.remove_hyperedge(ns, edge)
+    }
+
     /// Merges `props` into the hyperedge (a `null` value is stored as `null`).
     pub fn set_hyperedge_props(&mut self, ns: &str, id: HyperEdgeId, props: Props) -> Result<()> {
         let before = self.hyperedge_to_act(crate::Act::Update, ns, id)?;

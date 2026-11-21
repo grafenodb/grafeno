@@ -183,9 +183,17 @@ says what to do:
 Everything happens in the caller's transaction: if any step fails, nothing
 was deleted. Whatever deletes nodes goes through this rule: GQ `DELETE`
 (`DETACH DELETE` detaches), `DELETE /v1/{ns}/nodes/{id}` (`?hyperedges=cascade`
-or `detach` says otherwise), the MCP tools, merging nodes (the merged node is
-deleted) and the memory features that delete nodes all fail with `Error::Conflict` for a
-node in a hyperedge, so no hyperedge is ever left naming a missing node.
+or `detach` says otherwise), the MCP tools and the memory features that
+delete nodes all fail with `Error::Conflict` for a node in a hyperedge, so
+no hyperedge is ever left naming a missing node.
+
+Merging two nodes is not deleting one: the merged node's hyperedges name
+the kept node instead (a (node, role) pair it already had counts once),
+and one that only the two of them were in is deleted, as an edge between
+them is. The merge record keeps them as they were, so `undo_merge` puts
+them back: a moved one still there, a deleted one still gone, when all
+their nodes exist. `MergeReport` counts `hyperedges_moved` and
+`hyperedges_dropped`.
 
 ## Namespaces and authorization
 
@@ -231,9 +239,6 @@ dropping data silently where it can:
   backups keep them.
 - **Constraints, property indexes and property history** do not apply to
   hyperedges.
-- **Merging nodes** fails for a merged node that takes part in a hyperedge,
-  instead of moving its participation to the kept node (which would need the
-  merge record and its undo to carry hyperedges).
 - **GQ** reads and writes them with clauses of their own; ordinary
   patterns, `MERGE`, pattern predicates and graph algorithms do not see
   them, and a statement with them is not split across cluster members.
@@ -255,8 +260,7 @@ dropping data silently where it can:
    with a measurement on the agent questions the memory tests already use,
    not with a change to BM25, the vector index or fusion.
 5. **More kinds.** Weights per participant, directed hyperedges (roles that
-   order), hyperedges among hyperedges, and merging nodes that move
-   participation.
+   order) and hyperedges among hyperedges.
 
 ## HTTP and MCP
 

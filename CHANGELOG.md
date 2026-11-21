@@ -35,7 +35,7 @@ yet.
   used). Files of earlier layouts are upgraded when opened, with a copy
   kept first; Grafeno 0.4 refuses a file of layout 19. `delete_node`
   refuses a node that takes part in a hyperedge (`Error::Conflict`), and so
-  do the routes, GQ `DELETE` and merges that delete one. `Error` has a new
+  do the routes and GQ `DELETE`. `Error` has a new
   variant, `HyperEdgeNotFound`; `CheckReport` and `RebuildReport` have
   hyperedge counts.
 - **Added**: GQ on hyperedges: `[OPTIONAL] MATCH HYPEREDGE h:label {…}
@@ -69,6 +69,10 @@ yet.
   (`WriteTx::restore_hyperedge`); `DumpStats` counts them. An export with
   a hyperedge has version 3; one without keeps version 2, which 0.4
   reads.
+- **Added**: merging nodes moves the merged node's hyperedges to the kept
+  one (deleting one only the two were in), and `undo_merge` restores them;
+  `MergeReport` counts `hyperedges_moved` and `hyperedges_dropped`, and the
+  merge record keeps the hyperedges as they were.
 
 ## 0.4.0 (2026-11-20)
 

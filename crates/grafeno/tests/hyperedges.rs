@@ -1215,32 +1215,43 @@ proptest! {
 }
 
 #[test]
-fn merging_away_a_participant_is_refused_whole() {
+fn merges_move_participation_and_undo_restores_it() {
     let db = Grafeno::in_memory().unwrap();
-    let n = nodes(&db, NS, 3);
-    db.write(|tx| {
-        tx.create_hyperedge(NS, NewHyperEdge::new("x").node(n[0]).node(n[1]))?;
-        tx.create_edge(NS, NewEdge::new(n[1], "knows", n[2]))
-    })
-    .unwrap();
-    // The merged node would be deleted from under its hyperedge.
-    assert!(matches!(
-        db.write(|tx| tx.merge_nodes(NS, n[2], n[1])),
-        Err(Error::Conflict(_))
-    ));
-    let read = db.begin_read().unwrap();
-    assert!(read.node(NS, n[1]).unwrap().is_some());
-    assert_eq!(
-        read.neighbors(NS, n[1], Direction::Out, &EdgeFilter::any())
-            .unwrap()
-            .len(),
-        1
-    );
-    assert!(read.merges(NS, None).unwrap().is_empty());
-    drop(read);
-    // A node in no hyperedge merges as before.
-    db.write(|tx| tx.merge_nodes(NS, n[1], n[2]).map(|_| ()))
+    let n = nodes(&db, NS, 4);
+    let (trio, pair, both) = db
+        .write(|tx| {
+            // The merged node n[1] in a trio, in a pair with the kept node
+            // n[0] only, and in a hyperedge where both already are.
+            let trio = tx.create_hyperedge(
+                NS,
+                NewHyperEdge::new("x")
+                    .member(n[1], "lead")
+                    .node(n[2])
+                    .node(n[3]),
+            )?;
+            let pair = tx.create_hyperedge(NS, NewHyperEdge::new("y").node(n[0]).node(n[1]))?;
+            let both =
+                tx.create_hyperedge(NS, NewHyperEdge::new("z").node(n[0]).node(n[1]).node(n[2]))?;
+            Ok((trio, pair, both))
+        })
         .unwrap();
+    let before = hyperedges_of(&db, NS);
+    let report = db.write(|tx| tx.merge_nodes(NS, n[0], n[1])).unwrap();
+    assert_eq!((report.hyperedges_moved, report.hyperedges_dropped), (2, 1));
+    let read = db.begin_read().unwrap();
+    let moved = read.hyperedge(NS, trio).unwrap().unwrap();
+    assert_eq!(moved.with_role("lead"), vec![n[0]]);
+    assert!(read.hyperedge(NS, pair).unwrap().is_none());
+    // n[0] was already there without a role: one participant, not two.
+    let merged = read.hyperedge(NS, both).unwrap().unwrap();
+    assert_eq!(merged.participants.len(), 2);
+    assert!(read.hyperedge_ids_of(NS, n[1], None).unwrap().is_empty());
+    drop(read);
+    check(&db, NS);
+
+    db.write(|tx| tx.undo_merge(NS, report.id, false).map(|_| ()))
+        .unwrap();
+    assert_eq!(hyperedges_of(&db, NS), before);
     check(&db, NS);
 }
 
