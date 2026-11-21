@@ -24,9 +24,9 @@
 //! says what to do with its hyperedges ([`OnHyperEdges`]). No hyperedge ever
 //! names a node that does not exist.
 //!
-//! Hyperedges are not in the replication log yet: while it is on they cannot
-//! be written, and it cannot be turned on while a hyperedge exists. Exports,
-//! the change log and event subscriptions do not carry them either (see
+//! The replication log carries them (`Op::HyperEdge`, entry format 8):
+//! members write the record and derive its index entries. Exports, the
+//! change log and event subscriptions do not carry them yet (see
 //! `docs/hyperedges.md`).
 
 use std::collections::BTreeSet;
@@ -328,19 +328,6 @@ impl WriteTx {
         let table = self.tx.open_table(HYPEREDGES).map_err(storage)?;
         page_ids(&table, ns, after, limit)
     }
-    /// Hyperedges cannot be written while the replication log is on: the
-    /// log has no entry for them yet, and members would differ.
-    fn hyperedges_writable(&self) -> Result<()> {
-        if self.capture.is_some() {
-            return Err(Error::Invalid(
-                "hyperedges are not replicated yet: they cannot be written while the \
-                 replication log is on"
-                    .into(),
-            ));
-        }
-        Ok(())
-    }
-
     /// Checks the participants of a hyperedge to write: sorted, valid, and
     /// each node existing (and visible to the actor) in `ns`.
     fn checked_participants(
@@ -404,7 +391,6 @@ impl WriteTx {
     /// Creates a hyperedge. Its participants must be nodes of `ns`: at least
     /// two distinct ones, each (node, role) pair once.
     pub fn create_hyperedge(&mut self, ns: &str, new: NewHyperEdge) -> Result<HyperEdgeId> {
-        self.hyperedges_writable()?;
         check_namespace(ns)?;
         check_label(&new.label)?;
         check_interval(new.valid_from, new.valid_to)?;
@@ -429,7 +415,6 @@ impl WriteTx {
 
     /// Merges `props` into the hyperedge (a `null` value is stored as `null`).
     pub fn set_hyperedge_props(&mut self, ns: &str, id: HyperEdgeId, props: Props) -> Result<()> {
-        self.hyperedges_writable()?;
         let before = self.hyperedge_to_act(crate::Act::Update, ns, id)?;
         let keys: Vec<String> = props.keys().cloned().collect();
         let mut edge = before.clone();
@@ -446,7 +431,6 @@ impl WriteTx {
         id: HyperEdgeId,
         keys: &[&str],
     ) -> Result<()> {
-        self.hyperedges_writable()?;
         let before = self.hyperedge_to_act(crate::Act::Update, ns, id)?;
         if !keys.iter().any(|key| before.props.contains_key(*key)) {
             return Ok(());
@@ -466,7 +450,6 @@ impl WriteTx {
         id: HyperEdgeId,
         participants: Vec<Participant>,
     ) -> Result<()> {
-        self.hyperedges_writable()?;
         let before = self.hyperedge_to_act(crate::Act::Update, ns, id)?;
         let participants = self.checked_participants(ns, participants)?;
         let mut edge = before.clone();
@@ -477,7 +460,6 @@ impl WriteTx {
 
     /// The fact stopped being true at `at`: the world changed, not what we know.
     pub fn invalidate_hyperedge(&mut self, ns: &str, id: HyperEdgeId, at: Timestamp) -> Result<()> {
-        self.hyperedges_writable()?;
         let before = self.hyperedge_to_act(crate::Act::Retract, ns, id)?;
         check_interval(before.valid_from, Some(at))?;
         let mut edge = before.clone();
@@ -488,7 +470,6 @@ impl WriteTx {
     /// The fact was a mistake. It stays in history, visible with
     /// [`HyperEdgeFilter::known_at`] at an earlier instant.
     pub fn retract_hyperedge(&mut self, ns: &str, id: HyperEdgeId) -> Result<()> {
-        self.hyperedges_writable()?;
         let before = self.hyperedge_to_act(crate::Act::Retract, ns, id)?;
         if before.expired_at.is_none() {
             let mut edge = before.clone();
@@ -500,7 +481,6 @@ impl WriteTx {
 
     /// Deletes the hyperedge and its index entries, without keeping history.
     pub fn delete_hyperedge(&mut self, ns: &str, id: HyperEdgeId) -> Result<()> {
-        self.hyperedges_writable()?;
         let edge = self.hyperedge_to_act(crate::Act::Delete, ns, id)?;
         self.remove_hyperedge(ns, &edge)
     }
@@ -555,7 +535,6 @@ impl WriteTx {
             }
             OnHyperEdges::Detach => {
                 for id in ids {
-                    self.hyperedges_writable()?;
                     let before = self.hyperedge_to_act(crate::Act::Update, ns, id)?;
                     let mut edge = before.clone();
                     edge.participants.retain(|p| p.node != node);
@@ -583,7 +562,7 @@ impl WriteTx {
 
     /// Writes the hyperedge record and brings its index entries from
     /// `previous` (`None`: a new hyperedge) to `edge`.
-    fn put_hyperedge(
+    pub(crate) fn put_hyperedge(
         &mut self,
         ns: &str,
         edge: &HyperEdge,
@@ -597,6 +576,7 @@ impl WriteTx {
             ));
         }
         let id = edge.id.as_u128();
+        self.note(crate::replication::Touch::HyperEdge(ns.to_owned(), id));
         let label = edge.label.as_str();
         let bytes = encode(edge)?;
         self.tx
@@ -633,8 +613,9 @@ impl WriteTx {
     }
 
     /// Removes the hyperedge record and its index entries.
-    fn remove_hyperedge(&mut self, ns: &str, edge: &HyperEdge) -> Result<()> {
+    pub(crate) fn remove_hyperedge(&mut self, ns: &str, edge: &HyperEdge) -> Result<()> {
         let id = edge.id.as_u128();
+        self.note(crate::replication::Touch::HyperEdge(ns.to_owned(), id));
         let label = edge.label.as_str();
         let mut incidence = self.tx.open_table(HYPEREDGE_INCIDENCE).map_err(storage)?;
         for node in edge.nodes() {

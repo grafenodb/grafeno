@@ -25,7 +25,7 @@
 
 use std::collections::{BTreeSet, HashSet};
 
-use grafeno_core::{Edge, EdgeId, Error, Node, NodeId, Result, Timestamp};
+use grafeno_core::{Edge, EdgeId, Error, HyperEdge, HyperEdgeId, Node, NodeId, Result, Timestamp};
 use redb::{ReadableTable, TableDefinition};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as Json;
@@ -48,9 +48,10 @@ pub const FENCE: (&str, &str) = ("cluster", "moved");
 /// account attributes (14.4). 6: audit events (14.5). 7: indexes on
 /// several properties, edges or labels, keys, property rules (16.5),
 /// full-text (16.6) and vector indexes and their background builds (16.7).
+/// 8: hyperedges ([`Op::HyperEdge`]).
 /// An entry carries the oldest format that can hold it, so a member of the
 /// version before reads every entry that does not need the new one.
-pub const ENTRY_FORMAT: u32 = 7;
+pub const ENTRY_FORMAT: u32 = 8;
 
 pub(crate) const ENABLED: &str = "replication_enabled";
 const FIRST: &str = "replication_first";
@@ -62,6 +63,7 @@ const APPLIED: &str = "replication_applied";
 pub(crate) enum Touch {
     Node(String, u128),
     Edge(String, u128),
+    HyperEdge(String, u128),
     Text(String, u128),
     Vector(String, u128),
     Memory(String, u128),
@@ -127,6 +129,13 @@ pub enum Op {
         ns: String,
         id: EdgeId,
         edge: Option<Edge>,
+    },
+    /// A hyperedge (format 8): its record; members derive its index
+    /// entries.
+    HyperEdge {
+        ns: String,
+        id: HyperEdgeId,
+        hyperedge: Option<HyperEdge>,
     },
     Text {
         ns: String,
@@ -216,6 +225,7 @@ impl Op {
         match self {
             Op::Node { ns, .. }
             | Op::Edge { ns, .. }
+            | Op::HyperEdge { ns, .. }
             | Op::Text { ns, .. }
             | Op::Vector { ns, .. }
             | Op::Memory { ns, .. }
@@ -244,6 +254,7 @@ impl Op {
         match self {
             Op::Node { ns, id, .. } => Touch::Node(ns.clone(), id.as_u128()),
             Op::Edge { ns, id, .. } => Touch::Edge(ns.clone(), id.as_u128()),
+            Op::HyperEdge { ns, id, .. } => Touch::HyperEdge(ns.clone(), id.as_u128()),
             Op::Text { ns, id, .. } => Touch::Text(ns.clone(), id.as_u128()),
             Op::Vector { ns, id, .. } => Touch::Vector(ns.clone(), id.as_u128()),
             Op::Memory { ns, id, .. } => Touch::Memory(ns.clone(), id.as_u128()),
@@ -333,6 +344,7 @@ impl Touch {
         match self {
             Touch::Node(ns, _)
             | Touch::Edge(ns, _)
+            | Touch::HyperEdge(ns, _)
             | Touch::Text(ns, _)
             | Touch::Vector(ns, _)
             | Touch::Memory(ns, _)
@@ -409,6 +421,11 @@ impl WriteTx {
                     .map_err(storage)?
                     .map(|guard| decode(guard.value()))
                     .transpose()?,
+            },
+            Touch::HyperEdge(ns, id) => Op::HyperEdge {
+                ns: ns.clone(),
+                id: HyperEdgeId::from_u128(*id),
+                hyperedge: self.hyperedge(ns, HyperEdgeId::from_u128(*id))?,
             },
             Touch::Text(ns, id) => Op::Text {
                 ns: ns.clone(),
@@ -674,7 +691,9 @@ impl WriteTx {
             .entries()
             .iter()
             .any(|(_, change)| change.values.is_some());
-        let format = if values || ops.iter().any(newer_schema) {
+        let format = if ops.iter().any(|op| matches!(op, Op::HyperEdge { .. })) {
+            8
+        } else if values || ops.iter().any(newer_schema) {
             7
         } else if ops.iter().any(|op| matches!(op, Op::Audit { .. })) {
             6
@@ -804,6 +823,14 @@ impl WriteTx {
                     }
                     None if existed => self.delete_edge(ns, *id)?,
                     None => {}
+                }
+            }
+            Op::HyperEdge { ns, id, hyperedge } => {
+                let previous = self.hyperedge(ns, *id)?;
+                match (hyperedge, previous) {
+                    (Some(edge), previous) => self.put_hyperedge(ns, edge, previous.as_ref())?,
+                    (None, Some(previous)) => self.remove_hyperedge(ns, &previous)?,
+                    (None, None) => {}
                 }
             }
             Op::Text { ns, id, text } => {
@@ -1203,6 +1230,23 @@ impl ReadTx {
                 &mut ops,
             )?;
         }
+        // After the nodes they name.
+        let hyperedges = self
+            .tx
+            .open_table(crate::hyperedge::HYPEREDGES)
+            .map_err(storage)?;
+        for item in hyperedges.range(records.clone()).map_err(storage)? {
+            let (key, value) = item.map_err(storage)?;
+            push(
+                Op::HyperEdge {
+                    ns: owned(ns),
+                    id: HyperEdgeId::from_u128(key.value().1),
+                    hyperedge: Some(decode(value.value())?),
+                },
+                &mut ops,
+            )?;
+        }
+        drop(hyperedges);
         for item in self.texts.range(records.clone()).map_err(storage)? {
             let (key, value) = item.map_err(storage)?;
             push(

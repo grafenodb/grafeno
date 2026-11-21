@@ -11,8 +11,9 @@ crate came first; GQ reads and writes them with `MATCH HYPEREDGE`, `CREATE
 HYPEREDGE`, `SET`, `DELETE`, `DETACH DELETE` and `RETRACT` (see
 [query-language.md](query-language.md#hyperedges)), so does every place
 that runs GQ (the shell, `POST /v1/{ns}/query`, the MCP `query` tool).
-Recall and context, exports, the change log and the replication log do not
-know hyperedges yet (see [Limits](#limits)).
+The replication log carries them, so cluster members and read replicas
+hold them too. Recall and context, exports and the change log do not know
+hyperedges yet (see [Limits](#limits)).
 
 ## When to use one
 
@@ -222,11 +223,6 @@ node in a hyperedge, so no hyperedge is ever left naming a missing node.
 These are not done in this stage, and the engine refuses rather than
 dropping data silently where it can:
 
-- **Replication and clusters.** The replication log has no entry for
-  hyperedges: while it is on (cluster members, read replicas) they cannot be
-  written (`Error::Invalid`), and it cannot be turned on while a hyperedge
-  exists. Supporting them needs an `Op::HyperEdge` (a new log entry format)
-  applied by deriving the indexes, as edges are.
 - **Exports and imports** (JSON lines, CSV, GraphML) leave hyperedges out.
   A backup keeps them.
 - **The change log and event subscriptions** do not record hyperedge
@@ -250,9 +246,7 @@ dropping data silently where it can:
    cluster members.
 2. **HTTP and MCP.** Routes and tools for the operations above, with the
    checks the engine already makes.
-3. **Replication.** `Op::HyperEdge` in a new entry format, so cluster
-   members and replicas can hold them; then exports, the change log and
-   subscriptions.
+3. **Exports, the change log and subscriptions.**
 4. **Memory.** A hyperedge could be a unit of episodic memory: recall could
    return a whole event (who did what, about which task, on what evidence)
    when one of its participants matches, and context could render it as one
@@ -262,6 +256,23 @@ dropping data silently where it can:
 5. **More kinds.** Weights per participant, directed hyperedges (roles that
    order), hyperedges among hyperedges, and merging nodes that move
    participation.
+
+## Replication and clusters
+
+Every write of a hyperedge is logged as an `Op::HyperEdge`: the record
+after the transaction (`None` when it was deleted). A member applying it
+writes the record and derives the incidence and label entries, as it does
+with an edge's adjacency, and runs none of the checks the leader made.
+Dropping a namespace and rebuilding its indexes are logged as that work,
+and members redo it with the hyperedges in it. A namespace moving to
+another cluster group takes its hyperedges with it, after its nodes.
+
+Entries that carry a hyperedge have format 8; the others keep the oldest
+format that holds them. A member of an earlier version refuses an entry
+of format 8 instead of losing what it says, and while one such member
+votes, the leader refuses writes of hyperedges ("upgrade every member
+first"), as it does for other work that needs a newer format. Upgrade
+every member before writing hyperedges in a cluster.
 
 ## Measurements
 

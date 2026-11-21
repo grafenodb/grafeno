@@ -15,8 +15,9 @@ version (now 19) is upgraded in place, with a copy kept first.
 
 Hyperedges, first stage: facts that relate two or more nodes at once, each
 in a role, stored as records of their own with an incidence index, in the
-Rust API of the `grafeno` crate (docs/hyperedges.md). GQ, MCP, HTTP,
-recall, exports and the replication log do not know them yet.
+Rust API of the `grafeno` crate (docs/hyperedges.md), in GQ, and in the
+replication log, so clusters and replicas hold them. Recall, exports, the
+change log and routes of their own do not know them yet.
 
 - **Added**: `HyperEdge`, `Participant`, `NewHyperEdge` and `HyperEdgeId`;
   on `WriteTx`, `create_hyperedge`, `set_hyperedge_props`,
@@ -46,8 +47,11 @@ recall, exports and the replication log do not know them yet.
 - **Changed**: GQ `DETACH DELETE` takes a node out of its hyperedges
   (deleting those left with one node); `DELETE` of a node in a hyperedge
   fails. Query values have a new variant, `Value::HyperEdge`.
-- **Not yet**: while the replication log is on, hyperedges cannot be
-  written, and it cannot be turned on while one exists.
+- **Added**: the replication log carries hyperedges (`Op::HyperEdge`):
+  members apply them and derive their indexes, and a namespace moving
+  between cluster groups takes them along. Log entries that carry one have
+  format 8; members of 0.4 refuse them, and a cluster with such a member
+  refuses hyperedge writes until every member is upgraded.
 
 ## 0.4.0 (2026-11-20)
 

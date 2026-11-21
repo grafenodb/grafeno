@@ -549,21 +549,8 @@ impl Grafeno {
     /// Turns the replication log on, for good: from the next commit, every
     /// write transaction is appended to it (see [`ReadTx::log_entries`]).
     /// Members that will apply it start from a backup taken after this.
-    ///
-    /// Hyperedges are not replicated yet: it is refused while one exists.
     pub fn enable_replication_log(&self) -> Result<()> {
         let tx = self.db.begin_write().map_err(storage)?;
-        if !tx
-            .open_table(crate::hyperedge::HYPEREDGES)
-            .map_err(storage)?
-            .is_empty()
-            .map_err(storage)?
-        {
-            return Err(Error::Invalid(
-                "hyperedges are not replicated yet: delete them before turning the                  replication log on"
-                    .into(),
-            ));
-        }
         tx.open_table(META)
             .map_err(storage)?
             .insert(crate::replication::ENABLED, 1)

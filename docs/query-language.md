@@ -671,9 +671,8 @@ properties and times.
 
 Hyperedges are not part of ordinary patterns (`(a)-[…]-(b)`), `MERGE`,
 `EXISTS { … }`, `COUNT { … }` or graph algorithms, and a statement with
-`MATCH HYPEREDGE` is not split across cluster members. While the
-replication log is on (cluster members, replicas) they cannot be
-written.
+`MATCH HYPEREDGE` is not split across cluster members. In a cluster,
+writing them needs every member to run a version that knows them.
 
 ## Pseudo-properties
 

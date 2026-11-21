@@ -794,29 +794,189 @@ fn check_finds_broken_entries_and_rebuild_repairs_them() {
     assert!(checked.is_ok(), "{:#?}", checked.problems);
 }
 
+/// Every hyperedge of `ns`, as a reader sees it, for comparing databases.
+fn hyperedges_of(db: &Grafeno, ns: &str) -> Vec<grafeno::HyperEdge> {
+    db.begin_read()
+        .unwrap()
+        .hyperedges_page(ns, None, usize::MAX)
+        .unwrap()
+}
+
+fn replay(from: &Grafeno, onto: &Grafeno, after: u64) -> usize {
+    let entries = from
+        .begin_read()
+        .unwrap()
+        .log_entries(after, usize::MAX)
+        .unwrap();
+    onto.apply_entries(&entries).unwrap()
+}
+
 #[test]
-fn the_replication_log_and_hyperedges_exclude_each_other() {
+fn the_replication_log_carries_hyperedges() {
+    let leader = Grafeno::in_memory().unwrap();
+    // A hyperedge written before the log is on reaches members through
+    // the backup they start from.
+    let n = nodes(&leader, NS, 5);
+    let early = leader
+        .write(|tx| tx.create_hyperedge(NS, NewHyperEdge::new("early").node(n[0]).node(n[1])))
+        .unwrap();
+    leader.enable_replication_log().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let copy = dir.path().join("member.redb");
+    leader.begin_read().unwrap().backup(&copy).unwrap();
+    let member = Grafeno::open(&copy).unwrap();
+    let start = leader.begin_read().unwrap().log_position().unwrap().last;
+
+    // Every kind of write, each in its own transaction.
+    let id = leader
+        .write(|tx| {
+            tx.create_hyperedge(
+                NS,
+                NewHyperEdge::new("decision")
+                    .member(n[0], "proposer")
+                    .member(n[1], "reviewer")
+                    .node(n[2])
+                    .prop("status", "open"),
+            )
+        })
+        .unwrap();
+    leader
+        .write(|tx| {
+            let mut props = grafeno::Props::new();
+            props.insert("status".into(), "done".into());
+            tx.set_hyperedge_props(NS, id, props)?;
+            tx.set_hyperedge_participants(
+                NS,
+                id,
+                vec![
+                    Participant::with_role(n[3], "proposer"),
+                    Participant::new(n[1]),
+                    Participant::new(n[2]),
+                ],
+            )
+        })
+        .unwrap();
+    leader.write(|tx| tx.retract_hyperedge(NS, early)).unwrap();
+    leader
+        .write(|tx| tx.delete_node_with(NS, n[2], OnHyperEdges::Detach))
+        .unwrap();
+    let doomed = leader
+        .write(|tx| tx.create_hyperedge(NS, NewHyperEdge::new("x").node(n[3]).node(n[4])))
+        .unwrap();
+    leader.write(|tx| tx.delete_hyperedge(NS, doomed)).unwrap();
+    leader
+        .write(|tx| tx.delete_node_with(NS, n[4], OnHyperEdges::Cascade))
+        .unwrap();
+
+    // The entries that carry hyperedges have format 8; the rest keep theirs.
+    let entries = leader
+        .begin_read()
+        .unwrap()
+        .log_entries(start, usize::MAX)
+        .unwrap();
+    for (_, entry) in &entries {
+        let carries = entry
+            .ops
+            .iter()
+            .any(|op| matches!(op, grafeno::Op::HyperEdge { .. }));
+        assert_eq!(entry.format == 8, carries, "{entry:?}");
+    }
+    assert_eq!(entries.iter().filter(|(_, e)| e.format == 8).count(), 6);
+    let plain = leader
+        .write(|tx| tx.create_node(NS, NewNode::new("Plain")))
+        .unwrap();
+    let last = leader
+        .begin_read()
+        .unwrap()
+        .log_entries(start, usize::MAX)
+        .unwrap();
+    assert!(last.last().unwrap().1.format < 8, "{plain}");
+
+    assert_eq!(replay(&leader, &member, start), entries.len() + 1);
+    assert_eq!(hyperedges_of(&member, NS), hyperedges_of(&leader, NS));
+    let read = member.begin_read().unwrap();
+    for node in &n {
+        assert_eq!(
+            ids(&read
+                .node_hyperedges(NS, *node, &HyperEdgeFilter::any())
+                .unwrap()),
+            ids(&leader
+                .begin_read()
+                .unwrap()
+                .node_hyperedges(NS, *node, &HyperEdgeFilter::any())
+                .unwrap()),
+        );
+    }
+    assert!(read.hyperedge(NS, early).unwrap().unwrap().is_retracted());
+    drop(read);
+    check(&member, NS);
+
+    // A member of the previous format refuses these entries instead of
+    // losing them.
+    let entry = &entries[0].1;
+    assert_eq!(entry.format, grafeno::ENTRY_FORMAT);
+    let text = serde_json::to_string(entry).unwrap();
+    assert!(text.contains("\"op\":\"hyper_edge\""), "{text}");
+}
+
+#[test]
+fn a_namespace_copy_takes_its_hyperedges() {
+    let source = Grafeno::in_memory().unwrap();
+    let n = nodes(&source, NS, 3);
+    source
+        .write(|tx| {
+            tx.create_hyperedge(
+                NS,
+                NewHyperEdge::new("x")
+                    .member(n[0], "a")
+                    .node(n[1])
+                    .node(n[2]),
+            )
+        })
+        .unwrap();
+    let mut ops = Vec::new();
+    source
+        .begin_read()
+        .unwrap()
+        .namespace_ops(NS, 2, |chunk| {
+            ops.extend(chunk);
+            Ok(())
+        })
+        .unwrap();
+    let target = Grafeno::in_memory().unwrap();
+    target
+        .write(|tx| tx.import_ops(&ops, Vec::new(), None))
+        .unwrap();
+    assert_eq!(hyperedges_of(&target, NS), hyperedges_of(&source, NS));
+    check(&target, NS);
+}
+
+#[test]
+fn writes_captured_for_a_cluster_carry_hyperedges() {
     let db = Grafeno::in_memory().unwrap();
     let n = nodes(&db, NS, 2);
-    let id = db
-        .write(|tx| tx.create_hyperedge(NS, NewHyperEdge::new("x").node(n[0]).node(n[1])))
+    // What a cluster leader does: run the write, keep its entry, apply it.
+    let (id, entry) = db
+        .dry_run(|tx| tx.create_hyperedge(NS, NewHyperEdge::new("x").node(n[0]).node(n[1])))
         .unwrap();
-    assert!(matches!(
-        db.enable_replication_log(),
-        Err(Error::Invalid(_))
-    ));
-    db.write(|tx| tx.delete_hyperedge(NS, id)).unwrap();
-    db.enable_replication_log().unwrap();
-    assert!(matches!(
-        db.write(|tx| tx.create_hyperedge(NS, NewHyperEdge::new("x").node(n[0]).node(n[1]))),
-        Err(Error::Invalid(_))
-    ));
-    // Nodes, edges and their deletes go on as before.
-    db.write(|tx| {
-        tx.create_edge(NS, NewEdge::new(n[0], "knows", n[1]))?;
-        tx.delete_node(NS, n[1])
-    })
-    .unwrap();
+    let entry = entry.expect("an entry");
+    assert_eq!(entry.format, 8);
+    assert!(
+        db.begin_read()
+            .unwrap()
+            .hyperedge(NS, id)
+            .unwrap()
+            .is_none()
+    );
+    db.apply_entries(&[(1, entry)]).unwrap();
+    assert!(
+        db.begin_read()
+            .unwrap()
+            .hyperedge(NS, id)
+            .unwrap()
+            .is_some()
+    );
+    check(&db, NS);
 }
 
 #[test]

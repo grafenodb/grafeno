@@ -421,3 +421,71 @@ fn explicit_transactions_commit_as_one_entry() {
         Err(Error::NotLeader(_))
     ));
 }
+
+fn add_team(tx: &mut grafeno::WriteTx) -> grafeno::Result<()> {
+    let lead = tx.create_node(NS, NewNode::new("Agent").prop("name", "lead"))?;
+    let helper = tx.create_node(NS, NewNode::new("Agent").prop("name", "helper"))?;
+    let task = tx.create_node(NS, NewNode::new("Task").prop("name", "T"))?;
+    tx.create_hyperedge(
+        NS,
+        grafeno::NewHyperEdge::new("work")
+            .member(lead, "lead")
+            .node(helper)
+            .member(task, "subject"),
+    )?;
+    Ok(())
+}
+
+fn drop_a_helper(tx: &mut grafeno::WriteTx) -> grafeno::Result<()> {
+    let helpers = tx.nodes_page(NS, Some("Agent"), None, usize::MAX)?;
+    if let Some(helper) = helpers.iter().find(|n| n.props["name"] == "helper") {
+        tx.delete_node_with(NS, helper.id, grafeno::OnHyperEdges::Detach)?;
+    }
+    Ok(())
+}
+
+#[test]
+fn hyperedges_reach_every_member() {
+    let cluster = Cluster::new(3, 3);
+    let all = [1, 2, 3];
+    // The leader writes format 8 once it knows every member reads it (the
+    // memory transport carries no member info: say it here, as messages
+    // between servers do).
+    for id in all {
+        for other in all {
+            cluster
+                .node(id)
+                .note_member(other, grafeno_cluster::MemberInfo::here());
+        }
+    }
+    for _ in 0..3 {
+        cluster.write(&all, add_team);
+    }
+    cluster.write(&all, drop_a_helper);
+    cluster.settle(&all);
+    let of = |id: u64| {
+        cluster.dbs[(id - 1) as usize]
+            .begin_read()
+            .unwrap()
+            .hyperedges_page(NS, None, usize::MAX)
+            .unwrap()
+    };
+    let reference = of(1);
+    assert_eq!(reference.len(), 3);
+    assert_eq!(
+        reference
+            .iter()
+            .filter(|h| h.participants.len() == 2)
+            .count(),
+        1
+    );
+    for id in [2, 3] {
+        assert_eq!(of(id), reference, "member {id}");
+        let report = cluster.dbs[(id - 1) as usize]
+            .begin_read()
+            .unwrap()
+            .check(NS)
+            .unwrap();
+        assert!(report.is_ok(), "{:#?}", report.problems);
+    }
+}
