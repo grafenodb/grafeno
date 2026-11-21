@@ -202,8 +202,10 @@ pub struct MergeReport {
     /// node already had.
     pub edges_dropped: u64,
     /// Hyperedges of the merged node that now name the kept one instead.
+    #[serde(default, skip_serializing_if = "crate::dump::is_zero")]
     pub hyperedges_moved: u64,
     /// Hyperedges left with one node (the two merged were all it had).
+    #[serde(default, skip_serializing_if = "crate::dump::is_zero")]
     pub hyperedges_dropped: u64,
     /// The conflicts merged over with `force` (the kept node's values won).
     pub conflicts: Vec<Conflict>,

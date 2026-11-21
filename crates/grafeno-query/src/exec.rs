@@ -40,8 +40,12 @@ pub struct WriteStats {
     pub edges_created: u64,
     pub edges_deleted: u64,
     pub edges_retracted: u64,
+    /// Hyperedge counts are left out of JSON when 0.
+    #[serde(skip_serializing_if = "is_zero")]
     pub hyperedges_created: u64,
+    #[serde(skip_serializing_if = "is_zero")]
     pub hyperedges_deleted: u64,
+    #[serde(skip_serializing_if = "is_zero")]
     pub hyperedges_retracted: u64,
     /// Facts ended (or retracted) because a new one contradicted them under
     /// an edge constraint, and contradictions only flagged.
@@ -53,6 +57,10 @@ pub struct WriteStats {
     /// `CREATE NAMESPACE` and `DROP NAMESPACE` (16.3).
     pub namespaces_created: u64,
     pub namespaces_dropped: u64,
+}
+
+fn is_zero(value: &u64) -> bool {
+    *value == 0
 }
 
 impl WriteStats {

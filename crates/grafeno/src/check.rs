@@ -38,6 +38,7 @@ pub struct CheckReport {
     /// searches never return them. A few appear as vectors change;
     /// [`WriteTx::compact_vectors`] reconnects them.
     pub unreachable_vectors: u64,
+    #[serde(default, skip_serializing_if = "crate::dump::is_zero")]
     pub hyperedges: u64,
     /// Inconsistencies found, at most 100 (the last line counts the rest).
     pub problems: Vec<String>,
@@ -61,9 +62,11 @@ pub struct RebuildReport {
     pub dropped_edges: u64,
     pub dropped_texts: u64,
     pub dropped_vectors: u64,
+    #[serde(default, skip_serializing_if = "crate::dump::is_zero")]
     pub hyperedges: u64,
     /// Hyperedges dropped because fewer than two of their nodes exist (the
     /// rest lose the nodes that do not).
+    #[serde(default, skip_serializing_if = "crate::dump::is_zero")]
     pub dropped_hyperedges: u64,
 }
 

@@ -144,7 +144,13 @@ pub struct DumpStats {
     pub namespaces: usize,
     pub nodes: u64,
     pub edges: u64,
+    /// Left out of JSON when 0, as before hyperedges existed.
+    #[serde(default, skip_serializing_if = "is_zero")]
     pub hyperedges: u64,
+}
+
+pub(crate) fn is_zero(value: &u64) -> bool {
+    *value == 0
 }
 
 fn write_record(out: &mut impl Write, record: &Record) -> Result<()> {
