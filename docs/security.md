@@ -34,15 +34,23 @@ done about each finding.
 - **Failures.** A panic in a request answers 500 with a reference; what
   failed is in the server's log under that reference.
 - **Webhooks** reach only public addresses unless
-  `[background] webhooks_to_private = true`; redirects are not followed.
+  `[background] webhooks_to_private = true`; a delivery connects to the
+  addresses checked, through no proxy, and redirects are not followed.
 - **Clusters.** Members prove themselves to each other with the shared
-  secret on every message, forward and status request. An empty secret is
-  refused; the example one is warned about.
+  secret on every message, forward and status request. An empty secret,
+  or the example settings' one, is refused.
 - **Files.** On Unix the settings file is `0640` and data folders made by
   Grafeno `0750`. On Windows they are SYSTEM's, the administrators' and the
   account's that made them; the installer does the same to
   `C:\ProgramData\Grafeno` and the data folder on every install and upgrade.
   `grafeno doctor` reports files other users can read.
+- **Stored text.** What a memory says reaches a model as data: in the
+  context, a line of a memory that would read as an item, a heading or a
+  fact is escaped, names and relation labels stay on one line, and
+  control characters are dropped. The shell shows control characters in
+  cells instead of letting them drive the terminal. A memory can still
+  say anything in words: telling instructions from data in what it reads
+  is the agent's part.
 
 ## What the operator does
 

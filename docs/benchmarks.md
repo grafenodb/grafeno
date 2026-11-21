@@ -1110,6 +1110,161 @@ in four ways:
   layout version, a migration that rewrites every record (with the copy
   kept before an upgrade) and decoding both formats during the change.
 
+## Retrieval quality on agent questions (`crates/grafeno-memory/examples/recall_quality.rs`)
+
+```bash
+cargo run --release -p grafeno-memory --example recall_quality
+```
+
+80 memories an agent keeps over six projects, in Spanish and English,
+with the relations between them, and 70 questions of four kinds: the same
+words as the answer, a paraphrase, the other language, and one relation
+away from what the question names (`crates/grafeno-memory/data/recall`).
+Embeddings come from a small multilingual model run locally, stored with
+the fixtures (`tools/fixtures/make-recall-fixtures.mjs`), so every run
+gives the same numbers. Recall without importance or recency, the first
+ten results; "stemmed" is the namespace with `language` `es`. Release
+build, 2026-11-20.
+
+| Way | Questions | First | In 3 | In 10 | ms a question |
+| --- | --- | ---: | ---: | ---: | ---: |
+| BM25 | all (70) | 44% | 70% | 79% | 0.02 |
+| BM25 | words (20) | 100% | 100% | 100% |  |
+| BM25 | paraphrase (20) | 30% | 60% | 75% |  |
+| BM25 | crosslingual (15) | 13% | 40% | 47% |  |
+| BM25 | multihop (15) | 20% | 73% | 87% |  |
+| BM25, stemmed (es) | all (70) | 47% | 67% | 77% | 0.03 |
+| BM25, stemmed (es) | words (20) | 100% | 100% | 100% |  |
+| BM25, stemmed (es) | paraphrase (20) | 35% | 60% | 70% |  |
+| BM25, stemmed (es) | crosslingual (15) | 20% | 33% | 47% |  |
+| BM25, stemmed (es) | multihop (15) | 20% | 67% | 87% |  |
+| HNSW | all (70) | 63% | 86% | 96% | 0.17 |
+| HNSW | words (20) | 100% | 100% | 100% |  |
+| HNSW | paraphrase (20) | 60% | 90% | 100% |  |
+| HNSW | crosslingual (15) | 60% | 80% | 87% |  |
+| HNSW | multihop (15) | 20% | 67% | 93% |  |
+| hybrid | all (70) | 61% | 89% | 97% | 0.18 |
+| hybrid | words (20) | 100% | 100% | 100% |  |
+| hybrid | paraphrase (20) | 55% | 90% | 100% |  |
+| hybrid | crosslingual (15) | 53% | 80% | 93% |  |
+| hybrid | multihop (15) | 27% | 80% | 93% |  |
+| hybrid + graph | all (70) | 61% | 89% | 99% | 0.19 |
+| hybrid + graph | words (20) | 100% | 100% | 100% |  |
+| hybrid + graph | paraphrase (20) | 55% | 85% | 100% |  |
+| hybrid + graph | crosslingual (15) | 53% | 80% | 93% |  |
+| hybrid + graph | multihop (15) | 27% | 87% | 100% |  |
+| hybrid + graph, stemmed | all (70) | 60% | 89% | 99% | 0.19 |
+| hybrid + graph, stemmed | words (20) | 100% | 100% | 100% |  |
+| hybrid + graph, stemmed | paraphrase (20) | 55% | 85% | 100% |  |
+| hybrid + graph, stemmed | crosslingual (15) | 47% | 73% | 93% |  |
+| hybrid + graph, stemmed | multihop (15) | 27% | 93% | 100% |  |
+
+Words alone find what shares words and little else; meaning (HNSW) finds
+paraphrases and the other language; the hybrid keeps both. Graph
+expansion adds the answers one relation away: 87 % in the first three
+against 80 %, and 99 % in the first ten. Before 2026-11-20 it cost the
+first place (61 % to 36 %): fused scores are close to one another, and a
+weak match next to the best one overtook it; a node the graph reaches now
+rises up to just below the memory that led to it. Spanish stemming helps
+words in Spanish ("decidimos" finds "decidir"); in this mixed corpus it
+matters little beside the vectors. `tests/recall_quality.rs` holds these
+as floors.
+
+## Old decisions among thousands of conversations (`crates/grafeno-memory/examples/long_term.rs`)
+
+```bash
+cargo run --release -p grafeno-memory --example long_term -- 1
+cargo run --release -p grafeno-memory --example long_term -- 5
+```
+
+3 000 conversations over two years (15 000 with `5`, each copy a little
+changed), 52 decisions among them made in the first months, 12 replaced a
+year later by a newer one (`supersedes`), and a question about each
+decision in other words. Each memory is as old as it is, so recency ranks
+the recent chatter up; much of it names the same topics ("someone asked
+about the mail provider; nothing decided"). Recall as an agent calls it
+(hybrid, graph, importance and recency), the first ten, and the context
+of 600 tokens. Release build, 2026-11-20.
+
+3 000 conversations:
+
+| Way | First | In 3 | In the context (600 tokens) | New ahead of replaced | ms a recall |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| BM25 | 18% | 32% | 38% | 42% | 0.13 |
+| HNSW | 12% | 38% | 48% | 75% | 0.96 |
+| hybrid + graph (default) | 18% | 38% | 55% | 75% | 1.02 |
+| hybrid + graph, relevance only | 30% | 42% | 55% | 75% | 0.87 |
+| hybrid + graph, decisions only | 78% | 82% | 95% | 100% | 1.24 |
+| hybrid + graph, decisions important | 28% | 48% | 58% | 75% | 1.01 |
+
+15 000 conversations:
+
+| Way | First | In 3 | In the context (600 tokens) | New ahead of replaced | ms a recall |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| BM25 | 18% | 30% | 32% | 42% | 0.27 |
+| HNSW | 12% | 15% | 28% | 42% | 1.41 |
+| hybrid + graph (default) | 18% | 30% | 40% | 58% | 1.66 |
+| hybrid + graph, relevance only | 22% | 38% | 42% | 58% | 1.39 |
+| hybrid + graph, decisions only | 65% | 80% | 95% | 100% | 2.23 |
+| hybrid + graph, decisions important | 25% | 38% | 42% | 58% | 1.66 |
+
+Asked as a question about decisions (`labels: ["Decision"]`), the right
+one is in the context 95 % of the time, as many conversations as there
+are, and a new decision ranks ahead of the one it replaced every time.
+Recall searches within the labels it is given (their own best
+candidates join the lists): before that, it filtered the best 50 of
+everything, and the share fell to 72 % with 3 000 conversations and 55 %
+with 15 000. Without the label, chatter on the same topic competes, and
+the more of it there is, the more often it wins; marking decisions
+important (0.8) helps a little. `tests/long_term.rs` holds the floor.
+
+## Many agents writing at once (`crates/grafeno/examples/many_writers.rs`)
+
+```bash
+cargo run --release -p grafeno --example many_writers -- 4
+```
+
+Agents saving memories as fast as they can, each a text, a 384-number
+embedding and an edge, with immediate durability, through the
+group-commit writer: every agent on one database file, or spread over 2
+and 4 files with a writer each (as namespaces kept in separate files
+would be). 16 CPUs, NVMe, Windows 11, 4 s a step, 2026-11-20.
+
+| Agents | Files (writers) | Memories/s | p50 ms | p99 ms |
+| ---: | ---: | ---: | ---: | ---: |
+| 1 | 1 | 215 | 4.5 | 7.0 |
+| 8 | 1 | 549 | 12.6 | 27.2 |
+| 8 | 2 | 505 | 16.8 | 22.2 |
+| 8 | 4 | 532 | 15.4 | 22.3 |
+| 32 | 1 | 1 094 | 29.0 | 69.0 |
+| 32 | 2 | 1 328 | 22.8 | 52.8 |
+| 32 | 4 | 1 448 | 18.2 | 58.8 |
+| 128 | 1 | 1 660 | 76.9 | 151.1 |
+| 128 | 2 | 2 101 | 56.5 | 157.8 |
+| 128 | 4 | 2 864 | 43.5 | 105.1 |
+
+One writer takes about 1 100 memories a second from 32 agents writing
+without pause, and 1 660 from 128. An agent saves a memory every few
+seconds, so one writer serves hundreds at once. More writers help only
+past dozens of agents writing without pause, and less than in
+proportion (1.7 times with four): the disk's flush is shared.
+
+## Recovery drills (`crates/grafeno-server/tests/recovery.rs`)
+
+```bash
+cargo test -p grafeno-server --test recovery
+```
+
+On real `grafeno serve` processes while an agent keeps writing memories:
+the server is killed without warning and started again (the file checks
+clean, every acknowledged memory is there, recall finds them); its file
+is then damaged (the check refuses it) and the backup taken over HTTP
+while the agent wrote restores into a new file serving every memory
+acknowledged before it; and the leader of a three-member cluster is
+killed while memories come through the members (a new leader takes the
+writes; once the old one is back as a follower, every acknowledged
+memory is on every member). About 6 s for both.
+
 ## Remaining limits
 
 - **Vector search reads each visited vector from redb** (about 0.4 µs per

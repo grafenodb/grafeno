@@ -57,6 +57,9 @@ build unless the file says otherwise; on E1, runs vary by about ±20%.
 | `split.csv` | Reads on one server and split across 3 and 5 members (3 scan threads each), and one server with 9 and 15 threads (13.4) | `crates/grafeno-server/examples/split_bench.rs` | E1-disk | 2026-11-06 | a table |
 | `faults.csv` | Fault-injection runs: operations checked for linearizability, time for writes to resume after the leader fails, availability (13.3) | `crates/grafeno-cluster/tests/linearizable.rs`, `crates/grafeno-server/tests/faults.rs` | E1-disk | 2026-11-06 | a table |
 | `compact_storage.csv` | Table sizes, edge reads and vector search before and after 12.5 (layout 13), 100 000 nodes, 300 000 edges, 50 000 vectors | `crates/grafeno/examples/storage_bench.rs` | E1-disk | 2026-11-05 | paired bars per table |
+| `recall_quality.csv` | BM25, BM25 stemmed, HNSW, hybrid and hybrid with the graph on 70 agent questions of four kinds | `crates/grafeno-memory/examples/recall_quality.rs` | E1-mem | 2026-11-20 | grouped bars per kind: first, in 3, in 10 |
+| `long_term.csv` | Old decisions among 3 000 and 15 000 conversations, six ways of recalling | `crates/grafeno-memory/examples/long_term.rs` | E1-mem | 2026-11-20 | grouped bars, in the context, per size |
+| `many_writers.csv` | Agents writing memories at once on 1, 2 and 4 files (writers) | `crates/grafeno/examples/many_writers.rs` | E1-disk | 2026-11-20 | memories/s against agents, a line per number of writers |
 
 `python docs/charts/build.py` draws the charts of
 [performance](../performance.md) from these files (light and dark SVG in

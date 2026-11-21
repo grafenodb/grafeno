@@ -1,0 +1,13 @@
+conversations,way,first_pct,in3_pct,in_context_pct,new_ahead_pct,ms_per_recall
+3000,"BM25",18,32,38,42,0.13
+3000,"HNSW",12,38,48,75,0.96
+3000,"hybrid + graph (default)",18,38,55,75,1.02
+3000,"hybrid + graph, relevance only",30,42,55,75,0.87
+3000,"hybrid + graph, decisions only",78,82,95,100,1.24
+3000,"hybrid + graph, decisions important",28,48,58,75,1.01
+15000,"BM25",18,30,32,42,0.27
+15000,"HNSW",12,15,28,42,1.41
+15000,"hybrid + graph (default)",18,30,40,58,1.66
+15000,"hybrid + graph, relevance only",22,38,42,58,1.39
+15000,"hybrid + graph, decisions only",65,80,95,100,2.23
+15000,"hybrid + graph, decisions important",25,38,42,58,1.66

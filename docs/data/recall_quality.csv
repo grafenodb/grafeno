@@ -1,0 +1,31 @@
+way,questions,count,first_pct,in3_pct,in10_pct,ms_per_question
+"BM25",all,70,44,70,79,0.02
+"BM25",words,20,100,100,100,
+"BM25",paraphrase,20,30,60,75,
+"BM25",crosslingual,15,13,40,47,
+"BM25",multihop,15,20,73,87,
+"BM25, stemmed (es)",all,70,47,67,77,0.03
+"BM25, stemmed (es)",words,20,100,100,100,
+"BM25, stemmed (es)",paraphrase,20,35,60,70,
+"BM25, stemmed (es)",crosslingual,15,20,33,47,
+"BM25, stemmed (es)",multihop,15,20,67,87,
+"HNSW",all,70,63,86,96,0.17
+"HNSW",words,20,100,100,100,
+"HNSW",paraphrase,20,60,90,100,
+"HNSW",crosslingual,15,60,80,87,
+"HNSW",multihop,15,20,67,93,
+"hybrid",all,70,61,89,97,0.18
+"hybrid",words,20,100,100,100,
+"hybrid",paraphrase,20,55,90,100,
+"hybrid",crosslingual,15,53,80,93,
+"hybrid",multihop,15,27,80,93,
+"hybrid + graph",all,70,61,89,99,0.19
+"hybrid + graph",words,20,100,100,100,
+"hybrid + graph",paraphrase,20,55,85,100,
+"hybrid + graph",crosslingual,15,53,80,93,
+"hybrid + graph",multihop,15,27,87,100,
+"hybrid + graph, stemmed",all,70,60,89,99,0.19
+"hybrid + graph, stemmed",words,20,100,100,100,
+"hybrid + graph, stemmed",paraphrase,20,55,85,100,
+"hybrid + graph, stemmed",crosslingual,15,47,73,93,
+"hybrid + graph, stemmed",multihop,15,27,93,100,

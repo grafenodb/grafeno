@@ -13,6 +13,27 @@ version (now 18) is upgraded in place, with a copy kept first.
 
 ## Unreleased
 
+- **Added**: a namespace's `language` (`en` or `es`, on POST and PATCH
+  `/v1/namespaces`): node texts and questions are reduced to their stem
+  in it, verbs too, so "decidimos" finds "decidir"; setting it indexes
+  the namespace's texts again, and replicas do the same.
+- **Fixed**: graph expansion in recall took the first place from the
+  best match (61 % to 36 % on the new agent questions): a node the graph
+  reaches now rises up to just below the memory that led to it.
+- **Fixed**: recall with `labels` filtered the best 50 of everything, so
+  a decision a crowd of conversations outscored was not found; it now
+  searches within the labels too (an old decision in the context 95 % of
+  the time among 3 000 or 15 000 conversations, against 72 % and 55 %).
+- **Fixed**: a stored memory written to look like the context's own
+  structure (an item, a section, a fact) could forge it in what a model
+  reads; such lines are now escaped and control characters dropped. The
+  shell shows control characters in cells instead of letting them drive
+  the terminal.
+- **Added**: retrieval fixtures (agent questions in Spanish and English,
+  thousands of conversations) with their embeddings, measurements of
+  retrieval quality, long-term memory and many writers, recovery drills
+  on real processes, and a check of every namespace route against
+  another namespace's key; see [benchmarks](docs/benchmarks.md).
 - **Added**: the static token changes itself. `POST /v1/auth/token`,
   called with the token and given the current one again, replaces it at
   once and writes the new one to the settings file it was read from;
