@@ -86,6 +86,8 @@ const WRITING_TOOLS: &[&str] = &[
     "resolve_review",
     "remember",
     "relate",
+    "relate_group",
+    "forget_group",
     "update",
     "forget",
     "merge",
@@ -362,6 +364,9 @@ impl McpServer {
             "recall" => self.recall(arguments),
             "context" => self.context(arguments),
             "relate" => self.relate(arguments),
+            "relate_group" => self.relate_group(arguments),
+            "find_group" => self.find_group(arguments),
+            "forget_group" => self.forget_group(arguments),
             "update" => self.update(arguments),
             "forget" => self.forget(arguments),
             "get_node" => self.get_node(arguments),
@@ -677,6 +682,179 @@ impl McpServer {
             text.push_str(&format!("\n(about {} tokens, estimated)", context.tokens));
             text
         }))
+    }
+
+    fn relate_group(&self, arguments: Value) -> ToolResult {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Member {
+            node: String,
+            #[serde(default)]
+            role: Option<String>,
+        }
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Args {
+            label: String,
+            participants: Vec<Member>,
+            #[serde(default)]
+            props: Props,
+            #[serde(default)]
+            sources: Vec<String>,
+            #[serde(default)]
+            valid_from: Option<TimeInput>,
+            #[serde(default)]
+            valid_to: Option<TimeInput>,
+            #[serde(default)]
+            namespace: Option<String>,
+        }
+        let args: Args = parse_args(arguments)?;
+        let ns = self.ns(&args.namespace);
+        let mut new = grafeno::NewHyperEdge::new(args.label);
+        for member in args.participants {
+            new.participants.push(grafeno::Participant {
+                node: parse_id(&member.node).map_err(describe)?,
+                role: member.role,
+            });
+        }
+        new.props = args.props;
+        new.sources = parse_ids(&args.sources)?;
+        new.valid_from = args
+            .valid_from
+            .as_ref()
+            .map(TimeInput::resolve)
+            .transpose()
+            .map_err(describe)?;
+        new.valid_to = args
+            .valid_to
+            .as_ref()
+            .map(TimeInput::resolve)
+            .transpose()
+            .map_err(describe)?;
+        let id = self
+            .write(|tx| tx.create_hyperedge(ns, new))
+            .map_err(describe)?;
+        Ok(ToolOutput::Json(json!({ "id": id })))
+    }
+
+    fn find_group(&self, arguments: Value) -> ToolResult {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Args {
+            #[serde(default)]
+            id: Option<String>,
+            #[serde(default)]
+            node: Option<String>,
+            #[serde(default)]
+            nodes: Vec<String>,
+            #[serde(default)]
+            exact: bool,
+            #[serde(default)]
+            label: Option<String>,
+            #[serde(default)]
+            valid_at: Option<TimeInput>,
+            #[serde(default)]
+            known_at: Option<TimeInput>,
+            #[serde(default)]
+            namespace: Option<String>,
+        }
+        let args: Args = parse_args(arguments)?;
+        let ns = self.ns(&args.namespace);
+        let mut filter = grafeno::HyperEdgeFilter::any();
+        if let Some(label) = &args.label {
+            filter = filter.label(label.clone());
+        }
+        if let Some(at) = &args.valid_at {
+            filter = filter.valid_at(at.resolve().map_err(describe)?);
+        }
+        if let Some(at) = &args.known_at {
+            filter = filter.known_at(at.resolve().map_err(describe)?);
+        }
+        let read = self.db.begin_read().map_err(describe)?;
+        let found = match (&args.id, &args.node, args.nodes.is_empty()) {
+            (Some(id), None, true) => {
+                let id = grafeno::HyperEdgeId::from_u128(parse_id(id).map_err(describe)?.as_u128());
+                read.hyperedge(ns, id)
+                    .map_err(describe)?
+                    .into_iter()
+                    .collect()
+            }
+            (None, Some(node), true) => read
+                .node_hyperedges(ns, parse_id(node).map_err(describe)?, &filter)
+                .map_err(describe)?,
+            (None, None, false) => {
+                let nodes = parse_ids(&args.nodes)?;
+                let mode = if args.exact {
+                    grafeno::ParticipantMatch::Exact
+                } else {
+                    grafeno::ParticipantMatch::Contains
+                };
+                read.hyperedges_by_participants(ns, &nodes, mode, &filter)
+                    .map_err(describe)?
+            }
+            _ => return Err("give one of id, node or nodes".to_owned()),
+        };
+        // Each participant with its name, so the answer reads on its own.
+        let mut groups = Vec::with_capacity(found.len());
+        for edge in found {
+            let mut participants = Vec::with_capacity(edge.participants.len());
+            for participant in &edge.participants {
+                let name = read
+                    .node(ns, participant.node)
+                    .map_err(describe)?
+                    .map(|node| node.display_name());
+                participants.push(json!({
+                    "node": participant.node,
+                    "name": name,
+                    "role": participant.role,
+                }));
+            }
+            groups.push(json!({
+                "id": edge.id,
+                "label": edge.label,
+                "participants": participants,
+                "props": edge.props,
+                "valid_from": edge.valid_from.map(|t| t.iso()),
+                "valid_to": edge.valid_to.map(|t| t.iso()),
+                "recorded_at": edge.recorded_at.iso(),
+                "retracted": edge.is_retracted(),
+            }));
+        }
+        Ok(ToolOutput::Json(json!({ "groups": groups })))
+    }
+
+    fn forget_group(&self, arguments: Value) -> ToolResult {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Args {
+            id: String,
+            #[serde(default)]
+            mode: Option<String>,
+            #[serde(default)]
+            at: Option<TimeInput>,
+            #[serde(default)]
+            namespace: Option<String>,
+        }
+        let args: Args = parse_args(arguments)?;
+        let ns = self.ns(&args.namespace);
+        let id = grafeno::HyperEdgeId::from_u128(parse_id(&args.id).map_err(describe)?.as_u128());
+        let at = match &args.at {
+            Some(at) => at.resolve().map_err(describe)?,
+            None => grafeno::Timestamp::now(),
+        };
+        let mode = args.mode.as_deref().unwrap_or("invalidate");
+        match mode {
+            "invalidate" => self.write(|tx| tx.invalidate_hyperedge(ns, id, at)),
+            "retract" => self.write(|tx| tx.retract_hyperedge(ns, id)),
+            "delete" => self.write(|tx| tx.delete_hyperedge(ns, id)),
+            other => {
+                return Err(format!(
+                    "mode is invalidate, retract or delete, not {other:?}"
+                ));
+            }
+        }
+        .map_err(describe)?;
+        Ok(ToolOutput::Json(json!({ "id": id, "mode": mode })))
     }
 
     fn relate(&self, arguments: Value) -> ToolResult {
@@ -3111,6 +3289,77 @@ fn tools() -> Value {
                     "namespace": namespace
                 },
                 "required": ["from", "label", "to"]
+            }
+        },
+        {
+            "name": "relate_group",
+            "title": "Relate a group",
+            "description": "Record one fact that relates two or more existing nodes at once, each in a \
+                role: a decision (who proposed it, who implemented it, who reviewed it, the task, the \
+                evidence), a meeting, a collaboration. It is kept whole: find_group returns every \
+                participant with its role. For a fact between two nodes with a direction, use relate.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "label": { "type": "string", "description": "Kind of fact, in snake_case, such as technical_decision." },
+                    "participants": {
+                        "type": "array",
+                        "minItems": 2,
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "node": id("Id of a node that takes part."),
+                                "role": { "type": "string", "description": "What it is in the fact, such as proposer, reviewer, subject or supporting_evidence." }
+                            },
+                            "required": ["node"]
+                        },
+                        "description": "At least two distinct nodes; a node may come twice in two roles."
+                    },
+                    "props": { "type": "object", "description": "Properties of the fact, such as a summary." },
+                    "sources": { "type": "array", "items": { "type": "string" }, "description": "Ids of the nodes this fact comes from." },
+                    "valid_from": date,
+                    "valid_to": date,
+                    "namespace": namespace
+                },
+                "required": ["label", "participants"]
+            }
+        },
+        {
+            "name": "find_group",
+            "title": "Find group facts",
+            "description": "Read facts that relate several nodes (recorded with relate_group): by id, \
+                those a node takes part in, or those all of `nodes` take part in (exactly them with \
+                `exact`), with their participants and roles. Retracted facts are left out unless \
+                `known_at` says when to look.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "id": id("Id of one group fact."),
+                    "node": id("Id of a node: the facts it takes part in."),
+                    "nodes": { "type": "array", "items": { "type": "string" }, "description": "Ids of nodes that must all take part." },
+                    "exact": { "type": "boolean", "description": "With `nodes`: they are all the nodes of the fact. Default: false." },
+                    "label": { "type": "string", "description": "Only facts of this kind." },
+                    "valid_at": date,
+                    "known_at": date,
+                    "namespace": namespace
+                }
+            }
+        },
+        {
+            "name": "forget_group",
+            "title": "Forget a group fact",
+            "description": "Forget a fact recorded with relate_group: mode \"invalidate\" (default) means \
+                it stopped being true at `at` (default now) and keeps its history; \"retract\" means it \
+                was a mistake; \"delete\" erases it.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "id": id("Id of the group fact."),
+                    "mode": { "type": "string", "enum": ["invalidate", "retract", "delete"] },
+                    "at": date,
+                    "namespace": namespace
+                },
+                "required": ["id"]
             }
         },
         {

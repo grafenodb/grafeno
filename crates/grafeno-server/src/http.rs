@@ -473,6 +473,23 @@ pub fn router_with(state: AppState, options: &Options) -> Router {
                 .delete(delete_node),
         )
         .route("/{ns}/nodes/{id}/neighbors", get(neighbors))
+        .route("/{ns}/nodes/{id}/hyperedges", get(node_hyperedges))
+        .route(
+            "/{ns}/hyperedges",
+            get(list_hyperedges).post(create_hyperedge),
+        )
+        .route("/{ns}/hyperedges/find", post(find_hyperedges))
+        .route(
+            "/{ns}/hyperedges/{id}",
+            get(get_hyperedge)
+                .patch(patch_hyperedge)
+                .delete(delete_hyperedge),
+        )
+        .route(
+            "/{ns}/hyperedges/{id}/invalidate",
+            post(invalidate_hyperedge),
+        )
+        .route("/{ns}/hyperedges/{id}/retract", post(retract_hyperedge))
         .route("/{ns}/edges", get(list_edges).post(create_edge))
         .route("/{ns}/edges/{id}", get(get_edge).delete(delete_edge))
         .route("/{ns}/edges/{id}/invalidate", post(invalidate_edge))
@@ -1534,12 +1551,31 @@ async fn patch_node(
     Ok(Json(node))
 }
 
+#[derive(Deserialize)]
+struct DeleteNodeParams {
+    /// What to do with the hyperedges the node takes part in: `restrict`
+    /// (refuse, the default), `cascade` (delete them) or `detach` (take
+    /// the node out).
+    hyperedges: Option<String>,
+}
+
 async fn delete_node(
     State(state): State<AppState>,
     Path((ns, id)): Path<(String, String)>,
+    Params(params): Params<DeleteNodeParams>,
 ) -> ApiResult<StatusCode> {
     let id = parse_id(&id)?;
-    write(&state, move |tx| tx.delete_node(&ns, id)).await?;
+    let policy = match params.hyperedges.as_deref() {
+        None | Some("restrict") => grafeno::OnHyperEdges::Restrict,
+        Some("cascade") => grafeno::OnHyperEdges::Cascade,
+        Some("detach") => grafeno::OnHyperEdges::Detach,
+        Some(other) => {
+            return Err(ApiError::bad_request(format!(
+                "hyperedges is restrict, cascade or detach, not {other:?}"
+            )));
+        }
+    };
+    write(&state, move |tx| tx.delete_node_with(&ns, id, policy)).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -1643,6 +1679,269 @@ async fn retract_edge(
     })
     .await?;
     Ok(Json(edge))
+}
+
+// ---------------------------------------------------------------- hyperedges
+
+fn parse_hyperedge_id(text: &str) -> grafeno::Result<grafeno::HyperEdgeId> {
+    parse_id(text).map(|id| grafeno::HyperEdgeId::from_u128(id.as_u128()))
+}
+
+/// A hyperedge to create: its label, participants (`{node, role}`, the role
+/// optional), properties, sources and valid time.
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct HyperEdgeInput {
+    label: String,
+    participants: Vec<grafeno::Participant>,
+    #[serde(default)]
+    props: Props,
+    #[serde(default)]
+    sources: Vec<NodeId>,
+    #[serde(default)]
+    valid_from: Option<TimeInput>,
+    #[serde(default)]
+    valid_to: Option<TimeInput>,
+}
+
+async fn create_hyperedge(
+    State(state): State<AppState>,
+    Path(ns): Path<String>,
+    Body(input): Body<HyperEdgeInput>,
+) -> ApiResult<(StatusCode, Json<Value>)> {
+    let mut new = grafeno::NewHyperEdge::new(input.label);
+    new.participants = input.participants;
+    new.props = input.props;
+    new.sources = input.sources;
+    new.valid_from = input
+        .valid_from
+        .as_ref()
+        .map(TimeInput::resolve)
+        .transpose()?;
+    new.valid_to = input
+        .valid_to
+        .as_ref()
+        .map(TimeInput::resolve)
+        .transpose()?;
+    let id = write(&state, move |tx| tx.create_hyperedge(&ns, new.clone())).await?;
+    Ok((StatusCode::CREATED, Json(json!({ "id": id }))))
+}
+
+async fn list_hyperedges(
+    State(state): State<AppState>,
+    Path(ns): Path<String>,
+    Params(params): Params<ListParams>,
+) -> ApiResult<Json<Page<grafeno::HyperEdge>>> {
+    let limit = params.limit();
+    let after = params
+        .after
+        .as_deref()
+        .map(parse_hyperedge_id)
+        .transpose()?;
+    let items = blocking(&state, move |db| {
+        let read = db.begin_read()?;
+        match params.label.as_deref() {
+            // Retracted ones too, as the listing of all of them gives.
+            Some(label) => {
+                let mut out = Vec::new();
+                for id in read.hyperedge_ids_with_label(&ns, label, after, limit)? {
+                    if let Some(edge) = read.hyperedge(&ns, id)? {
+                        out.push(edge);
+                    }
+                }
+                Ok(out)
+            }
+            None => read.hyperedges_page(&ns, after, limit),
+        }
+    })
+    .await?;
+    Ok(Json(Page::new(items, limit, |edge| edge.id.to_string())))
+}
+
+async fn get_hyperedge(
+    State(state): State<AppState>,
+    Path((ns, id)): Path<(String, String)>,
+) -> ApiResult<Json<grafeno::HyperEdge>> {
+    let id = parse_hyperedge_id(&id)?;
+    let edge = blocking(&state, move |db| {
+        db.begin_read()?
+            .hyperedge(&ns, id)?
+            .ok_or(Error::HyperEdgeNotFound(id))
+    })
+    .await?;
+    Ok(Json(edge))
+}
+
+/// A partial update: properties merged, then removed, and the participants
+/// replaced when given.
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PatchHyperEdge {
+    #[serde(default)]
+    props: Option<Props>,
+    #[serde(default)]
+    remove_props: Vec<String>,
+    #[serde(default)]
+    participants: Option<Vec<grafeno::Participant>>,
+}
+
+async fn patch_hyperedge(
+    State(state): State<AppState>,
+    Path((ns, id)): Path<(String, String)>,
+    Body(patch): Body<PatchHyperEdge>,
+) -> ApiResult<Json<grafeno::HyperEdge>> {
+    let id = parse_hyperedge_id(&id)?;
+    let patched = ns.clone();
+    write(&state, move |tx| {
+        let ns = patched.as_str();
+        tx.hyperedge(ns, id)?.ok_or(Error::HyperEdgeNotFound(id))?;
+        if let Some(props) = &patch.props {
+            tx.set_hyperedge_props(ns, id, props.clone())?;
+        }
+        if !patch.remove_props.is_empty() {
+            let keys: Vec<&str> = patch.remove_props.iter().map(String::as_str).collect();
+            tx.remove_hyperedge_props(ns, id, &keys)?;
+        }
+        if let Some(participants) = &patch.participants {
+            tx.set_hyperedge_participants(ns, id, participants.clone())?;
+        }
+        Ok(())
+    })
+    .await?;
+    get_hyperedge(State(state), Path((ns, id.to_string()))).await
+}
+
+async fn delete_hyperedge(
+    State(state): State<AppState>,
+    Path((ns, id)): Path<(String, String)>,
+) -> ApiResult<StatusCode> {
+    let id = parse_hyperedge_id(&id)?;
+    write(&state, move |tx| tx.delete_hyperedge(&ns, id)).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn invalidate_hyperedge(
+    State(state): State<AppState>,
+    Path((ns, id)): Path<(String, String)>,
+    Body(input): Body<InvalidateInput>,
+) -> ApiResult<Json<grafeno::HyperEdge>> {
+    let id = parse_hyperedge_id(&id)?;
+    let at = input.at.resolve()?;
+    let edge = write(&state, move |tx| {
+        tx.invalidate_hyperedge(&ns, id, at)?;
+        tx.hyperedge(&ns, id)?.ok_or(Error::HyperEdgeNotFound(id))
+    })
+    .await?;
+    Ok(Json(edge))
+}
+
+async fn retract_hyperedge(
+    State(state): State<AppState>,
+    Path((ns, id)): Path<(String, String)>,
+) -> ApiResult<Json<grafeno::HyperEdge>> {
+    let id = parse_hyperedge_id(&id)?;
+    let edge = write(&state, move |tx| {
+        tx.retract_hyperedge(&ns, id)?;
+        tx.hyperedge(&ns, id)?.ok_or(Error::HyperEdgeNotFound(id))
+    })
+    .await?;
+    Ok(Json(edge))
+}
+
+/// Which hyperedges a read returns: comma-separated labels, and the times.
+fn hyperedge_filter(
+    labels: Option<&str>,
+    valid_at: Option<&str>,
+    known_at: Option<&str>,
+) -> grafeno::Result<grafeno::HyperEdgeFilter> {
+    let mut filter = grafeno::HyperEdgeFilter::any();
+    for label in labels.iter().flat_map(|labels| labels.split(',')) {
+        if !label.is_empty() {
+            filter = filter.label(label);
+        }
+    }
+    if let Some(at) = valid_at {
+        filter = filter.valid_at(parse_time_param(at)?);
+    }
+    if let Some(at) = known_at {
+        filter = filter.known_at(parse_time_param(at)?);
+    }
+    Ok(filter)
+}
+
+#[derive(Deserialize)]
+struct NodeHyperEdgeParams {
+    /// Comma-separated labels.
+    label: Option<String>,
+    valid_at: Option<String>,
+    known_at: Option<String>,
+}
+
+async fn node_hyperedges(
+    State(state): State<AppState>,
+    Path((ns, id)): Path<(String, String)>,
+    Params(params): Params<NodeHyperEdgeParams>,
+) -> ApiResult<Json<Vec<grafeno::HyperEdge>>> {
+    let id = parse_id(&id)?;
+    let filter = hyperedge_filter(
+        params.label.as_deref(),
+        params.valid_at.as_deref(),
+        params.known_at.as_deref(),
+    )?;
+    let edges = blocking(&state, move |db| {
+        let read = db.begin_read()?;
+        read.node(&ns, id)?.ok_or(Error::NodeNotFound(id))?;
+        read.node_hyperedges(&ns, id, &filter)
+    })
+    .await?;
+    Ok(Json(edges))
+}
+
+/// The hyperedges with all of `nodes` (or exactly them, with `exact`).
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FindHyperEdges {
+    nodes: Vec<NodeId>,
+    #[serde(default)]
+    exact: bool,
+    /// Comma-separated labels.
+    #[serde(default)]
+    label: Option<String>,
+    #[serde(default)]
+    valid_at: Option<String>,
+    #[serde(default)]
+    known_at: Option<String>,
+}
+
+/// The most nodes a search by participants names.
+const MAX_FIND_NODES: usize = 256;
+
+async fn find_hyperedges(
+    State(state): State<AppState>,
+    Path(ns): Path<String>,
+    Body(input): Body<FindHyperEdges>,
+) -> ApiResult<Json<Vec<grafeno::HyperEdge>>> {
+    if input.nodes.len() > MAX_FIND_NODES {
+        return Err(ApiError::bad_request(format!(
+            "a search names at most {MAX_FIND_NODES} nodes"
+        )));
+    }
+    let filter = hyperedge_filter(
+        input.label.as_deref(),
+        input.valid_at.as_deref(),
+        input.known_at.as_deref(),
+    )?;
+    let mode = if input.exact {
+        grafeno::ParticipantMatch::Exact
+    } else {
+        grafeno::ParticipantMatch::Contains
+    };
+    let edges = blocking(&state, move |db| {
+        db.begin_read()?
+            .hyperedges_by_participants(&ns, &input.nodes, mode, &filter)
+    })
+    .await?;
+    Ok(Json(edges))
 }
 
 #[derive(Deserialize)]

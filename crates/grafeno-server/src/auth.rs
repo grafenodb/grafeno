@@ -858,16 +858,22 @@ fn namespace_actions(method: &str, rest: &[&str]) -> &'static [Act] {
             | ["context"]
             | ["query", "part"]
             | ["match"]
+            | ["hyperedges", "find"]
             // A memory tool: the handler checks a writing one more.
             | ["tools", _],
         ) => READ,
         (_, ["merge"] | ["merges", _, "undo"]) => &[Act::Merge],
-        (_, ["edges", _, "retract" | "invalidate"] | ["nodes", _, "retract" | "invalidate"]) => {
-            &[Act::Retract]
-        }
-        ("POST", ["nodes"] | ["edges"] | ["ingest"] | ["extract"] | ["nodes", _, "mentions"]) => {
-            &[Act::Create]
-        }
+        (
+            _,
+            ["edges", _, "retract" | "invalidate"]
+            | ["nodes", _, "retract" | "invalidate"]
+            | ["hyperedges", _, "retract" | "invalidate"],
+        ) => &[Act::Retract],
+        (
+            "POST",
+            ["nodes"] | ["edges"] | ["hyperedges"] | ["ingest"] | ["extract"]
+            | ["nodes", _, "mentions"],
+        ) => &[Act::Create],
         ("DELETE", _) => &[Act::Delete],
         ("PATCH" | "PUT", _) => &[Act::Update],
         (
@@ -918,6 +924,26 @@ mod tests {
             ns("vault", &[Act::Read])
         );
         assert_eq!(need("POST", "/vault/query"), ns("vault", &[]));
+        assert_eq!(
+            need("POST", "/vault/hyperedges"),
+            ns("vault", &[Act::Create])
+        );
+        assert_eq!(
+            need("POST", "/vault/hyperedges/find"),
+            ns("vault", &[Act::Read])
+        );
+        assert_eq!(
+            need("POST", "/vault/hyperedges/x/retract"),
+            ns("vault", &[Act::Retract])
+        );
+        assert_eq!(
+            need("PATCH", "/vault/hyperedges/x"),
+            ns("vault", &[Act::Update])
+        );
+        assert_eq!(
+            need("DELETE", "/vault/hyperedges/x"),
+            ns("vault", &[Act::Delete])
+        );
         assert_eq!(need("POST", "/vault/merge"), ns("vault", &[Act::Merge]));
         assert_eq!(need("POST", "/vault/match"), ns("vault", &[Act::Read]));
         assert_eq!(need("POST", "/vault/read-many"), ns("vault", &[Act::Read]));

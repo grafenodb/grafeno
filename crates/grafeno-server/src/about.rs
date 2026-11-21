@@ -36,6 +36,8 @@ pub const CAPABILITIES: &[&str] = &[
     "nodes",
     "edges",
     "facts",
+    // Facts relating two or more nodes in roles, their routes and GQ.
+    "hyperedges",
     // Null stored as a value, and properties removed by name (16.2).
     "null_values",
     "search.text",

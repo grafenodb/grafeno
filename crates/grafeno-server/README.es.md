@@ -406,13 +406,22 @@ Los ids son UUID. Los tiempos en las respuestas son microsegundos desde la
 | `GET`    | `/v1/{ns}/nodes/{id}`                 |                                                         | nodo con `text` y `memory`    |
 | `PUT`    | `/v1/{ns}/nodes/{id}`                 | nodo                                                    | `{id, created}`               |
 | `PATCH`  | `/v1/{ns}/nodes/{id}`                 | parche                                                  | nodo con `text`               |
-| `DELETE` | `/v1/{ns}/nodes/{id}`                 |                                                         | 204                           |
+| `DELETE` | `/v1/{ns}/nodes/{id}`                 | `?hyperedges=restrict\|cascade\|detach` (por defecto se rechaza un nodo que está en una hiperarista) | 204 |
 | `GET`    | `/v1/{ns}/nodes/{id}/neighbors`       | `?direction=&label=a,b&valid_at=&known_at=`             | `[{node, edge}]`              |
+| `GET`    | `/v1/{ns}/nodes/{id}/hyperedges`      | `?label=a,b&valid_at=&known_at=`                        | `[hiperarista]`               |
 | `POST`   | `/v1/{ns}/edges`                      | arista                                                  | `{id}`                        |
 | `GET`    | `/v1/{ns}/edges/{id}`                 |                                                         | arista                        |
 | `DELETE` | `/v1/{ns}/edges/{id}`                 |                                                         | 204                           |
 | `POST`   | `/v1/{ns}/edges/{id}/invalidate`      | `{at}`                                                  | arista                        |
 | `POST`   | `/v1/{ns}/edges/{id}/retract`         |                                                         | arista                        |
+| `POST`   | `/v1/{ns}/hyperedges`                 | `{label, participants: [{node, role}], props, sources, valid_from, valid_to}` | `{id}` |
+| `GET`    | `/v1/{ns}/hyperedges`                 | `?label=&after=&limit=`                                 | `{items, next}`               |
+| `POST`   | `/v1/{ns}/hyperedges/find`            | `{nodes: [id], exact, label, valid_at, known_at}`       | `[hiperarista]` con todos los `nodes` (exactamente esos con `exact`) |
+| `GET`    | `/v1/{ns}/hyperedges/{id}`            |                                                         | hiperarista                   |
+| `PATCH`  | `/v1/{ns}/hyperedges/{id}`            | `{props, remove_props, participants}`                   | hiperarista                   |
+| `DELETE` | `/v1/{ns}/hyperedges/{id}`            |                                                         | 204                           |
+| `POST`   | `/v1/{ns}/hyperedges/{id}/invalidate` | `{at}`                                                  | hiperarista                   |
+| `POST`   | `/v1/{ns}/hyperedges/{id}/retract`    |                                                         | hiperarista                   |
 | `POST`   | `/v1/{ns}/neighborhoods`              | `{seeds: [id] (8 como máximo), direction, filter}`      | un subgrafo de profundidad uno por semilla, en orden, un snapshot (`read`) |
 | `POST`   | `/v1/{ns}/k-hop`                      | `{start, depth, direction, filter}`                     | `[{node, hops}]`              |
 | `POST`   | `/v1/{ns}/path`                       | `{from, to, max_depth, direction, filter}`              | `{path}` (o `null`)           |
@@ -603,6 +612,7 @@ lo que le falta a un motor más antiguo en lugar de fallar. Las capacidades:
 | Capacidad | Qué es |
 | --------- | ------ |
 | `namespaces`, `nodes`, `edges`, `facts` | el grafo y sus hechos con tiempo de validez y de registro |
+| `hyperedges` | hechos que relacionan dos o más nodos con roles: `/v1/{ns}/hyperedges`, GQ `MATCH HYPEREDGE`, las herramientas MCP de grupos |
 | `null_values` | una propiedad `null` se guarda como valor; `remove_props` quita claves (16.2) |
 | `search.text`, `search.vector` | búsqueda de texto completo y vectorial |
 | `algorithms.analysis`, `algorithms.simulation` | `algo.kCore`, `leiden`, `hits`, `eigenvector`, `harmonic`, `articulationPoints`, `bridges`, `spanningTree`, `maxFlow`, `bipartiteMatching`, `topologicalOrder`, `cycle`, `randomWalks`, `clustering`, `conductance`; `algo.distanceField`, `influence`, `floodFill`, `diffusion`, `automaton`, `assignment`, `minCostFlow` (16.8) |
@@ -691,6 +701,9 @@ herramientas:
 | `remember` | Guarda un recuerdo (texto, nombre opcional, etiquetas, importancia y enlaces). Un `name` conocido actualiza esa entidad. |
 | `recall`   | Búsqueda híbrida; devuelve ids, nombres, fragmentos, por qué coincidió cada resultado y, aparte, qué lo respalda o lo pone en duda (`justification`). `skip` da la parte siguiente. Registra accesos. |
 | `context`  | Recuerdos y hechos relevantes como texto compacto dentro de un presupuesto de tokens, después de los resúmenes de comunidades que coinciden; los recuerdos relacionados van juntos y la cuenta de tokens se declara estimada. `skip` da la parte siguiente. |
+| `relate_group` | Registra un hecho que relaciona dos o más nodos, cada uno en un rol (una hiperarista): una decisión con quién la propuso, implementó y revisó, su tarea y su evidencia. |
+| `find_group` | Lee esos hechos por id, por un nodo que participa o por nodos que participan todos (`exact`: solo ellos), con el nombre y el rol de cada participante. |
+| `forget_group` | Invalida (por defecto), retracta o borra uno. |
 | `relate`   | Registra un hecho (arista) entre dos nodos, con fechas de validez, `origin`, `certainty` y `method` opcionales; dice qué hechos contradijo bajo una restricción (y terminó). El mismo hecho vigente se registra una vez; `caused_by` necesita `sources`; `reason` dice por qué (en `supersedes`, por qué el nuevo reemplazó al anterior). |
 | `update`   | Reemplaza el texto de un nodo, lo renombra, combina propiedades (un `null` se guarda), quita propiedades por nombre (`remove_props`), cambia etiquetas o importancia. |
 | `forget`   | Invalida (por defecto), retracta o elimina un hecho; elimina un nodo; elimina un palacio, sala o locus con lo que hay debajo, nunca un recuerdo. `dry_run` dice qué se iría. |

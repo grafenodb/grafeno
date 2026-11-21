@@ -396,13 +396,22 @@ requests accept either that or an ISO 8601 string (`2024-05-01`,
 | `GET`    | `/v1/{ns}/nodes/{id}`                 |                                                         | node with `text` and `memory` |
 | `PUT`    | `/v1/{ns}/nodes/{id}`                 | node                                                    | `{id, created}`               |
 | `PATCH`  | `/v1/{ns}/nodes/{id}`                 | patch                                                   | node with `text`              |
-| `DELETE` | `/v1/{ns}/nodes/{id}`                 |                                                         | 204                           |
+| `DELETE` | `/v1/{ns}/nodes/{id}`                 | `?hyperedges=restrict\|cascade\|detach` (a node in a hyperedge is refused by default) | 204 |
 | `GET`    | `/v1/{ns}/nodes/{id}/neighbors`       | `?direction=&label=a,b&valid_at=&known_at=`             | `[{node, edge}]`              |
+| `GET`    | `/v1/{ns}/nodes/{id}/hyperedges`      | `?label=a,b&valid_at=&known_at=`                        | `[hyperedge]`                 |
 | `POST`   | `/v1/{ns}/edges`                      | edge                                                    | `{id}`                        |
 | `GET`    | `/v1/{ns}/edges/{id}`                 |                                                         | edge                          |
 | `DELETE` | `/v1/{ns}/edges/{id}`                 |                                                         | 204                           |
 | `POST`   | `/v1/{ns}/edges/{id}/invalidate`      | `{at}`                                                  | edge                          |
 | `POST`   | `/v1/{ns}/edges/{id}/retract`         |                                                         | edge                          |
+| `POST`   | `/v1/{ns}/hyperedges`                 | `{label, participants: [{node, role}], props, sources, valid_from, valid_to}` | `{id}` |
+| `GET`    | `/v1/{ns}/hyperedges`                 | `?label=&after=&limit=`                                 | `{items, next}`               |
+| `POST`   | `/v1/{ns}/hyperedges/find`            | `{nodes: [id], exact, label, valid_at, known_at}`       | `[hyperedge]` with all of `nodes` (exactly them with `exact`) |
+| `GET`    | `/v1/{ns}/hyperedges/{id}`            |                                                         | hyperedge                     |
+| `PATCH`  | `/v1/{ns}/hyperedges/{id}`            | `{props, remove_props, participants}`                   | hyperedge                     |
+| `DELETE` | `/v1/{ns}/hyperedges/{id}`            |                                                         | 204                           |
+| `POST`   | `/v1/{ns}/hyperedges/{id}/invalidate` | `{at}`                                                  | hyperedge                     |
+| `POST`   | `/v1/{ns}/hyperedges/{id}/retract`    |                                                         | hyperedge                     |
 | `POST`   | `/v1/{ns}/neighborhoods`              | `{seeds: [id] (8 at most), direction, filter}`          | a depth-one subgraph per seed, in order, one snapshot (`read`) |
 | `POST`   | `/v1/{ns}/k-hop`                      | `{start, depth, direction, filter}`                     | `[{node, hops}]`              |
 | `POST`   | `/v1/{ns}/path`                       | `{from, to, max_depth, direction, filter}`              | `{path}` (or `null`)          |
@@ -585,6 +594,7 @@ engine lacks instead of failing. The capabilities:
 | Capability | What it is |
 | ---------- | ---------- |
 | `namespaces`, `nodes`, `edges`, `facts` | the graph and its facts with valid and record time |
+| `hyperedges` | facts relating two or more nodes in roles: `/v1/{ns}/hyperedges`, GQ `MATCH HYPEREDGE`, the MCP group tools |
 | `null_values` | a `null` property is stored as a value; `remove_props` removes keys (16.2) |
 | `search.text`, `search.vector` | full-text and vector search |
 | `algorithms.analysis`, `algorithms.simulation` | `algo.kCore`, `leiden`, `hits`, `eigenvector`, `harmonic`, `articulationPoints`, `bridges`, `spanningTree`, `maxFlow`, `bipartiteMatching`, `topologicalOrder`, `cycle`, `randomWalks`, `clustering`, `conductance`; `algo.distanceField`, `influence`, `floodFill`, `diffusion`, `automaton`, `assignment`, `minCostFlow` (16.8) |
@@ -670,6 +680,9 @@ another group's file. See [docs/cluster-runbooks.md](../../docs/cluster-runbooks
 | `remember` | Stores a memory (text, optional name, labels, importance and links). A known `name` updates that entity instead. |
 | `recall`   | Hybrid search; returns ids, names, snippets, why each result matched and, apart, what supports it or puts it in doubt (`justification`). `skip` gives the next part. Records accesses. |
 | `context`  | Relevant memories and facts as compact text within a token budget, after the community summaries that match; related memories packed together, the token count said to be an estimate. `skip` gives the next part. |
+| `relate_group` | Records one fact relating two or more nodes, each in a role (a hyperedge): a decision with who proposed, implemented and reviewed it, its task and evidence. |
+| `find_group` | Reads such facts by id, by a node taking part, or by nodes that all take part (`exact`: only them), with each participant's name and role. |
+| `forget_group` | Invalidates (default), retracts or deletes one. |
 | `relate`   | Records a fact (edge) between two nodes, with optional valid dates, `origin`, `certainty` and `method`; says which facts it contradicted under a constraint (and ended). The same current fact is recorded once; `caused_by` needs `sources`; `reason` says why (for `supersedes`, why the newer replaced the older). |
 | `update`   | Replaces a node's text, renames it, merges properties (a `null` is stored), removes properties by name (`remove_props`), changes labels or importance. |
 | `forget`   | Invalidates (default), retracts or deletes a fact; deletes a node; deletes a palace, room or locus with what is under it, never a memory. `dry_run` says what would go. |

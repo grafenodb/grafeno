@@ -10,7 +10,9 @@ The model, its storage and indexes and the Rust API of the `grafeno`
 crate came first; GQ reads and writes them with `MATCH HYPEREDGE`, `CREATE
 HYPEREDGE`, `SET`, `DELETE`, `DETACH DELETE` and `RETRACT` (see
 [query-language.md](query-language.md#hyperedges)), so does every place
-that runs GQ (the shell, `POST /v1/{ns}/query`, the MCP `query` tool).
+that runs GQ (the shell, `POST /v1/{ns}/query`, the MCP `query` tool). The
+HTTP API has routes of its own for them and MCP has three tools
+([below](#http-and-mcp)).
 The replication log carries them, so cluster members and read replicas
 hold them too. Recall and context, exports and the change log do not know
 hyperedges yet (see [Limits](#limits)).
@@ -179,8 +181,9 @@ says what to do:
 
 Everything happens in the caller's transaction: if any step fails, nothing
 was deleted. Whatever deletes nodes goes through this rule: GQ `DELETE`
-(`DETACH DELETE` detaches), the HTTP and MCP routes, merging nodes (the merged node is deleted) and the
-memory features that delete nodes all fail with `Error::Conflict` for a
+(`DETACH DELETE` detaches), `DELETE /v1/{ns}/nodes/{id}` (`?hyperedges=cascade`
+or `detach` says otherwise), the MCP tools, merging nodes (the merged node is
+deleted) and the memory features that delete nodes all fail with `Error::Conflict` for a
 node in a hyperedge, so no hyperedge is ever left naming a missing node.
 
 ## Namespaces and authorization
@@ -235,8 +238,8 @@ dropping data silently where it can:
 - **GQ** reads and writes them with clauses of their own; ordinary
   patterns, `MERGE`, pattern predicates and graph algorithms do not see
   them, and a statement with them is not split across cluster members.
-- **Routes and tools of their own** (HTTP, MCP) and **recall and context**
-  do not know hyperedges: they reach them through GQ only.
+- **Recall and context** do not know hyperedges: `find_group` and GQ read
+  them.
 
 ## Next stages
 
@@ -244,9 +247,8 @@ dropping data silently where it can:
    needed: hyperedges inside ordinary patterns and `EXISTS { … }`,
    `MERGE HYPEREDGE`, statistics for the planner, and splitting across
    cluster members.
-2. **HTTP and MCP.** Routes and tools for the operations above, with the
-   checks the engine already makes.
-3. **Exports, the change log and subscriptions.**
+2. **Exports, the change log and subscriptions.**
+3. **The client SDK** (`@grafenodb/client`): methods for the routes.
 4. **Memory.** A hyperedge could be a unit of episodic memory: recall could
    return a whole event (who did what, about which task, on what evidence)
    when one of its participants matches, and context could render it as one
@@ -256,6 +258,37 @@ dropping data silently where it can:
 5. **More kinds.** Weights per participant, directed hyperedges (roles that
    order), hyperedges among hyperedges, and merging nodes that move
    participation.
+
+## HTTP and MCP
+
+| Method | Route | Body or query | Returns |
+| --- | --- | --- | --- |
+| `POST` | `/v1/{ns}/hyperedges` | `{label, participants: [{node, role}], props, sources, valid_from, valid_to}` | `201 {id}` |
+| `GET` | `/v1/{ns}/hyperedges` | `?label=&after=&limit=` | `{items, next}`, retracted ones too |
+| `POST` | `/v1/{ns}/hyperedges/find` | `{nodes: [id], exact, label, valid_at, known_at}` (256 nodes at most) | those with all of `nodes` (only them with `exact`) |
+| `GET` | `/v1/{ns}/hyperedges/{id}` | | the hyperedge |
+| `PATCH` | `/v1/{ns}/hyperedges/{id}` | `{props, remove_props, participants}` | the hyperedge |
+| `DELETE` | `/v1/{ns}/hyperedges/{id}` | | `204` |
+| `POST` | `/v1/{ns}/hyperedges/{id}/invalidate` | `{at}` | the hyperedge |
+| `POST` | `/v1/{ns}/hyperedges/{id}/retract` | | the hyperedge |
+| `GET` | `/v1/{ns}/nodes/{id}/hyperedges` | `?label=a,b&valid_at=&known_at=` | the node's |
+| `DELETE` | `/v1/{ns}/nodes/{id}` | `?hyperedges=restrict\|cascade\|detach` | `204`; `409` for a node in a hyperedge without it |
+
+They need what the same operations on edges need: reading the namespace
+to read and find, creating, updating, deleting or retracting to write,
+and per-record rights through the caller's view. `/v1/about` lists the
+`hyperedges` capability.
+
+MCP tools, for agents (also through `POST /v1/{ns}/tools/{name}`):
+
+- `relate_group`: one fact relating two or more nodes, each in a role.
+- `find_group`: by id, by a node taking part, or by nodes that all take
+  part (`exact`: only them); each participant comes with its name and
+  role.
+- `forget_group`: invalidate (default), retract or delete one.
+
+`relate_group` and `forget_group` write, so a read-only server refuses
+them.
 
 ## Replication and clusters
 
