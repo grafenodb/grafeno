@@ -1185,6 +1185,7 @@ DROP EVENT SUBSCRIPTION lima IF EXISTS;
 | Part | What it does |
 | --- | --- |
 | `ON NODES` / `EDGES` | nodes or edges created, changed or deleted: their properties before and after |
+| `ON HYPEREDGES` | hyperedges created, changed (properties or participants) or deleted: their properties before and after |
 | `ON PROPERTIES` | records whose properties changed; with `KEYS a, b`, only changes of those keys |
 | `ON TEXT` | nodes whose text changed: the new text |
 | `ON VECTORS` | nodes whose vector changed; `WITH VECTORS` adds the new vector itself |

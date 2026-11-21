@@ -1269,3 +1269,103 @@ fn hidden_hyperedges_are_not_named_when_a_node_goes() {
     assert!(read.hyperedge(NS, hidden).unwrap().is_some());
     assert!(read.node(NS, n[0]).unwrap().is_some());
 }
+
+#[test]
+fn the_change_log_and_subscriptions_follow_hyperedges() {
+    let db = Grafeno::in_memory().unwrap();
+    db.enable_events(true);
+    let n = nodes(&db, NS, 3);
+    db.write(|tx| {
+        tx.create_subscription(
+            NS,
+            grafeno::Subscription::new("groups", vec![grafeno::EventTarget::HyperEdges]),
+        )?;
+        tx.create_subscription(
+            NS,
+            grafeno::Subscription::new("edges", vec![grafeno::EventTarget::Edges]),
+        )
+    })
+    .unwrap();
+    let start = db.begin_read().unwrap().changes(NS, 0, 1000).unwrap().last;
+    // Created and changed in one transaction: one entry, created.
+    let id = db
+        .write(|tx| {
+            let id = tx.create_hyperedge(
+                NS,
+                NewHyperEdge::new("team").node(n[0]).node(n[1]).prop("k", 1),
+            )?;
+            let mut props = grafeno::Props::new();
+            props.insert("k".into(), 2.into());
+            tx.set_hyperedge_props(NS, id, props)?;
+            Ok(id)
+        })
+        .unwrap();
+    db.write(|tx| {
+        tx.set_hyperedge_participants(NS, id, vec![Participant::new(n[1]), Participant::new(n[2])])
+    })
+    .unwrap();
+    db.write(|tx| tx.delete_hyperedge(NS, id)).unwrap();
+
+    let read = db.begin_read().unwrap();
+    let page = read.changes(NS, start, 1000).unwrap();
+    let ops: Vec<grafeno::ChangeOp> = page.changes.iter().map(|c| c.op).collect();
+    assert_eq!(
+        ops,
+        [
+            grafeno::ChangeOp::Created,
+            grafeno::ChangeOp::Updated,
+            grafeno::ChangeOp::Deleted
+        ]
+    );
+    for change in &page.changes {
+        assert_eq!(change.hyperedge, Some(id));
+        assert_eq!(change.labels, vec!["team".to_owned()]);
+        assert!(change.node.is_none() && change.edge.is_none());
+    }
+    let mut first_nodes = vec![n[0], n[1]];
+    first_nodes.sort();
+    assert_eq!(page.changes[0].nodes, first_nodes);
+    // The subscription on hyperedges gets them with their properties; the
+    // one on edges does not.
+    let events = read.events(NS, "groups", start, 1000).unwrap();
+    assert_eq!(events.changes.len(), 3);
+    let created = events.changes[0].values.as_ref().unwrap();
+    assert_eq!(created.after.as_ref().unwrap()["k"], 2);
+    assert!(created.before.is_none());
+    let deleted = events.changes[2].values.as_ref().unwrap();
+    assert_eq!(deleted.before.as_ref().unwrap()["k"], 2);
+    assert!(
+        read.events(NS, "edges", start, 1000)
+            .unwrap()
+            .changes
+            .is_empty()
+    );
+}
+
+#[test]
+fn hidden_hyperedges_stay_out_of_the_change_log() {
+    let db = Grafeno::in_memory().unwrap();
+    let n = nodes(&db, NS, 1);
+    let secret = db
+        .write(|tx| tx.create_node(NS, NewNode::new("Secret")))
+        .unwrap();
+    let start = db.begin_read().unwrap().changes(NS, 0, 1000).unwrap().last;
+    let hidden = db
+        .write(|tx| tx.create_hyperedge(NS, NewHyperEdge::new("x").node(n[0]).node(secret)))
+        .unwrap();
+    let open = db
+        .write(|tx| tx.create_node(NS, NewNode::new("Agent")))
+        .unwrap();
+    let shown = db
+        .write(|tx| tx.create_hyperedge(NS, NewHyperEdge::new("x").node(n[0]).node(open)))
+        .unwrap();
+    db.write(|tx| tx.delete_hyperedge(NS, hidden)).unwrap();
+    let read = db
+        .begin_read()
+        .unwrap()
+        .with_view(Some(view_hiding_secrets()));
+    let page = read.changes(NS, start, 1000).unwrap();
+    let seen: Vec<Option<HyperEdgeId>> = page.changes.iter().map(|c| c.hyperedge).collect();
+    assert!(seen.contains(&Some(shown)));
+    assert!(!seen.contains(&Some(hidden)), "{seen:?}");
+}

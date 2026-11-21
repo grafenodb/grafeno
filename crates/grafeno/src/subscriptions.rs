@@ -35,6 +35,9 @@ pub enum EventTarget {
     Nodes,
     /// Edges created, changed or deleted.
     Edges,
+    /// Hyperedges created, changed or deleted.
+    #[serde(rename = "hyperedges")]
+    HyperEdges,
     /// Records whose properties changed (perhaps only some keys).
     Properties,
     /// Nodes whose text changed.
@@ -227,10 +230,13 @@ impl WriteTx {
         change: &Change,
         subscriptions: &[Subscription],
     ) -> Result<Option<ChangeValues>> {
-        let is_edge = change.edge.is_some();
+        let is_hyperedge = change.hyperedge.is_some();
+        // Hyperedges are kept beside edges (their ids never meet).
+        let is_edge = change.edge.is_some() || is_hyperedge;
         let id = change
             .edge
             .map(|edge| edge.as_u128())
+            .or(change.hyperedge.map(|edge| edge.as_u128()))
             .or(change.node.map(|node| node.as_u128()));
         let Some(id) = id else {
             return Ok(None);
@@ -249,6 +255,9 @@ impl WriteTx {
         let before: Before = remembered.cloned().flatten();
         let after: Option<(Vec<String>, Props)> = if change.op == ChangeOp::Deleted {
             None
+        } else if is_hyperedge {
+            self.hyperedge(ns, grafeno_core::HyperEdgeId::from_u128(id))?
+                .map(|edge| (vec![edge.label], edge.props))
         } else if is_edge {
             self.edge(ns, grafeno_core::EdgeId::from_u128(id))?
                 .map(|edge| (vec![edge.label], edge.props))
@@ -291,7 +300,11 @@ impl WriteTx {
                         matched = true;
                         with_record = true;
                     }
-                    EventTarget::Edges if is_edge && record => {
+                    EventTarget::HyperEdges if is_hyperedge && record => {
+                        matched = true;
+                        with_record = true;
+                    }
+                    EventTarget::Edges if is_edge && !is_hyperedge && record => {
                         matched = true;
                         with_record = true;
                     }

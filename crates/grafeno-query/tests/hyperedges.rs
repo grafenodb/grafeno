@@ -475,3 +475,24 @@ fn views_hide_hyperedges_with_hidden_participants() {
     .unwrap();
     assert_eq!(visible.to_json()["rows"], json!([[2]]));
 }
+
+#[test]
+fn subscriptions_follow_hyperedges() {
+    let db = team();
+    db.enable_events(true);
+    run(&db, "CREATE EVENT SUBSCRIPTION groups ON HYPEREDGES");
+    let shown = rows(&db, "SHOW EVENT SUBSCRIPTIONS");
+    assert!(shown.to_string().contains("hyperedges"), "{shown}");
+    let start = db.begin_read().unwrap().changes(NS, 0, 1000).unwrap().last;
+    run(&db, "MATCH HYPEREDGE h:decision SET h.status = 'done'");
+    let events = db
+        .begin_read()
+        .unwrap()
+        .events(NS, "groups", start, 100)
+        .unwrap();
+    assert_eq!(events.changes.len(), 1);
+    assert_eq!(
+        events.changes[0].values.as_ref().unwrap().changed,
+        vec!["status".to_owned()]
+    );
+}

@@ -577,6 +577,20 @@ impl WriteTx {
         }
         let id = edge.id.as_u128();
         self.note(crate::replication::Touch::HyperEdge(ns.to_owned(), id));
+        let label = std::slice::from_ref(&edge.label);
+        self.remember_before(
+            ns,
+            id,
+            true,
+            label,
+            previous.map(|old| (std::slice::from_ref(&old.label), &old.props)),
+        )?;
+        let op = if previous.is_some() {
+            crate::changes::ChangeOp::Updated
+        } else {
+            crate::changes::ChangeOp::Created
+        };
+        self.log_hyperedge(ns, edge, op);
         let label = edge.label.as_str();
         let bytes = encode(edge)?;
         self.tx
@@ -616,6 +630,9 @@ impl WriteTx {
     pub(crate) fn remove_hyperedge(&mut self, ns: &str, edge: &HyperEdge) -> Result<()> {
         let id = edge.id.as_u128();
         self.note(crate::replication::Touch::HyperEdge(ns.to_owned(), id));
+        let label = std::slice::from_ref(&edge.label);
+        self.remember_before(ns, id, true, label, Some((label, &edge.props)))?;
+        self.log_hyperedge(ns, edge, crate::changes::ChangeOp::Deleted);
         let label = edge.label.as_str();
         let mut incidence = self.tx.open_table(HYPEREDGE_INCIDENCE).map_err(storage)?;
         for node in edge.nodes() {
@@ -685,6 +702,12 @@ impl WriteTx {
 }
 
 impl ReadTx {
+    /// Whether no hyperedge with this id exists, seen or not.
+    pub(crate) fn hyperedge_gone(&self, ns: &str, id: HyperEdgeId) -> Result<bool> {
+        let (records, _) = self.hyperedge_tables()?;
+        Ok(records.get((ns, id.as_u128())).map_err(storage)?.is_none())
+    }
+
     /// The ids that `self.hyperedge` would return a hyperedge for: with a
     /// view, only those it sees.
     fn visible_ids(&self, ns: &str, ids: Vec<HyperEdgeId>) -> Result<Vec<HyperEdgeId>> {

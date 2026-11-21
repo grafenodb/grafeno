@@ -14,8 +14,9 @@ that runs GQ (the shell, `POST /v1/{ns}/query`, the MCP `query` tool). The
 HTTP API has routes of its own for them and MCP has three tools
 ([below](#http-and-mcp)).
 The replication log carries them, so cluster members and read replicas
-hold them too. Recall and context, exports and the change log do not know
-hyperedges yet (see [Limits](#limits)).
+hold them too, and the change log and event subscriptions record their
+changes. Recall and context and exports do not know hyperedges yet (see
+[Limits](#limits)).
 
 ## When to use one
 
@@ -228,8 +229,6 @@ dropping data silently where it can:
 
 - **Exports and imports** (JSON lines, CSV, GraphML) leave hyperedges out.
   A backup keeps them.
-- **The change log and event subscriptions** do not record hyperedge
-  changes.
 - **Constraints, property indexes and property history** do not apply to
   hyperedges.
 - **Merging nodes** fails for a merged node that takes part in a hyperedge,
@@ -247,7 +246,7 @@ dropping data silently where it can:
    needed: hyperedges inside ordinary patterns and `EXISTS { … }`,
    `MERGE HYPEREDGE`, statistics for the planner, and splitting across
    cluster members.
-2. **Exports, the change log and subscriptions.**
+2. **Exports.**
 3. **The client SDK** (`@grafenodb/client`): methods for the routes.
 4. **Memory.** A hyperedge could be a unit of episodic memory: recall could
    return a whole event (who did what, about which task, on what evidence)
@@ -289,6 +288,18 @@ MCP tools, for agents (also through `POST /v1/{ns}/tools/{name}`):
 
 `relate_group` and `forget_group` write, so a read-only server refuses
 them.
+
+## The change log and events
+
+Every commit that creates, changes or deletes a hyperedge adds an entry
+to the change log, folded per hyperedge as for nodes and edges: `op`,
+`hyperedge` (its id), `labels` (its label) and `nodes` (its nodes after
+the change, or before it for a delete). A reader with a view sees the
+entry when it sees the hyperedge, or, once deleted, its label and every
+node it had. An event subscription `ON HYPEREDGES` (in Rust,
+`EventTarget::HyperEdges`; over HTTP, `"hyperedges"`) gets those changes
+with the properties before and after; `ON PROPERTIES` covers their
+properties too.
 
 ## Replication and clusters
 

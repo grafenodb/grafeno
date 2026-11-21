@@ -537,9 +537,9 @@ impl Parser<'_> {
         let name = self.access_name("the subscription's name")?;
         let if_not_exists = self.if_not_exists();
         if !self.eat_keyword("ON") {
-            return Err(
-                self.unexpected("ON and what it follows (NODES, EDGES, PROPERTIES, TEXT, VECTORS)")
-            );
+            return Err(self.unexpected(
+                "ON and what it follows (NODES, EDGES, HYPEREDGES, PROPERTIES, TEXT, VECTORS)",
+            ));
         }
         let mut on = Vec::new();
         loop {
@@ -547,6 +547,8 @@ impl Parser<'_> {
                 grafeno::EventTarget::Nodes
             } else if self.eat_keyword("EDGES") {
                 grafeno::EventTarget::Edges
+            } else if self.eat_keyword("HYPEREDGES") {
+                grafeno::EventTarget::HyperEdges
             } else if self.eat_keyword("PROPERTIES") {
                 grafeno::EventTarget::Properties
             } else if self.eat_keyword("TEXT") {
@@ -554,7 +556,9 @@ impl Parser<'_> {
             } else if self.eat_keyword("VECTORS") {
                 grafeno::EventTarget::Vectors
             } else {
-                return Err(self.unexpected("NODES, EDGES, PROPERTIES, TEXT or VECTORS"));
+                return Err(
+                    self.unexpected("NODES, EDGES, HYPEREDGES, PROPERTIES, TEXT or VECTORS")
+                );
             };
             if !on.contains(&target) {
                 on.push(target);

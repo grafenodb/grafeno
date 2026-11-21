@@ -1,8 +1,9 @@
 //! The change log: every commit appends what it changed, per namespace,
 //! with a sequence number, so agents and services can follow the writes
 //! (`changes(ns, since)`) instead of polling the graph. Entries say what
-//! changed (a node or an edge, created, updated or deleted, its labels,
-//! which parts), not the content: a follower reads the record itself.
+//! changed (a node, an edge or a hyperedge, created, updated or deleted,
+//! its labels, which parts), not the content: a follower reads the record
+//! itself.
 //!
 //! Changes of a transaction to the same record are folded into one entry,
 //! written at commit, and are lost with an aborted transaction. The log
@@ -13,7 +14,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock};
 
-use grafeno_core::{Edge, EdgeId, Node, NodeId, Result, Timestamp};
+use grafeno_core::{Edge, EdgeId, HyperEdge, HyperEdgeId, Node, NodeId, Result, Timestamp};
 use redb::{ReadableTable, TableDefinition};
 use serde::{Deserialize, Serialize};
 
@@ -56,7 +57,9 @@ pub struct Change {
     pub node: Option<NodeId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub edge: Option<EdgeId>,
-    /// The node's labels, or the edge's label.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hyperedge: Option<HyperEdgeId>,
+    /// The node's labels, or the edge's or hyperedge's label.
     #[serde(default)]
     pub labels: Vec<String>,
     /// An edge's ends.
@@ -64,6 +67,9 @@ pub struct Change {
     pub from: Option<NodeId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub to: Option<NodeId>,
+    /// A hyperedge's nodes (after the change; before it, for a delete).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub nodes: Vec<NodeId>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub parts: Vec<Part>,
     /// The principal that wrote it, when known.
@@ -281,6 +287,9 @@ impl Pending {
         if !change.labels.is_empty() {
             entry.labels = change.labels;
         }
+        if !change.nodes.is_empty() {
+            entry.nodes = change.nodes;
+        }
     }
 }
 
@@ -299,9 +308,11 @@ impl WriteTx {
             op,
             node: Some(node.id),
             edge: None,
+            hyperedge: None,
             labels: node.labels.clone(),
             from: None,
             to: None,
+            nodes: Vec::new(),
             parts: part.into_iter().collect(),
             by: self.actor.as_ref().map(|actor| actor.name.clone()),
             via: self.origin.as_ref().and_then(|origin| origin.via.clone()),
@@ -321,9 +332,42 @@ impl WriteTx {
             op,
             node: None,
             edge: Some(edge.id),
+            hyperedge: None,
             labels: vec![edge.label.clone()],
             from: Some(edge.from),
             to: Some(edge.to),
+            nodes: Vec::new(),
+            parts: if op == ChangeOp::Deleted {
+                Vec::new()
+            } else {
+                vec![Part::Record]
+            },
+            by: self.actor.as_ref().map(|actor| actor.name.clone()),
+            via: self.origin.as_ref().and_then(|origin| origin.via.clone()),
+            values: None,
+        };
+        self.pending_changes
+            .add(ns, edge.id.as_u128(), true, change);
+    }
+
+    /// A hyperedge was created, changed or deleted. Its entry folds with
+    /// the record's other changes in the transaction (hyperedge ids never
+    /// meet edge ids: one generator makes both).
+    pub(crate) fn log_hyperedge(&mut self, ns: &str, edge: &HyperEdge, op: ChangeOp) {
+        if !self.logging() {
+            return;
+        }
+        let change = Change {
+            seq: 0,
+            at: Timestamp::from_micros(0),
+            op,
+            node: None,
+            edge: None,
+            hyperedge: Some(edge.id),
+            labels: vec![edge.label.clone()],
+            from: None,
+            to: None,
+            nodes: edge.nodes(),
             parts: if op == ChangeOp::Deleted {
                 Vec::new()
             } else {
@@ -485,6 +529,29 @@ impl ReadTx {
         let policies = view.has_policies(ns);
         let mut kept = Vec::with_capacity(found.changes.len());
         for change in found.changes {
+            if let Some(id) = change.hyperedge {
+                // Seen when the hyperedge is, as it is now; a deleted one
+                // by its label and its nodes, unless policies apply.
+                let seen = match self.hyperedge(ns, id)? {
+                    Some(_) => true,
+                    None => {
+                        let mut nodes_seen = true;
+                        for node in &change.nodes {
+                            nodes_seen &= self.sees(ns, *node)?;
+                        }
+                        !policies
+                            && nodes_seen
+                            && view
+                                .rights
+                                .on_labels(crate::Act::Read, ns, &change.labels, true)
+                            && self.hyperedge_gone(ns, id)?
+                    }
+                };
+                if seen {
+                    kept.push(change);
+                }
+                continue;
+            }
             let seen = match (change.node, change.edge) {
                 (_, Some(edge)) => match self.edge(ns, edge)? {
                     Some(_) => true,
