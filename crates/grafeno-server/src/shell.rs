@@ -1127,7 +1127,7 @@ fn print_table(columns: &[&str], rows: &[Vec<Value>]) {
         .iter()
         .map(|row| {
             row.iter()
-                .map(|value| truncate(&cell(value), MAX_WIDTH))
+                .map(|value| truncate(&visible(&cell(value)), MAX_WIDTH))
                 .collect()
         })
         .collect();
@@ -1170,6 +1170,20 @@ fn truncate(text: &str, max: usize) -> String {
     }
     let cut: String = text.chars().take(max - 1).collect();
     format!("{cut}…")
+}
+
+/// Text as a table cell shows it: control characters (an escape sequence
+/// that would move the cursor or recolor the terminal, a line break that
+/// would forge a row) are shown as `\u{…}`, `\n` or `\t` instead of acting.
+fn visible(text: &str) -> String {
+    text.chars()
+        .map(|c| match c {
+            '\n' => "\\n".to_owned(),
+            '\t' => "\\t".to_owned(),
+            c if c.is_control() => format!("\\u{{{:x}}}", c as u32),
+            c => c.to_string(),
+        })
+        .collect()
 }
 
 /// How a value reads in a table. Nodes and edges are recognized by their
@@ -1236,5 +1250,16 @@ mod tests {
         assert_eq!(cell(&edge), "[:knows]");
         assert_eq!(cell(&json!([1, "x", null])), "[1, x, null]");
         assert_eq!(truncate(&"x".repeat(70), 60).chars().count(), 60);
+    }
+
+    #[test]
+    fn stored_text_cannot_drive_the_terminal() {
+        // An escape sequence that would clear the screen and a line break
+        // that would forge a row are shown, not acted on.
+        assert_eq!(
+            visible("ok\u{1b}[2J\nroot | admin\u{7}"),
+            "ok\\u{1b}[2J\\nroot | admin\\u{7}"
+        );
+        assert_eq!(visible("café\tbar"), "café\\tbar");
     }
 }

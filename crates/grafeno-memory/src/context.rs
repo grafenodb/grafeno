@@ -399,10 +399,7 @@ fn add_overview(
         } else {
             ""
         };
-        let line = format!(
-            "- {}\n",
-            hit.text.split_whitespace().collect::<Vec<_>>().join(" ")
-        );
+        let line = format!("- {}\n", inert_line(&hit.text));
         let header_cost = if header.is_empty() { 0 } else { count(header) };
         let cost = header_cost + count(&line);
         if context.tokens + cost + count("\n") > budget {
@@ -473,7 +470,13 @@ fn add_facts(
         } else {
             format!(" [{known}]")
         };
-        let line = format!("- {from} {} {to}{}{known}\n", edge.label, validity(&edge));
+        let line = format!(
+            "- {} {} {}{}{known}\n",
+            inert_line(&from),
+            inert_line(&edge.label),
+            inert_line(&to),
+            validity(&edge)
+        );
         // One blank line between the memories and the facts.
         let rendered = &context.rendered;
         let header = if !context.facts.is_empty() {
@@ -566,7 +569,49 @@ fn item_body(read: &ReadTx, ns: &str, node: &Node) -> Result<String> {
     })
 }
 
+/// A name or label as one line of the context: line breaks and other
+/// control characters become spaces, so stored text cannot start a line of
+/// its own.
+fn inert_line(text: &str) -> String {
+    text.chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// A memory's text as the body of an item: control characters other than
+/// line breaks and tabs go, and a line that would read as the context's own
+/// structure (an item's `[n]`, a `#` heading, a `- ` fact) is escaped with
+/// a backslash. What a memory says stays data: it cannot forge another
+/// item, a section or a fact.
+fn inert_body(text: &str) -> String {
+    let clean: String = text
+        .chars()
+        .filter(|c| !c.is_control() || *c == '\n' || *c == '\t')
+        .collect();
+    clean
+        .split('\n')
+        .map(|line| {
+            let start = line.trim_start();
+            let item = start.strip_prefix('[').is_some_and(|rest| {
+                let digits = rest.chars().take_while(char::is_ascii_digit).count();
+                digits > 0 && rest[digits..].starts_with(']')
+            });
+            if item || start.starts_with('#') || start.starts_with("- ") {
+                format!("\\{line}")
+            } else {
+                line.to_owned()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 fn render_item(number: usize, name: &str, labels: &str, body: &str) -> String {
+    let (name, labels, body) = (inert_line(name), inert_line(labels), inert_body(body));
+    let (name, labels, body) = (name.as_str(), labels.as_str(), body.as_str());
     let heading = if name.is_empty() {
         format!("[{number}] ({labels})")
     } else {
