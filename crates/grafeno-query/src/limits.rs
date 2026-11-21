@@ -299,6 +299,16 @@ pub(crate) fn footprint(value: &Value, depth: usize) -> Option<usize> {
         Value::Edge(edge) => {
             200 + edge.label.len() + edge.sources.len() * 16 + props_footprint(&edge.props)
         }
+        Value::HyperEdge(edge) => {
+            200 + edge.label.len()
+                + edge
+                    .participants
+                    .iter()
+                    .map(|p| 40 + p.role.as_ref().map_or(0, String::len))
+                    .sum::<usize>()
+                + edge.sources.len() * 16
+                + props_footprint(&edge.props)
+        }
         Value::Str(s) => s.len(),
         Value::List(items) => {
             let depth = depth.checked_sub(1)?;

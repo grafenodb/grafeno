@@ -88,6 +88,8 @@ const WORDS: &[&str] = &[
     "DELETE",
     "DETACH",
     "RETRACT",
+    "HYPEREDGE",
+    "EXACT",
     "FOREACH",
     "CALL",
     "YIELD",

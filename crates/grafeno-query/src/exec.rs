@@ -13,8 +13,8 @@ use serde::Serialize;
 use crate::QueryError;
 use crate::aggregate::{Groups, Spec};
 use crate::ast::{
-    Clause, EventsOp, Expr, Key, Mode, NamespaceOp, NodePattern, Pattern, ProcedureCall,
-    Projection, Query, RelPattern, RemoveItem, Schema, SetItem, Statement,
+    Clause, EventsOp, Expr, HyperPattern, Key, Mode, NamespaceOp, NodePattern, Pattern,
+    ProcedureCall, Projection, Query, RelPattern, RemoveItem, Schema, SetItem, Statement,
 };
 use crate::eval::{Context, Params, Row, Scope, eval, property, to_time, truth};
 use crate::limits::{Budget, Limits};
@@ -40,6 +40,9 @@ pub struct WriteStats {
     pub edges_created: u64,
     pub edges_deleted: u64,
     pub edges_retracted: u64,
+    pub hyperedges_created: u64,
+    pub hyperedges_deleted: u64,
+    pub hyperedges_retracted: u64,
     /// Facts ended (or retracted) because a new one contradicted them under
     /// an edge constraint, and contradictions only flagged.
     pub facts_invalidated: u64,
@@ -981,6 +984,7 @@ struct Runner<'a> {
     stats: WriteStats,
     deleted_nodes: HashSet<NodeId>,
     deleted_edges: HashSet<EdgeId>,
+    deleted_hyperedges: HashSet<grafeno::HyperEdgeId>,
     profile: Option<Vec<PlanStep>>,
     /// The walk being recorded, under `TRACE`.
     trace: Option<crate::trace::Trace>,
@@ -1040,6 +1044,7 @@ impl<'a> Runner<'a> {
             stats: WriteStats::default(),
             deleted_nodes: HashSet::new(),
             deleted_edges: HashSet::new(),
+            deleted_hyperedges: HashSet::new(),
             profile: (mode == Mode::Profile).then(Vec::new),
             trace: (mode == Mode::Trace).then(|| {
                 crate::trace::Trace::new(crate::trace::TRACE_EVENTS, crate::trace::TRACE_BYTES)
@@ -1076,6 +1081,7 @@ impl<'a> Runner<'a> {
             stats: WriteStats::default(),
             deleted_nodes: HashSet::new(),
             deleted_edges: HashSet::new(),
+            deleted_hyperedges: HashSet::new(),
             profile: None,
             trace: None,
             steps_entered: 0,
@@ -1457,6 +1463,63 @@ impl<'a> Runner<'a> {
                 flow.rows = out;
                 flow.bind(&new_vars);
             }
+            Clause::MatchHyper {
+                optional,
+                pattern,
+                valid_at,
+                known_at,
+                filter,
+            } => {
+                let new_vars: Vec<String> =
+                    pattern.variables().into_iter().map(str::to_owned).collect();
+                let per_row = [valid_at, known_at]
+                    .into_iter()
+                    .flatten()
+                    .any(mentions_variables);
+                let shared = if per_row {
+                    (EdgeFilter::any(), grafeno::HyperEdgeFilter::any())
+                } else {
+                    self.times(valid_at.as_ref(), known_at.as_ref(), &Row::new())?
+                };
+                self.time = shared.0.clone();
+                let mut out = Vec::new();
+                for row in flow.rows {
+                    if cap.is_some_and(|cap| out.len() >= cap) {
+                        break;
+                    }
+                    let (edges, hyper) = if per_row {
+                        self.times(valid_at.as_ref(), known_at.as_ref(), &row)?
+                    } else {
+                        shared.clone()
+                    };
+                    let ctx = self.ctx(&edges);
+                    let mut rows = crate::hyper::match_rows(&ctx, pattern, &hyper, &row)?;
+                    if let Some(filter) = filter {
+                        rows = keep(&ctx, rows, filter)?;
+                    }
+                    if rows.is_empty() && *optional {
+                        let mut row = row;
+                        for var in &new_vars {
+                            row.entry(var.clone()).or_insert(Value::Null);
+                        }
+                        out.push(row);
+                    } else {
+                        out.extend(rows);
+                    }
+                    if let Some(cap) = cap {
+                        out.truncate(cap);
+                    }
+                    self.budget.rows(out.len())?;
+                }
+                flow.rows = out;
+                flow.bind(&new_vars);
+            }
+            Clause::CreateHyper(pattern) => {
+                for row in &mut flow.rows {
+                    self.create_hyperedge(row, pattern)?;
+                }
+                flow.bind(pattern.variables());
+            }
             Clause::Unwind { list, var } => {
                 let edges = self.time.clone();
                 let ctx = self.ctx(&edges);
@@ -1728,10 +1791,10 @@ impl<'a> Runner<'a> {
                     }
                 }
             }
-            Clause::Delete(exprs) => {
+            Clause::Delete { exprs, detach } => {
                 for row in &flow.rows {
                     for expr in exprs {
-                        self.delete(row, expr)?;
+                        self.delete(row, expr, *detach)?;
                     }
                 }
             }
@@ -1792,6 +1855,29 @@ impl<'a> Runner<'a> {
         Ok(flow)
     }
 
+    /// [`Runner::time_filter`] for edges, and the same time for hyperedges.
+    fn times(
+        &self,
+        valid_at: Option<&Expr>,
+        known_at: Option<&Expr>,
+        row: &Row,
+    ) -> Result<(EdgeFilter, grafeno::HyperEdgeFilter), QueryError> {
+        let any = EdgeFilter::any();
+        let ctx = self.ctx(&any);
+        let (mut edges, mut hyper) = (EdgeFilter::any(), grafeno::HyperEdgeFilter::any());
+        if let Some(at) = valid_at {
+            let at = to_time(&eval(&ctx, at, Scope::Row(row))?)?;
+            edges = edges.valid_at(at);
+            hyper = hyper.valid_at(at);
+        }
+        if let Some(at) = known_at {
+            let at = to_time(&eval(&ctx, at, Scope::Row(row))?)?;
+            edges = edges.known_at(at);
+            hyper = hyper.known_at(at);
+        }
+        Ok((edges, hyper))
+    }
+
     fn time_filter(
         &self,
         valid_at: Option<&Expr>,
@@ -1816,6 +1902,9 @@ impl<'a> Runner<'a> {
     fn time_of(&self, clauses: &[Clause]) -> Result<EdgeFilter, QueryError> {
         let latest = clauses.iter().rev().find_map(|clause| match clause {
             Clause::Match {
+                valid_at, known_at, ..
+            }
+            | Clause::MatchHyper {
                 valid_at, known_at, ..
             } => Some((valid_at, known_at)),
             _ => None,
@@ -2538,15 +2627,17 @@ fn embedding_from(value: &Value) -> Result<Vec<f32>, QueryError> {
 enum Target {
     Node(NodeId),
     Edge(EdgeId),
+    HyperEdge(grafeno::HyperEdgeId),
 }
 
 fn target_of(row: &Row, var: &str) -> Result<Option<Target>, QueryError> {
     match row.get(var) {
         Some(Value::Node(node)) => Ok(Some(Target::Node(node.id))),
         Some(Value::Edge(edge)) => Ok(Some(Target::Edge(edge.id))),
+        Some(Value::HyperEdge(edge)) => Ok(Some(Target::HyperEdge(edge.id))),
         Some(Value::Null) => Ok(None),
         Some(other) => Err(QueryError::runtime(format!(
-            "`{var}` is a {}, not a node or edge",
+            "`{var}` is a {}, not a node, edge or hyperedge",
             other.type_name()
         ))),
         None => Err(QueryError::runtime(format!("unknown variable `{var}`"))),
@@ -2554,6 +2645,62 @@ fn target_of(row: &Row, var: &str) -> Result<Option<Target>, QueryError> {
 }
 
 impl Runner<'_> {
+    /// `CREATE HYPEREDGE`: its members are nodes the row binds.
+    fn create_hyperedge(
+        &mut self,
+        row: &mut Row,
+        pattern: &HyperPattern,
+    ) -> Result<(), QueryError> {
+        let ns = self.ns;
+        if let Some(var) = &pattern.var
+            && row.contains_key(var)
+        {
+            return Err(QueryError::runtime(format!(
+                "`{var}` is already bound: CREATE HYPEREDGE makes a new one"
+            )));
+        }
+        let mut new = grafeno::NewHyperEdge::new(pattern.labels[0].clone());
+        for member in &pattern.members {
+            let var = member.node.var.as_deref().unwrap_or_default();
+            let node = match row.get(var) {
+                Some(Value::Node(node)) => node.id,
+                Some(other) => {
+                    return Err(QueryError::runtime(format!(
+                        "`{var}` is a {}, not a node: hyperedge participants are nodes",
+                        other.type_name()
+                    )));
+                }
+                None => {
+                    return Err(QueryError::runtime(format!(
+                        "`{var}` is not bound: CREATE HYPEREDGE takes nodes matched or created before it"
+                    )));
+                }
+            };
+            new.participants.push(grafeno::Participant {
+                node,
+                role: member.role.clone(),
+            });
+        }
+        let mut props = Vec::new();
+        for (key, expr) in &pattern.props {
+            if let Key::Prop(name) = key {
+                props.push((name.clone(), self.eval(row, expr)?));
+            }
+        }
+        new.props = to_props(props)?;
+        self.stats.properties_set += new.props.len() as u64;
+        let id = self.tx().create_hyperedge(ns, new)?;
+        self.stats.hyperedges_created += 1;
+        if let Some(var) = &pattern.var {
+            let created = self
+                .tx()
+                .hyperedge(ns, id)?
+                .ok_or(grafeno::Error::HyperEdgeNotFound(id))?;
+            row.insert(var.clone(), Value::HyperEdge(Arc::new(created)));
+        }
+        Ok(())
+    }
+
     /// Creates the parts of `pattern` that are not bound in `row`. MERGE
     /// (`undirected`) may create an undirected edge, from left to right.
     fn create(
@@ -2704,6 +2851,10 @@ impl Runner<'_> {
                 .tx()
                 .edge(ns, id)?
                 .map_or(Value::Null, |edge| Value::Edge(Arc::new(edge))),
+            Some(Target::HyperEdge(id)) => self
+                .tx()
+                .hyperedge(ns, id)?
+                .map_or(Value::Null, |edge| Value::HyperEdge(Arc::new(edge))),
             None => return Ok(()),
         };
         row.insert(var.to_owned(), value);
@@ -2715,6 +2866,7 @@ impl Runner<'_> {
         match target {
             Target::Node(id) => self.tx().set_node_props(ns, *id, props)?,
             Target::Edge(id) => self.tx().set_edge_props(ns, *id, props)?,
+            Target::HyperEdge(id) => self.tx().set_hyperedge_props(ns, *id, props)?,
         }
         Ok(())
     }
@@ -2724,6 +2876,7 @@ impl Runner<'_> {
         match target {
             Target::Node(id) => self.tx().remove_node_props(ns, *id, keys)?,
             Target::Edge(id) => self.tx().remove_edge_props(ns, *id, keys)?,
+            Target::HyperEdge(id) => self.tx().remove_hyperedge_props(ns, *id, keys)?,
         }
         Ok(())
     }
@@ -2778,6 +2931,14 @@ impl Runner<'_> {
                     (Target::Edge(id), "valid_to", value) => {
                         tx.invalidate_edge(ns, *id, to_time(value)?)?
                     }
+                    (Target::HyperEdge(id), "valid_to", value) => {
+                        tx.invalidate_hyperedge(ns, *id, to_time(value)?)?
+                    }
+                    (Target::HyperEdge(_), other, _) => {
+                        return Err(QueryError::runtime(format!(
+                            "SET can change @valid_to of a hyperedge (it invalidates the fact), not @{other}"
+                        )));
+                    }
                     (Target::Node(_), other, _) => {
                         return Err(QueryError::runtime(format!(
                             "SET can change @text, @embedding and @importance of a node, not @{other} (labels: SET n:Label)"
@@ -2800,6 +2961,7 @@ impl Runner<'_> {
                     let current = match &target {
                         Target::Node(id) => self.tx().node(ns, *id)?.map(|n| n.props),
                         Target::Edge(id) => self.tx().edge(ns, *id)?.map(|e| e.props),
+                        Target::HyperEdge(id) => self.tx().hyperedge(ns, *id)?.map(|e| e.props),
                     };
                     let gone: Vec<String> = current
                         .unwrap_or_default()
@@ -2885,7 +3047,7 @@ impl Runner<'_> {
         self.refresh(row, var)
     }
 
-    fn delete(&mut self, row: &Row, expr: &Expr) -> Result<(), QueryError> {
+    fn delete(&mut self, row: &Row, expr: &Expr, detach: bool) -> Result<(), QueryError> {
         let ns = self.ns;
         let values = match self.eval(row, expr)? {
             Value::List(items) => items,
@@ -2897,7 +3059,25 @@ impl Runner<'_> {
                 Value::Node(node) => {
                     if self.deleted_nodes.insert(node.id) && self.tx().node(ns, node.id)?.is_some()
                     {
-                        self.tx().delete_node(ns, node.id)?;
+                        // DETACH takes the node out of its hyperedges;
+                        // without it, a node in one is refused.
+                        let policy = if detach {
+                            grafeno::OnHyperEdges::Detach
+                        } else {
+                            grafeno::OnHyperEdges::Restrict
+                        };
+                        let before: Vec<grafeno::HyperEdgeId> = if detach {
+                            self.tx().hyperedge_ids_of(ns, node.id, None)?
+                        } else {
+                            Vec::new()
+                        };
+                        self.tx().delete_node_with(ns, node.id, policy)?;
+                        for id in before {
+                            if self.tx().hyperedge(ns, id)?.is_none() {
+                                self.deleted_hyperedges.insert(id);
+                                self.stats.hyperedges_deleted += 1;
+                            }
+                        }
                         self.stats.nodes_deleted += 1;
                     }
                 }
@@ -2908,9 +3088,17 @@ impl Runner<'_> {
                         self.stats.edges_deleted += 1;
                     }
                 }
+                Value::HyperEdge(edge) => {
+                    if self.deleted_hyperedges.insert(edge.id)
+                        && self.tx().hyperedge(ns, edge.id)?.is_some()
+                    {
+                        self.tx().delete_hyperedge(ns, edge.id)?;
+                        self.stats.hyperedges_deleted += 1;
+                    }
+                }
                 other => {
                     return Err(QueryError::runtime(format!(
-                        "DELETE needs nodes or edges, got a {}",
+                        "DELETE needs nodes, edges or hyperedges, got a {}",
                         other.type_name()
                     )));
                 }
@@ -2938,9 +3126,19 @@ impl Runner<'_> {
                         self.stats.edges_retracted += 1;
                     }
                 }
+                Value::HyperEdge(edge) => {
+                    if self
+                        .tx()
+                        .hyperedge(ns, edge.id)?
+                        .is_some_and(|e| !e.is_retracted())
+                    {
+                        self.tx().retract_hyperedge(ns, edge.id)?;
+                        self.stats.hyperedges_retracted += 1;
+                    }
+                }
                 other => {
                     return Err(QueryError::runtime(format!(
-                        "RETRACT needs edges, got a {}",
+                        "RETRACT needs edges or hyperedges, got a {}",
                         other.type_name()
                     )));
                 }
@@ -3308,6 +3506,9 @@ fn clause_variables(clause: &Clause) -> Vec<String> {
         Clause::Merge { pattern, .. } => {
             pattern.variables().into_iter().map(str::to_owned).collect()
         }
+        Clause::MatchHyper { pattern, .. } | Clause::CreateHyper(pattern) => {
+            pattern.variables().into_iter().map(str::to_owned).collect()
+        }
         Clause::Unwind { var, .. } => vec![var.clone()],
         Clause::With(projection) => projection
             .items
@@ -3481,6 +3682,31 @@ fn describe(
             }
             text
         }
+        Clause::MatchHyper {
+            pattern,
+            valid_at,
+            known_at,
+            filter,
+            ..
+        } => {
+            let anchor = crate::hyper::Anchor::of(pattern, &|var| bound.contains(var));
+            let mut text = anchor.describe(pattern);
+            if valid_at.is_some() {
+                text.push_str("; valid at a time");
+            }
+            if known_at.is_some() {
+                text.push_str("; known at a time");
+            }
+            if filter.is_some() {
+                text.push_str("; filter (WHERE)");
+            }
+            text
+        }
+        Clause::CreateHyper(pattern) => format!(
+            "a hyperedge :{} of {} bound node(s)",
+            pattern.labels.join(""),
+            pattern.members.len()
+        ),
         Clause::Unwind { var, .. } => format!("one row per item, as {var}"),
         Clause::With(projection) | Clause::Return(projection) => projection_text(projection),
         Clause::Call(call) => {
@@ -3512,7 +3738,9 @@ fn describe(
         ),
         Clause::Set(items) => format!("{} item(s)", items.len()),
         Clause::Remove(items) => format!("{} item(s)", items.len()),
-        Clause::Delete(items) | Clause::Retract(items) => format!("{} value(s)", items.len()),
+        Clause::Delete { exprs: items, .. } | Clause::Retract(items) => {
+            format!("{} value(s)", items.len())
+        }
         Clause::Foreach { var, body, .. } => format!(
             "for each {var}: {}",
             body.iter().map(Clause::name).collect::<Vec<_>>().join(", ")

@@ -528,6 +528,28 @@ fn edge_meta(edge: &Edge, name: &str) -> Result<Value, QueryError> {
     })
 }
 
+const HYPEREDGE_META: &str =
+    "@id, @label, @valid_from, @valid_to, @recorded_at, @recorded_by, @expired_at, @sources";
+
+fn hyperedge_meta(edge: &grafeno::HyperEdge, name: &str) -> Result<Value, QueryError> {
+    Ok(match name {
+        "id" => Value::Str(edge.id.to_string()),
+        "label" => Value::Str(edge.label.clone()),
+        "valid_from" => time_or_null(edge.valid_from),
+        "valid_to" => time_or_null(edge.valid_to),
+        "recorded_at" => Value::Time(edge.recorded_at),
+        "recorded_by" => edge.recorded_by.clone().map_or(Value::Null, Value::Str),
+        "expired_at" => time_or_null(edge.expired_at),
+        "sources" => ids(&edge.sources),
+        other => {
+            return Err(error(format!(
+                "hyperedges have no pseudo-property @{other} (they have {HYPEREDGE_META}; \
+                 participants(h) gives the participants)"
+            )));
+        }
+    })
+}
+
 pub(crate) fn property(ctx: &Context, target: &Value, key: &Key) -> Result<Value, QueryError> {
     let prop =
         |props: &grafeno::Props, name: &str| props.get(name).map_or(Value::Null, Value::from_json);
@@ -537,6 +559,8 @@ pub(crate) fn property(ctx: &Context, target: &Value, key: &Key) -> Result<Value
         (Value::Node(node), Key::Meta(name)) => node_meta(ctx, node, name),
         (Value::Edge(edge), Key::Prop(name)) => Ok(prop(&edge.props, name)),
         (Value::Edge(edge), Key::Meta(name)) => edge_meta(edge, name),
+        (Value::HyperEdge(edge), Key::Prop(name)) => Ok(prop(&edge.props, name)),
+        (Value::HyperEdge(edge), Key::Meta(name)) => hyperedge_meta(edge, name),
         (Value::Map(map), Key::Prop(name)) => Ok(map.get(name).cloned().unwrap_or(Value::Null)),
         (Value::Time(time), Key::Prop(name)) => {
             temporal::part(*time, name).map(Value::Int).ok_or_else(|| {
@@ -588,7 +612,7 @@ pub(crate) fn eval(ctx: &Context, expr: &Expr, scope: Scope) -> Result<Value, Qu
                 (Value::Map(map), Value::Str(key)) => {
                     Ok(map.get(key).cloned().unwrap_or(Value::Null))
                 }
-                (Value::Node(_) | Value::Edge(_), Value::Str(key)) => {
+                (Value::Node(_) | Value::Edge(_) | Value::HyperEdge(_), Value::Str(key)) => {
                     property(ctx, &target, &Key::Prop(key.clone()))
                 }
                 _ => Err(error(format!(
@@ -889,6 +913,11 @@ pub(crate) fn eval(ctx: &Context, expr: &Expr, scope: Scope) -> Result<Value, Qu
                             }
                         }
                         Value::Edge(edge) => {
+                            for (key, value) in &edge.props {
+                                map.insert(key.clone(), Value::from_json(value));
+                            }
+                        }
+                        Value::HyperEdge(edge) => {
                             for (key, value) in &edge.props {
                                 map.insert(key.clone(), Value::from_json(value));
                             }
@@ -1409,9 +1438,10 @@ fn function(ctx: &Context, name: &str, args: Vec<Value>) -> Result<Value, QueryE
             match &args[0] {
                 Value::Node(node) => Value::Str(node.id.to_string()),
                 Value::Edge(edge) => Value::Str(edge.id.to_string()),
+                Value::HyperEdge(edge) => Value::Str(edge.id.to_string()),
                 other => {
                     return Err(error(format!(
-                        "id() needs a node or edge, not a {}",
+                        "id() needs a node, edge or hyperedge, not a {}",
                         other.type_name()
                     )));
                 }
@@ -1433,9 +1463,34 @@ fn function(ctx: &Context, name: &str, args: Vec<Value>) -> Result<Value, QueryE
             arity(name, &args, 1..=1)?;
             match &args[0] {
                 Value::Edge(edge) => Value::Str(edge.label.clone()),
+                Value::HyperEdge(edge) => Value::Str(edge.label.clone()),
                 other => {
                     return Err(error(format!(
-                        "{name}() needs an edge, not a {}",
+                        "{name}() needs an edge or hyperedge, not a {}",
+                        other.type_name()
+                    )));
+                }
+            }
+        }
+        "participants" => {
+            arity(name, &args, 1..=1)?;
+            match &args[0] {
+                Value::HyperEdge(edge) => {
+                    let mut out = Vec::with_capacity(edge.participants.len());
+                    for participant in &edge.participants {
+                        let mut entry = std::collections::BTreeMap::new();
+                        entry.insert("node".to_owned(), node_of(ctx, participant.node)?);
+                        entry.insert(
+                            "role".to_owned(),
+                            participant.role.clone().map_or(Value::Null, Value::Str),
+                        );
+                        out.push(Value::Map(entry));
+                    }
+                    Value::List(out)
+                }
+                other => {
+                    return Err(error(format!(
+                        "participants() needs a hyperedge, not a {}",
                         other.type_name()
                     )));
                 }
@@ -1448,6 +1503,9 @@ fn function(ctx: &Context, name: &str, args: Vec<Value>) -> Result<Value, QueryE
                     Value::from_json(&serde_json::Value::Object(node.props.clone()))
                 }
                 Value::Edge(edge) => {
+                    Value::from_json(&serde_json::Value::Object(edge.props.clone()))
+                }
+                Value::HyperEdge(edge) => {
                     Value::from_json(&serde_json::Value::Object(edge.props.clone()))
                 }
                 Value::Map(map) => Value::Map(map.clone()),
@@ -1464,6 +1522,7 @@ fn function(ctx: &Context, name: &str, args: Vec<Value>) -> Result<Value, QueryE
             let keys: Vec<String> = match &args[0] {
                 Value::Node(node) => node.props.keys().cloned().collect(),
                 Value::Edge(edge) => edge.props.keys().cloned().collect(),
+                Value::HyperEdge(edge) => edge.props.keys().cloned().collect(),
                 Value::Map(map) => map.keys().cloned().collect(),
                 other => {
                     return Err(error(format!(

@@ -171,8 +171,42 @@ impl<'i> Model<'i> {
             }
             Clause::Set(items) => self.add(self.rows * items.len() as f64),
             Clause::Remove(items) => self.add(self.rows * items.len() as f64),
-            Clause::Delete(items) | Clause::Retract(items) => {
+            Clause::Delete { exprs: items, .. } | Clause::Retract(items) => {
                 self.add(self.rows * items.len() as f64)
+            }
+            Clause::MatchHyper {
+                optional,
+                pattern,
+                filter,
+                ..
+            } => {
+                // No hyperedge statistics are kept: a bound member's
+                // incidence is taken as a few hyperedges, a label or a
+                // scan as many.
+                let bound = self.bound.clone();
+                let per_row = match crate::hyper::Anchor::of(pattern, &|var| bound.contains(var)) {
+                    crate::hyper::Anchor::Bound | crate::hyper::Anchor::Id => 1.0,
+                    crate::hyper::Anchor::Nodes(_) => 4.0,
+                    crate::hyper::Anchor::Labels => 100.0,
+                    crate::hyper::Anchor::All => 1_000.0,
+                };
+                let before = self.rows;
+                self.add(self.rows * per_row * (1.0 + pattern.members.len() as f64));
+                let mut rows = self.rows * per_row;
+                if let Some(filter) = filter {
+                    self.add(rows * self.expr(filter));
+                    rows *= 0.5;
+                }
+                self.rows = capped(if *optional { rows.max(before) } else { rows });
+                for var in pattern.variables() {
+                    self.bound.insert(var.to_owned());
+                }
+            }
+            Clause::CreateHyper(pattern) => {
+                self.add(self.rows * (1.0 + pattern.members.len() as f64));
+                for var in pattern.variables() {
+                    self.bound.insert(var.to_owned());
+                }
             }
             Clause::Subquery(query) => {
                 let mut inner = Model::new(self.info, self.value_of);

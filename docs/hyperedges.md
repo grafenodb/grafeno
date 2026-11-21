@@ -6,10 +6,13 @@ reviewed it, the task it is about and the evidence for it. It is a record of
 its own in the engine, beside nodes and edges, not a node joined to its
 participants by binary edges.
 
-This is the first stage: the model, its storage and indexes, and the Rust
-API of the `grafeno` crate. GQ, MCP, the HTTP API, recall and context,
-exports, the change log and the replication log do not know hyperedges yet
-(see [Limits](#limits)).
+The model, its storage and indexes and the Rust API of the `grafeno`
+crate came first; GQ reads and writes them with `MATCH HYPEREDGE`, `CREATE
+HYPEREDGE`, `SET`, `DELETE`, `DETACH DELETE` and `RETRACT` (see
+[query-language.md](query-language.md#hyperedges)), so does every place
+that runs GQ (the shell, `POST /v1/{ns}/query`, the MCP `query` tool).
+Recall and context, exports, the change log and the replication log do not
+know hyperedges yet (see [Limits](#limits)).
 
 ## When to use one
 
@@ -174,8 +177,8 @@ says what to do:
   deleted.
 
 Everything happens in the caller's transaction: if any step fails, nothing
-was deleted. Whatever deletes nodes goes through this rule: GQ `DELETE`,
-the HTTP and MCP routes, merging nodes (the merged node is deleted) and the
+was deleted. Whatever deletes nodes goes through this rule: GQ `DELETE`
+(`DETACH DELETE` detaches), the HTTP and MCP routes, merging nodes (the merged node is deleted) and the
 memory features that delete nodes all fail with `Error::Conflict` for a
 node in a hyperedge, so no hyperedge is ever left naming a missing node.
 
@@ -233,25 +236,18 @@ dropping data silently where it can:
 - **Merging nodes** fails for a merged node that takes part in a hyperedge,
   instead of moving its participation to the kept node (which would need the
   merge record and its undo to carry hyperedges).
-- **GQ, MCP, HTTP, recall and context** do not read or write hyperedges.
+- **GQ** reads and writes them with clauses of their own; ordinary
+  patterns, `MERGE`, pattern predicates and graph algorithms do not see
+  them, and a statement with them is not split across cluster members.
+- **Routes and tools of their own** (HTTP, MCP) and **recall and context**
+  do not know hyperedges: they reach them through GQ only.
 
 ## Next stages
 
-1. **GQ.** Today a pattern matches nodes and edges. A proposal to discuss:
-
-   ```
-   MATCH HYPEREDGE h:decision
-   WHERE h CONTAINS (a), (b)          // ParticipantMatch::Contains
-   RETURN h, h.participants
-
-   MATCH (a:Agent {name: "planner"})-[IN h:decision AS proposer]
-   RETURN h
-   ```
-
-   The plan would read `hyperedge_incidence` for a bound node and
-   `hyperedge_labels` otherwise, as it reads adjacency and labels for edges.
-   `DELETE` of a node would take a `DETACH HYPEREDGES` clause or keep
-   refusing.
+1. **GQ, further.** Done: `MATCH HYPEREDGE` and the writes. Next, if
+   needed: hyperedges inside ordinary patterns and `EXISTS { … }`,
+   `MERGE HYPEREDGE`, statistics for the planner, and splitting across
+   cluster members.
 2. **HTTP and MCP.** Routes and tools for the operations above, with the
    checks the engine already makes.
 3. **Replication.** `Op::HyperEdge` in a new entry format, so cluster

@@ -56,6 +56,7 @@ pub(crate) const HYPEREDGE_LABELS: TableDefinition<LabelKey, ()> =
 type Records = redb::ReadOnlyTable<RecordKey, &'static [u8]>;
 type Incidence = redb::ReadOnlyTable<AdjKey, ()>;
 type LabelEntry<'a> = (&'a str, &'a str, u128);
+type RecordEntry<'a> = (&'a str, u128);
 
 /// How many participants a hyperedge may have unless
 /// [`crate::Grafeno::set_max_participants`] says otherwise.
@@ -209,6 +210,67 @@ fn read_hyperedge(
     }
 }
 
+/// Up to `limit` ids of the hyperedges with `label` after `after`, in id order.
+fn label_ids(
+    table: &impl ReadableTable<LabelKey, ()>,
+    ns: &str,
+    label: &str,
+    after: Option<HyperEdgeId>,
+    limit: usize,
+) -> Result<Vec<HyperEdgeId>> {
+    let mut out = Vec::new();
+    if limit == 0 {
+        return Ok(out);
+    }
+    let lower = match after {
+        Some(id) => Bound::Excluded((ns, label, id.as_u128())),
+        None => Bound::Included((ns, label, 0u128)),
+    };
+    let bounds: (Bound<LabelEntry>, Bound<LabelEntry>) = (lower, Bound::Unbounded);
+    for item in table.range(bounds).map_err(storage)? {
+        let (key, _) = item.map_err(storage)?;
+        let (key_ns, key_label, id) = key.value();
+        if key_ns != ns || key_label != label {
+            break;
+        }
+        out.push(HyperEdgeId::from_u128(id));
+        if out.len() >= limit {
+            break;
+        }
+    }
+    Ok(out)
+}
+
+/// Up to `limit` ids of the hyperedges of `ns` after `after`, in id order.
+fn page_ids(
+    table: &impl ReadableTable<RecordKey, &'static [u8]>,
+    ns: &str,
+    after: Option<HyperEdgeId>,
+    limit: usize,
+) -> Result<Vec<HyperEdgeId>> {
+    let mut out = Vec::new();
+    if limit == 0 {
+        return Ok(out);
+    }
+    let lower = match after {
+        Some(id) => Bound::Excluded((ns, id.as_u128())),
+        None => Bound::Included((ns, 0u128)),
+    };
+    let bounds: (Bound<RecordEntry>, Bound<RecordEntry>) = (lower, Bound::Unbounded);
+    for item in table.range(bounds).map_err(storage)? {
+        let (key, _) = item.map_err(storage)?;
+        let (key_ns, id) = key.value();
+        if key_ns != ns {
+            break;
+        }
+        out.push(HyperEdgeId::from_u128(id));
+        if out.len() >= limit {
+            break;
+        }
+    }
+    Ok(out)
+}
+
 impl crate::Grafeno {
     /// Sets how many participants a hyperedge may have (at least 2), for
     /// every transaction begun from now on.
@@ -229,6 +291,43 @@ impl crate::Grafeno {
 }
 
 impl WriteTx {
+    /// The ids of the hyperedges `node` takes part in (with `label`, only
+    /// that label's), in label then id order, as this transaction sees
+    /// them; no view applies.
+    pub fn hyperedge_ids_of(
+        &self,
+        ns: &str,
+        node: NodeId,
+        label: Option<&str>,
+    ) -> Result<Vec<HyperEdgeId>> {
+        let table = self.tx.open_table(HYPEREDGE_INCIDENCE).map_err(storage)?;
+        incident(&table, ns, node, label)
+    }
+
+    /// Up to `limit` ids of the hyperedges with `label` after `after`, in
+    /// id order; no view applies.
+    pub fn hyperedge_ids_with_label(
+        &self,
+        ns: &str,
+        label: &str,
+        after: Option<HyperEdgeId>,
+        limit: usize,
+    ) -> Result<Vec<HyperEdgeId>> {
+        let table = self.tx.open_table(HYPEREDGE_LABELS).map_err(storage)?;
+        label_ids(&table, ns, label, after, limit)
+    }
+
+    /// Up to `limit` ids of the hyperedges of `ns` after `after`, in id
+    /// order; no view applies.
+    pub fn hyperedge_ids(
+        &self,
+        ns: &str,
+        after: Option<HyperEdgeId>,
+        limit: usize,
+    ) -> Result<Vec<HyperEdgeId>> {
+        let table = self.tx.open_table(HYPEREDGES).map_err(storage)?;
+        page_ids(&table, ns, after, limit)
+    }
     /// Hyperedges cannot be written while the replication log is on: the
     /// log has no entry for them yet, and members would differ.
     fn hyperedges_writable(&self) -> Result<()> {
@@ -605,6 +704,67 @@ impl WriteTx {
 }
 
 impl ReadTx {
+    /// The ids that `self.hyperedge` would return a hyperedge for: with a
+    /// view, only those it sees.
+    fn visible_ids(&self, ns: &str, ids: Vec<HyperEdgeId>) -> Result<Vec<HyperEdgeId>> {
+        if self.view().is_none() {
+            return Ok(ids);
+        }
+        let mut out = Vec::with_capacity(ids.len());
+        for id in ids {
+            if self.hyperedge(ns, id)?.is_some() {
+                out.push(id);
+            }
+        }
+        Ok(out)
+    }
+
+    /// The ids of the hyperedges `node` takes part in (with `label`, only
+    /// that label's), in label then id order: [`ReadTx::node_hyperedges`]
+    /// without reading the records when the snapshot has no view.
+    pub fn hyperedge_ids_of(
+        &self,
+        ns: &str,
+        node: NodeId,
+        label: Option<&str>,
+    ) -> Result<Vec<HyperEdgeId>> {
+        if !self.sees(ns, node)? {
+            return Ok(Vec::new());
+        }
+        let (_, incidence) = self.hyperedge_tables()?;
+        let ids = incident(&incidence, ns, node, label)?;
+        self.visible_ids(ns, ids)
+    }
+
+    /// Up to `limit` ids of the hyperedges with `label` after `after`, in id
+    /// order (with a view, those it sees: fewer than `limit` may come back
+    /// before the end).
+    pub fn hyperedge_ids_with_label(
+        &self,
+        ns: &str,
+        label: &str,
+        after: Option<HyperEdgeId>,
+        limit: usize,
+    ) -> Result<Vec<HyperEdgeId>> {
+        let table = self.tx.open_table(HYPEREDGE_LABELS).map_err(storage)?;
+        let ids = label_ids(&table, ns, label, after, limit)?;
+        self.visible_ids(ns, ids)
+    }
+
+    /// Up to `limit` ids of the hyperedges of `ns` after `after`, in id
+    /// order (with a view, those it sees: fewer than `limit` may come back
+    /// before the end).
+    pub fn hyperedge_ids(
+        &self,
+        ns: &str,
+        after: Option<HyperEdgeId>,
+        limit: usize,
+    ) -> Result<Vec<HyperEdgeId>> {
+        let (records, _) = self.hyperedge_tables()?;
+        let ids = page_ids(&records, ns, after, limit)?;
+        self.visible_ids(ns, ids)
+    }
+
     fn hyperedge_tables(&self) -> Result<(Records, Incidence)> {
         Ok((
             self.tx.open_table(HYPEREDGES).map_err(storage)?,

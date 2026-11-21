@@ -573,6 +573,108 @@ FOREACH (topic IN ['graphs', 'rust'] |
   CREATE (a)-[:likes]->(t));
 ```
 
+## Hyperedges
+
+A hyperedge is one fact that relates two or more nodes at once, each in a
+role: a decision with who proposed it, who implemented it and the task it
+is about ([hyperedges.md](hyperedges.md)). GQ reads and writes them with
+clauses of their own, which share variables with the other clauses.
+
+### `MATCH HYPEREDGE`
+
+```text
+[OPTIONAL] MATCH HYPEREDGE h:label|other {key: value}
+                           [(a:Label {…}) AS role, (b), …] [EXACT]
+                           [VALID AT t] [KNOWN AT t] [WHERE …]
+```
+
+- `h` binds the hyperedge. Its labels (any of them) and properties filter
+  as an edge's do; `{@id: $id}` finds one by id.
+- Each node pattern in brackets is a member: a participant of its own,
+  whose node fits the pattern and plays the role after `AS` (any role
+  when there is none). A role is a name or a string. The same variable
+  may be given twice with two roles, for one node playing both.
+- `EXACT`: the members' nodes are all the hyperedge's nodes.
+- A hyperedge gives one row per distinct binding of the members'
+  variables: a node in two roles of it is one row for a member without a
+  role.
+- `VALID AT`, `KNOWN AT` and current knowledge work as for edges.
+- `OPTIONAL MATCH HYPEREDGE` keeps the row with `null`s when nothing
+  matches.
+
+```text
+MATCH HYPEREDGE h:decision [(a:Agent) AS proposer, (t:Task)]
+WHERE h.status = 'open'
+RETURN a.name, t.name, h.summary;
+
+// The hyperedges a bound node takes part in, through its incidence list
+MATCH (c:Agent {name: 'checker'})
+MATCH HYPEREDGE h [(c) AS reviewer]
+RETURN type(h), h.@recorded_at;
+
+// Exactly these participants
+MATCH (a:Agent {name: 'planner'}), (b:Agent {name: 'builder'})
+MATCH HYPEREDGE h [(a), (b)] EXACT
+RETURN h;
+
+// Everyone in a decision, with their roles
+MATCH HYPEREDGE h:decision
+UNWIND participants(h) AS p
+RETURN p.node.name, p.role;
+```
+
+Where it starts, as `EXPLAIN` shows: the hyperedge variable if it is
+bound, `@id`, the incidence lists of the members already bound
+(intersected), the label index, or every hyperedge of the namespace.
+Starting from a bound node is the cheap way; a label or a scan reads
+every hyperedge of the label or the namespace.
+
+### Writing hyperedges
+
+```text
+MATCH (p:Agent {name: 'planner'}), (b:Agent {name: 'builder'}), (t:Task {name: 'T1'})
+CREATE HYPEREDGE h:decision {summary: 'single writer'}
+       [(p) AS proposer, (b) AS implementer, (t) AS subject]
+RETURN h;
+
+MATCH HYPEREDGE h:decision SET h.status = 'done', h += {votes: 3} REMOVE h.draft;
+MATCH HYPEREDGE h:decision SET h.@valid_to = '2026-12-01';  // the fact ended
+MATCH HYPEREDGE h:decision RETRACT h;                       // it was a mistake
+MATCH HYPEREDGE h:decision DELETE h;
+```
+
+- `CREATE HYPEREDGE` takes one label and nodes already bound, by their
+  variables alone; at least two distinct nodes, each (node, role) once.
+- `SET` and `REMOVE` change properties as on edges; `SET h.@valid_to`
+  invalidates it. Participants do not change in place: delete it and
+  create it again.
+- `DELETE n` refuses a node that takes part in a hyperedge. `DETACH DELETE
+  n` takes it out of each one; a hyperedge left with fewer than two nodes
+  is deleted (counted in `hyperedges_deleted`).
+- Write statistics count `hyperedges_created`, `hyperedges_deleted` and
+  `hyperedges_retracted`.
+
+### Functions and pseudo-properties
+
+| | |
+| --- | --- |
+| `participants(h)` | a list of `{node, role}` maps, `role` `null` when none |
+| `id(h)`, `elementId(h)` | its id |
+| `type(h)`, `label(h)`, `h.@label` | its label |
+| `keys(h)`, `properties(h)`, `hasKey(h, k)` | its properties |
+| `h.@valid_from`, `h.@valid_to`, `h.@recorded_at`, `h.@expired_at`, `h.@recorded_by`, `h.@sources` | as for edges |
+
+A hyperedge returned whole is its record: id, label, participants,
+properties and times.
+
+### Not yet
+
+Hyperedges are not part of ordinary patterns (`(a)-[…]-(b)`), `MERGE`,
+`EXISTS { … }`, `COUNT { … }` or graph algorithms, and a statement with
+`MATCH HYPEREDGE` is not split across cluster members. While the
+replication log is on (cluster members, replicas) they cannot be
+written.
+
 ## Pseudo-properties
 
 Read with `n.@name`. They are what a node or edge has besides properties.

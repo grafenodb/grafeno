@@ -155,6 +155,14 @@ pub(crate) enum Clause {
         known_at: Option<Expr>,
         filter: Option<Expr>,
     },
+    /// `[OPTIONAL] MATCH HYPEREDGE h:label {…} [(a) AS role, (b)] [EXACT]`
+    MatchHyper {
+        optional: bool,
+        pattern: HyperPattern,
+        valid_at: Option<Expr>,
+        known_at: Option<Expr>,
+        filter: Option<Expr>,
+    },
     /// `UNWIND list AS x`
     Unwind {
         list: Expr,
@@ -165,6 +173,8 @@ pub(crate) enum Clause {
     /// `CALL name(args) YIELD …`
     Call(ProcedureCall),
     Create(Vec<Pattern>),
+    /// `CREATE HYPEREDGE h:label {…} [(a) AS role, (b)]`, of bound nodes.
+    CreateHyper(HyperPattern),
     Merge {
         pattern: Pattern,
         on_create: Vec<SetItem>,
@@ -172,7 +182,12 @@ pub(crate) enum Clause {
     },
     Set(Vec<SetItem>),
     Remove(Vec<RemoveItem>),
-    Delete(Vec<Expr>),
+    /// `[DETACH] DELETE`: `detach` takes deleted nodes out of their
+    /// hyperedges instead of refusing.
+    Delete {
+        exprs: Vec<Expr>,
+        detach: bool,
+    },
     Retract(Vec<Expr>),
     /// `FOREACH (x IN list | clauses)`: writes once per item.
     Foreach {
@@ -192,10 +207,11 @@ impl Clause {
         matches!(
             self,
             Clause::Create(_)
+                | Clause::CreateHyper(_)
                 | Clause::Merge { .. }
                 | Clause::Set(_)
                 | Clause::Remove(_)
-                | Clause::Delete(_)
+                | Clause::Delete { .. }
                 | Clause::Retract(_)
                 | Clause::Foreach { .. }
         ) || matches!(self, Clause::Subquery(query) if query.clauses.iter().any(Clause::writes))
@@ -207,14 +223,18 @@ impl Clause {
         match self {
             Clause::Match { optional: true, .. } => "OPTIONAL MATCH",
             Clause::Match { .. } => "MATCH",
+            Clause::MatchHyper { optional: true, .. } => "OPTIONAL MATCH HYPEREDGE",
+            Clause::MatchHyper { .. } => "MATCH HYPEREDGE",
             Clause::Unwind { .. } => "UNWIND",
             Clause::With(_) => "WITH",
             Clause::Call(_) => "CALL",
             Clause::Create(_) => "CREATE",
+            Clause::CreateHyper(_) => "CREATE HYPEREDGE",
             Clause::Merge { .. } => "MERGE",
             Clause::Set(_) => "SET",
             Clause::Remove(_) => "REMOVE",
-            Clause::Delete(_) => "DELETE",
+            Clause::Delete { detach: true, .. } => "DETACH DELETE",
+            Clause::Delete { .. } => "DELETE",
             Clause::Retract(_) => "RETRACT",
             Clause::Foreach { .. } => "FOREACH",
             Clause::Return(_) => "RETURN",
@@ -321,6 +341,41 @@ impl Pattern {
             .chain(std::iter::once(self.path.as_deref()))
             .flatten()
             .collect()
+    }
+}
+
+/// `HYPEREDGE h:a|b {…} [(x) AS role, (y)] [EXACT]`: a hyperedge with any
+/// of these labels and these properties, in which each member takes part
+/// (in its role, when given); with `EXACT`, its nodes are exactly the
+/// members'.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct HyperPattern {
+    pub(crate) var: Option<String>,
+    pub(crate) labels: Vec<String>,
+    pub(crate) props: Vec<(Key, Expr)>,
+    pub(crate) members: Vec<Member>,
+    pub(crate) exact: bool,
+}
+
+/// A node that takes part in a hyperedge pattern, and its role.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Member {
+    pub(crate) node: NodePattern,
+    pub(crate) role: Option<String>,
+}
+
+impl HyperPattern {
+    /// Every variable it names, in order (the hyperedge's first).
+    pub(crate) fn variables(&self) -> Vec<&str> {
+        let mut out: Vec<&str> = self.var.as_deref().into_iter().collect();
+        for member in &self.members {
+            if let Some(var) = member.node.var.as_deref()
+                && !out.contains(&var)
+            {
+                out.push(var);
+            }
+        }
+        out
     }
 }
 

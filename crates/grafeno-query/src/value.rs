@@ -4,12 +4,13 @@ use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use grafeno::{Edge, Node, Timestamp};
+use grafeno::{Edge, HyperEdge, Node, Timestamp};
 use serde_json::json;
 
 use crate::temporal::Duration;
 
-/// A value in a query: a property value, a node, an edge, or a time.
+/// A value in a query: a property value, a node, an edge, a hyperedge, or a
+/// time.
 #[derive(Clone, Debug)]
 pub enum Value {
     Null,
@@ -26,6 +27,8 @@ pub enum Value {
     Edge(Arc<Edge>),
     /// A matched path (`p = (a)-[…]->(b)`).
     Path(Arc<Path>),
+    /// A hyperedge (`MATCH HYPEREDGE h …`).
+    HyperEdge(Arc<HyperEdge>),
 }
 
 /// Nodes and the edges between them: `nodes[i]` and `nodes[i + 1]` are the
@@ -88,6 +91,7 @@ impl Value {
             ]),
             Value::Node(node) => json!(["N", node.as_ref()]),
             Value::Edge(edge) => json!(["E", edge.as_ref()]),
+            Value::HyperEdge(edge) => json!(["H", edge.as_ref()]),
             Value::Path(path) => json!([
                 "P",
                 path.nodes.iter().map(|n| n.as_ref()).collect::<Vec<_>>(),
@@ -138,6 +142,7 @@ impl Value {
             ),
             "N" => Value::Node(Arc::new(decode(at(1)?)?)),
             "E" => Value::Edge(Arc::new(decode(at(1)?)?)),
+            "H" => Value::HyperEdge(Arc::new(decode(at(1)?)?)),
             "P" => {
                 let nodes: Vec<Node> = decode(at(1)?)?;
                 let edges: Vec<Edge> = decode(at(2)?)?;
@@ -171,6 +176,7 @@ impl Value {
             ),
             Value::Node(node) => serde_json::to_value(node.as_ref()).unwrap_or_default(),
             Value::Edge(edge) => serde_json::to_value(edge.as_ref()).unwrap_or_default(),
+            Value::HyperEdge(edge) => serde_json::to_value(edge.as_ref()).unwrap_or_default(),
             Value::Path(path) => json!({
                 "nodes": path.nodes.iter().map(|n| serde_json::to_value(n.as_ref()).unwrap_or_default()).collect::<Vec<_>>(),
                 "relationships": path.edges.iter().map(|e| serde_json::to_value(e.as_ref()).unwrap_or_default()).collect::<Vec<_>>(),
@@ -182,7 +188,7 @@ impl Value {
     /// properties, except times, which are stored as ISO strings.
     pub(crate) fn to_property(&self) -> Result<serde_json::Value, String> {
         match self {
-            Value::Node(_) | Value::Edge(_) | Value::Path(_) => {
+            Value::Node(_) | Value::Edge(_) | Value::Path(_) | Value::HyperEdge(_) => {
                 Err(format!("a property cannot hold a {}", self.type_name()))
             }
             Value::List(items) => items
@@ -213,6 +219,7 @@ impl Value {
             Value::Node(_) => "node",
             Value::Edge(_) => "edge",
             Value::Path(_) => "path",
+            Value::HyperEdge(_) => "hyperedge",
         }
     }
 
@@ -245,6 +252,7 @@ impl Value {
             }
             Value::Node(node) => format!("N{}", node.id),
             Value::Edge(edge) => format!("E{}", edge.id),
+            Value::HyperEdge(edge) => format!("H{}", edge.id),
             Value::Path(path) => {
                 let mut key = String::from("P");
                 for node in &path.nodes {
@@ -356,14 +364,15 @@ pub(crate) fn sort_order(a: &Value, b: &Value) -> Ordering {
             Value::Map(_) => 0,
             Value::Node(_) => 1,
             Value::Edge(_) => 2,
-            Value::Path(_) => 3,
-            Value::List(_) => 4,
-            Value::Str(_) => 5,
-            Value::Bool(_) => 6,
-            Value::Int(_) | Value::Float(_) => 7,
-            Value::Time(_) => 8,
-            Value::Duration(_) => 9,
-            Value::Null => 10,
+            Value::HyperEdge(_) => 3,
+            Value::Path(_) => 4,
+            Value::List(_) => 5,
+            Value::Str(_) => 6,
+            Value::Bool(_) => 7,
+            Value::Int(_) | Value::Float(_) => 8,
+            Value::Time(_) => 9,
+            Value::Duration(_) => 10,
+            Value::Null => 11,
         }
     }
     match (a, b) {

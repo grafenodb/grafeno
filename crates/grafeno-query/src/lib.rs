@@ -46,6 +46,7 @@ mod cache;
 mod cost;
 mod eval;
 mod exec;
+mod hyper;
 mod lexer;
 mod limits;
 mod morefns;

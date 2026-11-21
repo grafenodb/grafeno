@@ -5,9 +5,9 @@ use grafeno::Direction;
 use crate::QueryError;
 use crate::access::{Access, Target, UserSet};
 use crate::ast::{
-    BinOp, Clause, EventsOp, Expr, Key, MapItem, Mode, NamespaceOp, NodePattern, Pattern,
-    PatternKind, ProcedureCall, Projection, Quantifier, Query, RelPattern, RemoveItem, ReturnItem,
-    Schema, SetItem, Statement, UnOp,
+    BinOp, Clause, EventsOp, Expr, HyperPattern, Key, MapItem, Member, Mode, NamespaceOp,
+    NodePattern, Pattern, PatternKind, ProcedureCall, Projection, Quantifier, Query, RelPattern,
+    RemoveItem, ReturnItem, Schema, SetItem, Statement, UnOp,
 };
 use crate::lexer::{Spanned, Token, lex};
 use crate::value::Value;
@@ -1163,6 +1163,34 @@ impl Parser<'_> {
         if optional {
             self.advance();
         }
+        if self.at_keyword("MATCH") && self.hyperedge_at(1) {
+            self.position += 2;
+            let pattern = self.hyper_pattern(true)?;
+            let (mut valid_at, mut known_at) = (None, None);
+            loop {
+                if self.at_keyword("VALID") && self.keyword_at(1, "AT") {
+                    self.position += 2;
+                    valid_at = Some(self.expr()?);
+                } else if self.at_keyword("KNOWN") && self.keyword_at(1, "AT") {
+                    self.position += 2;
+                    known_at = Some(self.expr()?);
+                } else {
+                    break;
+                }
+            }
+            let filter = if self.eat_keyword("WHERE") {
+                Some(self.expr()?)
+            } else {
+                None
+            };
+            return Ok(Clause::MatchHyper {
+                optional,
+                pattern,
+                valid_at,
+                known_at,
+                filter,
+            });
+        }
         if self.eat_keyword("MATCH") {
             let patterns = self.patterns()?;
             let (mut valid_at, mut known_at) = (None, None);
@@ -1205,6 +1233,30 @@ impl Parser<'_> {
         }
         if self.eat_keyword("CALL") {
             return self.call_clause();
+        }
+        if self.at_keyword("CREATE") && self.hyperedge_at(1) {
+            self.position += 2;
+            let pattern = self.hyper_pattern(false)?;
+            if pattern.labels.len() != 1 {
+                return Err(self.error(
+                    "CREATE HYPEREDGE needs one label: CREATE HYPEREDGE h:decision [(a), (b)]",
+                ));
+            }
+            if !pattern
+                .props
+                .iter()
+                .all(|(key, _)| matches!(key, Key::Prop(_)))
+            {
+                return Err(self.error("CREATE HYPEREDGE sets properties, not pseudo-properties"));
+            }
+            if pattern.members.iter().any(|m| {
+                m.node.var.is_none() || !m.node.labels.is_empty() || !m.node.props.is_empty()
+            }) {
+                return Err(self.error(
+                    "CREATE HYPEREDGE takes nodes already bound, by their variables alone: [(a) AS role, (b)]",
+                ));
+            }
+            return Ok(Clause::CreateHyper(pattern));
         }
         if self.eat_keyword("CREATE") {
             let patterns = self.patterns()?;
@@ -1249,11 +1301,15 @@ impl Parser<'_> {
             }
             return Ok(Clause::Remove(items));
         }
-        if self.at_keyword("DETACH") && self.keyword_at(1, "DELETE") {
+        let detach = self.at_keyword("DETACH") && self.keyword_at(1, "DELETE");
+        if detach {
             self.position += 1;
         }
         if self.eat_keyword("DELETE") {
-            return Ok(Clause::Delete(self.expr_list()?));
+            return Ok(Clause::Delete {
+                exprs: self.expr_list()?,
+                detach,
+            });
         }
         if self.eat_keyword("RETRACT") {
             return Ok(Clause::Retract(self.expr_list()?));
@@ -1586,6 +1642,85 @@ impl Parser<'_> {
                 None
             }
         }
+    }
+
+    /// Whether `HYPEREDGE` starts a hyperedge pattern `ahead` tokens on (and
+    /// is not a variable named so: `MATCH hyperedge = (…)`).
+    fn hyperedge_at(&self, ahead: usize) -> bool {
+        self.keyword_at(ahead, "HYPEREDGE") && self.peek_at(ahead + 1) != &Token::Eq
+    }
+
+    /// After `HYPEREDGE`: `h:a|b {…} [(x) AS role, (y)]`, and `EXACT` when
+    /// `matching`.
+    fn hyper_pattern(&mut self, matching: bool) -> Result<HyperPattern, QueryError> {
+        const CLAUSE_WORDS: [&str; 6] = ["EXACT", "WHERE", "RETURN", "VALID", "KNOWN", "WITH"];
+        let var = match self.peek().clone() {
+            Token::Ident(name)
+                if !CLAUSE_WORDS
+                    .iter()
+                    .any(|word| name.eq_ignore_ascii_case(word)) =>
+            {
+                self.advance();
+                Some(name)
+            }
+            _ => None,
+        };
+        let mut labels = Vec::new();
+        if self.eat(&Token::Colon) {
+            labels.push(self.ident("a hyperedge label")?);
+            while self.eat(&Token::Pipe) {
+                self.eat(&Token::Colon);
+                labels.push(self.ident("a hyperedge label")?);
+            }
+        }
+        let props = if self.peek() == &Token::LBrace {
+            self.props()?
+        } else {
+            Vec::new()
+        };
+        let mut members = Vec::new();
+        if self.eat(&Token::LBracket) {
+            if !self.eat(&Token::RBracket) {
+                loop {
+                    let node = self.node_pattern()?;
+                    let role = if self.eat_keyword("AS") {
+                        match self.peek().clone() {
+                            Token::Ident(name) | Token::Str(name) => {
+                                self.advance();
+                                if name.is_empty() || name.trim() != name {
+                                    return Err(self.error(format!("invalid role {name:?}")));
+                                }
+                                Some(name)
+                            }
+                            _ => return Err(self.unexpected("a role after `AS`")),
+                        }
+                    } else {
+                        None
+                    };
+                    members.push(Member { node, role });
+                    if !self.eat(&Token::Comma) {
+                        break;
+                    }
+                }
+                self.expect(Token::RBracket, "`]` to close the participants")?;
+            }
+        } else if !matching {
+            return Err(self.unexpected("`[` and the participants of the hyperedge"));
+        }
+        let exact = matching && self.eat_keyword("EXACT");
+        if exact && members.is_empty() {
+            return Err(self.error("EXACT needs participants: MATCH HYPEREDGE h [(a), (b)] EXACT"));
+        }
+        if var.is_some() && members.iter().any(|m| m.node.var == var) {
+            return Err(self.error("a hyperedge variable cannot also name a participant"));
+        }
+        Ok(HyperPattern {
+            var,
+            labels,
+            props,
+            members,
+            exact,
+        })
     }
 
     fn node_pattern(&mut self) -> Result<NodePattern, QueryError> {

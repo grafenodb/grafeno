@@ -110,6 +110,7 @@ pub(crate) fn function(name: &str, args: &[Value]) -> Option<Result<Value, Query
                 Value::Bool(match &args[0] {
                     Value::Node(node) => node.props.contains_key(key),
                     Value::Edge(edge) => edge.props.contains_key(key),
+                    Value::HyperEdge(edge) => edge.props.contains_key(key),
                     Value::Map(map) => map.contains_key(key),
                     other => {
                         return Err(error(format!(
@@ -244,9 +245,10 @@ pub(crate) fn function(name: &str, args: &[Value]) -> Option<Result<Value, Query
                 match &args[0] {
                     Value::Node(node) => Value::Str(node.id.to_string()),
                     Value::Edge(edge) => Value::Str(edge.id.to_string()),
+                    Value::HyperEdge(edge) => Value::Str(edge.id.to_string()),
                     other => {
                         return Err(error(format!(
-                            "elementId() needs a node or edge, not a {}",
+                            "elementId() needs a node, edge or hyperedge, not a {}",
                             other.type_name()
                         )));
                     }

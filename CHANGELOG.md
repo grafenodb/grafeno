@@ -35,6 +35,17 @@ recall, exports and the replication log do not know them yet.
   do the routes, GQ `DELETE` and merges that delete one. `Error` has a new
   variant, `HyperEdgeNotFound`; `CheckReport` and `RebuildReport` have
   hyperedge counts.
+- **Added**: GQ on hyperedges: `[OPTIONAL] MATCH HYPEREDGE h:label {…}
+  [(a) AS role, (b)] [EXACT]` with `VALID AT`, `KNOWN AT` and `WHERE`,
+  starting from a bound participant's incidence list when there is one;
+  `CREATE HYPEREDGE`; `SET`, `REMOVE`, `DELETE` and `RETRACT` of a
+  hyperedge; `participants(h)`; `id`, `type`, `keys`, `properties` and the
+  pseudo-properties of a hyperedge. Write statistics count hyperedges.
+  The engine also reads hyperedge ids by node, label and page
+  (`hyperedge_ids_of`, `hyperedge_ids_with_label`, `hyperedge_ids`).
+- **Changed**: GQ `DETACH DELETE` takes a node out of its hyperedges
+  (deleting those left with one node); `DELETE` of a node in a hyperedge
+  fails. Query values have a new variant, `Value::HyperEdge`.
 - **Not yet**: while the replication log is on, hyperedges cannot be
   written, and it cannot be turned on while one exists.
 
