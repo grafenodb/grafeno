@@ -11,7 +11,20 @@ API version (`GET /v1/about`, now 1) changes only when a change would
 break a client of the previous one, and the database files' layout
 version (now 18) is upgraded in place, with a copy kept first.
 
-## Unreleased
+## 0.4.0 (2026-11-20)
+
+Memory that holds up over time and across languages, and an
+administrator's token that changes itself. A namespace can say its
+language (Spanish or English) so recall finds other forms of the words;
+replaced memories rank below what replaced them; hybrid search, graph
+expansion and recall by label no longer lose the answer they found; and
+the context a model reads cannot be forged by what a memory says. Each
+was found by new measurements on agent questions and thousands of
+conversations, kept as tests. The database layout (18), the HTTP API
+version (1) and the log entry format are those of 0.3: files open as
+they are and clients of 0.3 keep working. In a cluster, set a
+namespace's `language` once every member runs 0.4: a member of 0.3
+copies the setting without indexing its texts again.
 
 - **Added**: a namespace's `language` (`en` or `es`, on POST and PATCH
   `/v1/namespaces`): node texts and questions are reduced to their stem

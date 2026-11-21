@@ -658,7 +658,7 @@ dependencies = [
 
 [[package]]
 name = "grafeno"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "ciborium",
  "criterion",
@@ -676,7 +676,7 @@ dependencies = [
 
 [[package]]
 name = "grafeno-cluster"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "grafeno",
  "grafeno-raft",
@@ -687,7 +687,7 @@ dependencies = [
 
 [[package]]
 name = "grafeno-core"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -697,7 +697,7 @@ dependencies = [
 
 [[package]]
 name = "grafeno-memory"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "aho-corasick",
  "grafeno",
@@ -710,7 +710,7 @@ dependencies = [
 
 [[package]]
 name = "grafeno-query"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "grafeno",
  "proptest",
@@ -721,7 +721,7 @@ dependencies = [
 
 [[package]]
 name = "grafeno-raft"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -729,7 +729,7 @@ dependencies = [
 
 [[package]]
 name = "grafeno-server"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "argon2",
  "axum",
