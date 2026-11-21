@@ -71,7 +71,9 @@ fn recall_stays_high_and_scores_are_exact() {
     }
     let recall = found as f64 / (100 * 10) as f64;
     assert!(recall >= 0.95, "recall@10 {recall}");
-    assert!(read.vector_recall(NS, 50, 64).unwrap().unwrap() >= 0.95);
+    // Estimated from 200 of its own vectors: 50 left the estimate close
+    // enough to 0.95 to fail now and then.
+    assert!(read.vector_recall(NS, 200, 64).unwrap().unwrap() >= 0.95);
 }
 
 #[test]
