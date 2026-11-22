@@ -53,8 +53,6 @@ pub(crate) const HYPEREDGE_INCIDENCE: TableDefinition<AdjKey, ()> =
 pub(crate) const HYPEREDGE_LABELS: TableDefinition<LabelKey, ()> =
     TableDefinition::new("hyperedge_labels");
 
-type Records = redb::ReadOnlyTable<RecordKey, &'static [u8]>;
-type Incidence = redb::ReadOnlyTable<AdjKey, ()>;
 type LabelEntry<'a> = (&'a str, &'a str, u128);
 type RecordEntry<'a> = (&'a str, u128);
 
@@ -777,7 +775,7 @@ impl WriteTx {
 impl ReadTx {
     /// Whether no hyperedge with this id exists, seen or not.
     pub(crate) fn hyperedge_gone(&self, ns: &str, id: HyperEdgeId) -> Result<bool> {
-        let (records, _) = self.hyperedge_tables()?;
+        let records = &self.hyperedges;
         Ok(records.get((ns, id.as_u128())).map_err(storage)?.is_none())
     }
 
@@ -808,8 +806,8 @@ impl ReadTx {
         if !self.sees(ns, node)? {
             return Ok(Vec::new());
         }
-        let (_, incidence) = self.hyperedge_tables()?;
-        let ids = incident(&incidence, ns, node, label)?;
+        let incidence = &self.hyperedge_incidence;
+        let ids = incident(incidence, ns, node, label)?;
         self.visible_ids(ns, ids)
     }
 
@@ -823,8 +821,8 @@ impl ReadTx {
         after: Option<HyperEdgeId>,
         limit: usize,
     ) -> Result<Vec<HyperEdgeId>> {
-        let table = self.tx.open_table(HYPEREDGE_LABELS).map_err(storage)?;
-        let ids = label_ids(&table, ns, label, after, limit)?;
+        let table = &self.hyperedge_labels;
+        let ids = label_ids(table, ns, label, after, limit)?;
         self.visible_ids(ns, ids)
     }
 
@@ -837,17 +835,11 @@ impl ReadTx {
         after: Option<HyperEdgeId>,
         limit: usize,
     ) -> Result<Vec<HyperEdgeId>> {
-        let (records, _) = self.hyperedge_tables()?;
-        let ids = page_ids(&records, ns, after, limit)?;
+        let records = &self.hyperedges;
+        let ids = page_ids(records, ns, after, limit)?;
         self.visible_ids(ns, ids)
     }
 
-    fn hyperedge_tables(&self) -> Result<(Records, Incidence)> {
-        Ok((
-            self.tx.open_table(HYPEREDGES).map_err(storage)?,
-            self.tx.open_table(HYPEREDGE_INCIDENCE).map_err(storage)?,
-        ))
-    }
 
     /// The hyperedge as this snapshot's view sees it: hidden when its label
     /// or any participant is, without hidden properties.
@@ -865,8 +857,8 @@ impl ReadTx {
 
     /// The hyperedge with this id.
     pub fn hyperedge(&self, ns: &str, id: HyperEdgeId) -> Result<Option<HyperEdge>> {
-        let (records, _) = self.hyperedge_tables()?;
-        match read_hyperedge(&records, ns, id)? {
+        let records = &self.hyperedges;
+        match read_hyperedge(records, ns, id)? {
             Some(edge) => self.seen_hyperedge(ns, edge),
             None => Ok(None),
         }
@@ -883,11 +875,11 @@ impl ReadTx {
         if !self.sees(ns, node)? {
             return Ok(Vec::new());
         }
-        let (records, incidence) = self.hyperedge_tables()?;
+        let (records, incidence) = (&self.hyperedges, &self.hyperedge_incidence);
         let mut out = Vec::new();
         for label in filter.labels() {
-            for id in incident(&incidence, ns, node, label)? {
-                let Some(edge) = read_hyperedge(&records, ns, id)? else {
+            for id in incident(incidence, ns, node, label)? {
+                let Some(edge) = read_hyperedge(records, ns, id)? else {
                     return Err(Error::Storage(format!(
                         "the incidence index names hyperedge {id}, which does not exist"
                     )));
@@ -917,8 +909,8 @@ impl ReadTx {
         if limit == 0 {
             return Ok(out);
         }
-        let (records, _) = self.hyperedge_tables()?;
-        let labels = self.tx.open_table(HYPEREDGE_LABELS).map_err(storage)?;
+        let records = &self.hyperedges;
+        let labels = &self.hyperedge_labels;
         let lower = match after {
             Some(id) => Bound::Excluded((ns, label, id.as_u128())),
             None => Bound::Included((ns, label, 0u128)),
@@ -931,7 +923,7 @@ impl ReadTx {
                 break;
             }
             let id = HyperEdgeId::from_u128(id);
-            let Some(edge) = read_hyperedge(&records, ns, id)? else {
+            let Some(edge) = read_hyperedge(records, ns, id)? else {
                 return Err(Error::Storage(format!(
                     "the label index names hyperedge {id}, which does not exist"
                 )));
@@ -968,14 +960,14 @@ impl ReadTx {
                 return Ok(Vec::new());
             }
         }
-        let (records, incidence) = self.hyperedge_tables()?;
+        let (records, incidence) = (&self.hyperedges, &self.hyperedge_incidence);
         // The ids every node asked for takes part in: the intersection of
         // their incidence lists, read once each.
         let mut common: Option<BTreeSet<HyperEdgeId>> = None;
         for &node in &wanted {
             let mut ids = BTreeSet::new();
             for label in filter.labels() {
-                ids.extend(incident(&incidence, ns, node, label)?);
+                ids.extend(incident(incidence, ns, node, label)?);
             }
             common = Some(match common {
                 None => ids,
@@ -987,7 +979,7 @@ impl ReadTx {
         }
         let mut out = Vec::new();
         for id in common.unwrap_or_default() {
-            let Some(edge) = read_hyperedge(&records, ns, id)? else {
+            let Some(edge) = read_hyperedge(records, ns, id)? else {
                 return Err(Error::Storage(format!(
                     "the incidence index names hyperedge {id}, which does not exist"
                 )));
@@ -1014,9 +1006,9 @@ impl ReadTx {
         after: Option<HyperEdgeId>,
         limit: usize,
     ) -> Result<Vec<HyperEdge>> {
-        let (records, _) = self.hyperedge_tables()?;
+        let records = &self.hyperedges;
         let page: Vec<HyperEdge> =
-            crate::store::scan_page(&records, ns, after.map(HyperEdgeId::as_u128), limit, |_| {
+            crate::store::scan_page(records, ns, after.map(HyperEdgeId::as_u128), limit, |_| {
                 true
             })?;
         let mut out = Vec::with_capacity(page.len());
@@ -1032,12 +1024,12 @@ impl ReadTx {
     /// existing, two distinct nodes or more, and the incidence and label
     /// indexes equal to what the records call for. Problems are appended.
     pub(crate) fn check_hyperedges(&self, ns: &str, problems: &mut Vec<String>) -> Result<u64> {
-        let (records, incidence) = self.hyperedge_tables()?;
-        let labels = self.tx.open_table(HYPEREDGE_LABELS).map_err(storage)?;
+        let (records, incidence) = (&self.hyperedges, &self.hyperedge_incidence);
+        let labels = &self.hyperedge_labels;
         let mut expected_incidence: BTreeSet<(u128, String, u128)> = BTreeSet::new();
         let mut expected_labels: BTreeSet<(String, u128)> = BTreeSet::new();
         let mut count = 0u64;
-        for edge in crate::store::scan_records::<HyperEdge>(&records, ns)? {
+        for edge in crate::store::scan_records::<HyperEdge>(records, ns)? {
             count += 1;
             let id = edge.id;
             if edge.participants.windows(2).any(|pair| pair[0] >= pair[1]) {

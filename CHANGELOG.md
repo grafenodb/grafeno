@@ -30,6 +30,11 @@ an experiment found event nodes answer as well (docs/benchmarks.md).
   only memories overtaken by their words. A `supersedes` fact that no
   longer holds marks nothing. `knowledge::replaced_by` gives what
   replaces a memory at a time.
+- **Changed**: reading hyperedges is faster: a snapshot opens their
+  tables once (a read by id 3.3 → 1.7 µs), and matching a pattern reads
+  only the participants' nodes it needs (a label scan 9.5 → 3.7 µs a
+  hyperedge). With a bound participant, `MATCH HYPEREDGE` reads a property
+  index instead of the incidence list when the index finds fewer.
 - **Added**: not null, type and functional rules on hyperedges (`CREATE
   CONSTRAINT FOR HYPEREDGE h:label REQUIRE h.key IS NOT NULL | IS :: type
   | IS FUNCTIONAL`, `hyperedges` on `Constraint::Exists`, `Typed` and

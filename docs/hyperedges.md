@@ -253,13 +253,11 @@ silently where it can:
 ## Next stages
 
 1. **GQ, further.** Done: `MATCH HYPEREDGE`, the writes, `MERGE
-   HYPEREDGE` and property indexes. Next, if needed: hyperedges inside
-   ordinary patterns and `EXISTS { … }`, statistics for the planner (the
-   index on hyperedges is used whenever it fits, without estimates), not
-   null and type rules, and splitting across cluster members.
-2. **CSV and GraphML**, if a tool needs them there.
-3. **The client SDK** (`@grafenodb/client`): methods for the routes.
-4. **Memory.** Measured, and not done: recall and context do not return
+   HYPEREDGE`, property indexes and rules. Next, if needed: hyperedges
+   inside ordinary patterns and `EXISTS { … }`.
+2. **The client SDK**: done in `@grafenodb/client` 0.3.0, published with
+   the engine release that has hyperedges.
+3. **Memory.** Measured, and not done: recall and context do not return
    hyperedges. On 92 questions about decisions, runs, sessions,
    contradictions and dates, expanding the recalled nodes' hyperedges
    answered every collective question, but the same expansion over event
@@ -269,7 +267,7 @@ silently where it can:
    What helped was packing an event with its participants and roles,
    which does not need hyperedges; that is the thing to measure next, on
    real memories.
-5. **More kinds.** Weights per participant, directed hyperedges (roles that
+4. **More kinds.** Weights per participant, directed hyperedges (roles that
    order) and hyperedges among hyperedges.
 
 ## HTTP and MCP
@@ -406,8 +404,13 @@ is postponed until a use case shows it is needed:
   they need a projection (clique, star through an event node, or a
   bipartite graph), each with different results; a caller can build any
   of them with GQ today.
-- **Statistics for the planner** and splitting `MATCH HYPEREDGE` across
-  cluster members.
+
+Where a match starts is decided without statistics: a bound participant's
+incidence list, intersected for several; but when a property index on
+the label also fits and finds fewer (a key among a busy node's
+hyperedges), the index is read instead, asked for no more than the
+incidence lists hold, so the choice never costs more than either. Against
+a label scan an index never reads more.
 
 ## Property indexes and constraints
 

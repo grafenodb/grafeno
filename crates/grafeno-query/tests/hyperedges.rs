@@ -798,6 +798,8 @@ const QUERIES: [&str; 5] = [
 fn an_index_on_hyperedges_finds_what_a_scan_finds() {
     let db = executions();
     let before: Vec<Json> = QUERIES.iter().map(|query| rows(&db, query)).collect();
+    let anchored = "MATCH (p:Agent {name: 'planner'}) MATCH HYPEREDGE h:execution [(p)] WHERE h.execution_id = 'E-7' RETURN count(h)";
+    let anchored_unindexed = profile_reads(&db, anchored);
     let created = run(
         &db,
         "CREATE INDEX FOR HYPEREDGE h:execution ON (h.execution_id)",
@@ -837,14 +839,30 @@ fn an_index_on_hyperedges_finds_what_a_scan_finds() {
             .sum()
     };
     assert!(reads(QUERIES[0]) < 10, "{}", reads(QUERIES[0]));
-    // A bound participant still anchors first; the index is not used then.
-    let anchored = "MATCH (p:Agent {name: 'planner'}) MATCH HYPEREDGE h:execution [(p)] WHERE h.execution_id = 'E-7' RETURN count(h)";
+    // A bound participant anchors first; when the index finds fewer (the
+    // planner is in all 40, the key in one), the index is read instead.
     assert!(
         plan(anchored).contains("incidence index"),
         "{}",
         plan(anchored)
     );
     assert_eq!(rows(&db, anchored), json!([[1]]));
+    // The 40 incidence keys are still read, to compare; the 40 records
+    // and their participants are not.
+    let anchored_reads = reads(anchored);
+    assert!(
+        anchored_reads * 2 < anchored_unindexed,
+        "{anchored_reads} reads with the index, {anchored_unindexed} without"
+    );
+    // The other way round, the incidence list stays: one with the idle
+    // agent, none with the key's project for it.
+    assert_eq!(
+        rows(
+            &db,
+            "MATCH (p:Agent {name: 'builder'}) MATCH HYPEREDGE h:execution [(p)] WHERE h.project = 'P-1' RETURN count(h)"
+        ),
+        json!([[10]])
+    );
 
     // It is listed, on hyperedges.
     let shown = run(&db, "SHOW INDEXES").to_json();
@@ -1101,4 +1119,14 @@ fn property_rules_and_history_on_hyperedges() {
         "CREATE CONSTRAINT FOR HYPEREDGE h:review REQUIRE h.score IS NOT NULL",
     );
     assert!(error.contains("cannot declare"), "{error}");
+}
+
+/// The reads `PROFILE` counts for a query.
+fn profile_reads(db: &Grafeno, query: &str) -> u64 {
+    run(db, &format!("PROFILE {query}"))
+        .profile
+        .unwrap()
+        .iter()
+        .filter_map(|step| step.reads)
+        .sum()
 }

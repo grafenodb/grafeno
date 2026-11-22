@@ -496,6 +496,15 @@ impl Grafeno {
             memory: tx.open_table(MEMORY).map_err(storage)?,
             indexes: tx.open_table(INDEXES).map_err(storage)?,
             index_entries: tx.open_table(INDEX_ENTRIES).map_err(storage)?,
+            hyperedges: tx
+                .open_table(crate::hyperedge::HYPEREDGES)
+                .map_err(storage)?,
+            hyperedge_incidence: tx
+                .open_table(crate::hyperedge::HYPEREDGE_INCIDENCE)
+                .map_err(storage)?,
+            hyperedge_labels: tx
+                .open_table(crate::hyperedge::HYPEREDGE_LABELS)
+                .map_err(storage)?,
             fulltext_stats: tx
                 .open_table(crate::fulltext::FULLTEXT_STATS)
                 .map_err(storage)?,
@@ -889,6 +898,11 @@ pub struct ReadTx {
     pub(crate) memory: ReadOnlyTable<RecordKey, (f32, u32, i64)>,
     pub(crate) indexes: ReadOnlyTable<(&'static str, &'static str), &'static [u8]>,
     pub(crate) index_entries: ReadOnlyTable<IndexKey, ()>,
+    /// The hyperedge records, their incidence and their labels, opened once
+    /// per snapshot as the node tables are.
+    pub(crate) hyperedges: ReadOnlyTable<RecordKey, &'static [u8]>,
+    pub(crate) hyperedge_incidence: ReadOnlyTable<AdjKey, ()>,
+    pub(crate) hyperedge_labels: ReadOnlyTable<(&'static str, &'static str, u128), ()>,
     pub(crate) fulltext_stats: ReadOnlyTable<(&'static str, &'static str), &'static [u8]>,
     pub(crate) registry: ReadOnlyTable<&'static str, &'static [u8]>,
     pub(crate) merges: ReadOnlyTable<RecordKey, &'static [u8]>,

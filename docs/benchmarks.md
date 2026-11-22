@@ -1335,14 +1335,42 @@ Building both hyperedge indexes over the 100 000 took 1.0 s. Writing
 10 000 hyperedges ran at 26 557 a second without the two indexes and
 16 731 with them. Without an index a lookup reads every hyperedge of the
 label, decoding each JSON record (five reads a hyperedge in the profile),
-which is 27 times slower than the same scan over nodes; with one it reads
-what it returns. A composite index fetches each matching record: 334 rows
+which was 27 times slower than the same scan over nodes (since 10 times:
+see the next section); with one it reads what it returns. A composite index fetches each matching record: 334 rows
 cost 4.3 ms, against 2.5 ms for nodes.
 
 The first run of this benchmark found a bug: with an index on hyperedges,
 the planner's statistics counted it but did not hold it, so they looked
 stale and were rebuilt on every query (about 70 ms each, for every
 indexed query of the namespace). Fixed, with a test, before these numbers.
+
+## Reading hyperedges without an index (`crates/grafeno-query/examples/hyperedge_scan_bench.rs`)
+
+100 000 hyperedges of three participants among 1 000 agents, and 100 000
+nodes beside them; the best of five runs. Release build, in memory,
+2026-11-22, one run per build, the three builds alternated on one machine.
+
+| Read | Before | Tables opened once | And participants read on demand |
+| --- | --- | --- | --- |
+| Every hyperedge by id | 3.31 µs each | 1.68 µs | 1.65 µs |
+| Every hyperedge in pages of 1 000 | 1.30 µs | 1.32 µs | 1.30 µs |
+| `MATCH HYPEREDGE h:execution WHERE h.execution_id = …` | 9.54 µs a hyperedge | 7.92 µs | 3.69 µs |
+| The same scan over nodes | 0.37 µs a node | 0.37 µs | 0.39 µs |
+
+Two costs had nothing to do with hyperedges themselves: each read of one
+opened two tables (a snapshot now opens the three hyperedge tables once,
+as it does those of nodes), and matching a pattern read every
+participant's node, even when the pattern named none (now only the nodes
+of participants a member may take, when it is first needed). What is left
+is decoding the record, JSON like a node's but with its participants, and
+the rows themselves: a label scan stays ten times a node scan, and an
+index is the answer for lookups by property.
+
+A participant in 300 hyperedges looked up with a key (`MATCH (a:Agent {n:
+77}) MATCH HYPEREDGE h:execution [(a)] WHERE h.execution_id = …`): 2.81
+ms by its incidence list, 1.33 ms once the key has an index, because the
+match then reads the one record the index finds instead of 300 (most of
+what is left is finding the agent, by scanning its label).
 
 ## Hyperedges in recall: an experiment (`crates/grafeno-memory/examples/hyperedge_recall_eval.rs`)
 

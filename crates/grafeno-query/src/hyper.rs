@@ -205,6 +205,7 @@ impl Context<'_> {
         def: &IndexDef,
         prefix: &[serde_json::Value],
         range: &IndexRange,
+        limit: usize,
     ) -> Result<Vec<HyperEdgeId>, QueryError> {
         if self.blind() {
             return Ok(Vec::new());
@@ -220,16 +221,11 @@ impl Context<'_> {
             return Ok(Vec::new());
         }
         let ids = match self.write {
-            Some(tx) => {
-                tx.index_seek_hyperedges(self.ns, &def.name, prefix, Some(range), usize::MAX)?
+            Some(tx) => tx.index_seek_hyperedges(self.ns, &def.name, prefix, Some(range), limit)?,
+            None => {
+                self.read
+                    .index_seek_hyperedges(self.ns, &def.name, prefix, Some(range), limit)?
             }
-            None => self.read.index_seek_hyperedges(
-                self.ns,
-                &def.name,
-                prefix,
-                Some(range),
-                usize::MAX,
-            )?,
         };
         self.budget.read(ids.len().max(1))?;
         Ok(ids)
@@ -286,7 +282,7 @@ fn candidates(
                 let (def, prefix, seek) =
                     index_seek(pattern, &bound, conditions, &ctx.info.indexes)
                         .expect("the anchor found it");
-                match index_candidates(ctx, def, &prefix, seek, row)? {
+                match index_candidates(ctx, def, &prefix, seek, row, usize::MAX)? {
                     Some(ids) => ids,
                     // Values an index cannot hold (a list, a time): by label.
                     None => label_candidates(ctx, &labels)?,
@@ -345,7 +341,20 @@ fn candidates(
                         break;
                     }
                 }
-                common.unwrap_or_default().into_iter().collect()
+                let common: Vec<HyperEdgeId> = common.unwrap_or_default().into_iter().collect();
+                // A property index that finds fewer (a unique key among a
+                // busy node's hyperedges) is read instead: asked for no more
+                // than the incidence lists hold, it never costs more.
+                if common.len() > 1
+                    && let Some((def, prefix, seek)) =
+                        index_seek(pattern, &bound, conditions, &ctx.info.indexes)
+                    && let Some(fewer) =
+                        index_candidates(ctx, def, &prefix, seek, row, common.len())?
+                    && fewer.len() < common.len()
+                {
+                    return Ok(fewer);
+                }
+                common
             }
             Anchor::Labels | Anchor::All => label_candidates(ctx, &labels)?,
         },
@@ -373,15 +382,17 @@ fn label_candidates(
     Ok(ids.into_iter().collect())
 }
 
-/// The hyperedges index `def` finds for this row, in id order; `None`
-/// when its values cannot be looked up. A superset: what it finds is
-/// checked against the pattern and `WHERE` afterwards.
+/// The hyperedges index `def` finds for this row, in id order, up to
+/// `limit` of them (more than `limit` gives `limit`); `None` when its
+/// values cannot be looked up. A superset: what it finds is checked against
+/// the pattern and `WHERE` afterwards.
 fn index_candidates(
     ctx: &Context,
     def: &IndexDef,
     prefix: &[(String, &Expr)],
     seek: crate::plan::Seek,
     row: &Row,
+    limit: usize,
 ) -> Result<Option<Vec<HyperEdgeId>>, QueryError> {
     let Some(ranges) = crate::plan::seek_ranges(ctx, seek, row)? else {
         return Ok(None);
@@ -399,9 +410,12 @@ fn index_candidates(
     }
     let mut ids = BTreeSet::new();
     for range in &ranges {
-        ids.extend(ctx.hyperedge_index_seek(def, &values, range)?);
+        ids.extend(ctx.hyperedge_index_seek(def, &values, range, limit)?);
+        if ids.len() >= limit {
+            break;
+        }
     }
-    Ok(Some(ids.into_iter().collect()))
+    Ok(Some(ids.into_iter().take(limit).collect()))
 }
 
 /// Rows extending `row` with each match of `pattern`. `filter` (the
@@ -459,15 +473,13 @@ fn assignments(
     edge: &HyperEdge,
     row: &Row,
 ) -> Result<Vec<Bindings>, QueryError> {
-    // The nodes, read once each (hidden ones are absent: the hyperedge
-    // would not be visible either).
-    let mut nodes: Vec<(NodeId, Arc<Node>)> = Vec::new();
-    for id in edge.nodes() {
-        if let Some(node) = ctx.node(id)? {
-            nodes.push((id, Arc::new(node)));
-        }
+    // No members: one way, binding nothing, and no node to read.
+    if pattern.members.is_empty() {
+        return Ok(vec![Vec::new()]);
     }
-    let node_of = |id: NodeId| nodes.iter().find(|(n, _)| *n == id).map(|(_, node)| node);
+    // The nodes a member may take, read once each when first needed
+    // (hidden ones are absent: the hyperedge would not be visible either).
+    let mut nodes: Vec<(NodeId, Option<Arc<Node>>)> = Vec::new();
     // For each member, the participants it may take.
     let mut options: Vec<Vec<usize>> = Vec::with_capacity(pattern.members.len());
     for member in &pattern.members {
@@ -490,7 +502,15 @@ fn assignments(
             {
                 continue;
             }
-            let Some(node) = node_of(participant.node) else {
+            let at = match nodes.iter().position(|(n, _)| *n == participant.node) {
+                Some(at) => at,
+                None => {
+                    let read = ctx.node(participant.node)?.map(Arc::new);
+                    nodes.push((participant.node, read));
+                    nodes.len() - 1
+                }
+            };
+            let Some(node) = &nodes[at].1 else {
                 continue;
             };
             if node_fits(ctx, node, &member.node, row)? {
@@ -502,6 +522,12 @@ fn assignments(
         }
         options.push(fits);
     }
+    let node_of = |id: NodeId| {
+        nodes
+            .iter()
+            .find(|(n, _)| *n == id)
+            .and_then(|(_, node)| node.as_ref())
+    };
     let mut found: Vec<Bindings> = Vec::new();
     let mut seen: HashSet<Vec<NodeId>> = HashSet::new();
     let mut chosen: Vec<usize> = Vec::with_capacity(options.len());
