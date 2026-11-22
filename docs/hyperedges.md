@@ -8,15 +8,17 @@ participants by binary edges.
 
 The model, its storage and indexes and the Rust API of the `grafeno`
 crate came first; GQ reads and writes them with `MATCH HYPEREDGE`, `CREATE
-HYPEREDGE`, `SET`, `DELETE`, `DETACH DELETE` and `RETRACT` (see
+HYPEREDGE`, `MERGE HYPEREDGE`, `SET`, `DELETE`, `DETACH DELETE` and
+`RETRACT` (see
 [query-language.md](query-language.md#hyperedges)), so does every place
 that runs GQ (the shell, `POST /v1/{ns}/query`, the MCP `query` tool). The
-HTTP API has routes of its own for them and MCP has three tools
-([below](#http-and-mcp)).
+HTTP API has routes of its own for them, batches take them, and MCP has
+three tools ([below](#http-and-mcp)). Property indexes and unique or key
+constraints apply to them ([below](#property-indexes-and-constraints)).
 The replication log carries them, so cluster members and read replicas
 hold them too, and the change log and event subscriptions record their
 changes, and exports (JSON lines) carry them. Recall and context do not
-know hyperedges yet (see [Limits](#limits)).
+return them, by measurement (see [Limits](#limits)).
 
 ## When to use one
 
@@ -232,18 +234,23 @@ their nodes exist. `MergeReport` counts `hyperedges_moved` and
 
 ## Limits
 
-These are not done in this stage, and the engine refuses rather than
-dropping data silently where it can:
+These are not done, and the engine refuses rather than dropping data
+silently where it can:
 
 - **CSV and GraphML** leave hyperedges out; JSON lines exports and
   backups keep them.
-- **Constraints, property indexes and property history** do not apply to
-  hyperedges.
-- **GQ** reads and writes them with clauses of their own; ordinary
-  patterns, `MERGE`, pattern predicates and graph algorithms do not see
-  them, and a statement with them is not split across cluster members.
-- **Recall and context** do not know hyperedges: `find_group` and GQ read
-  them.
+- **Not null, type and functional rules**, fuzzy, full-text and vector
+  indexes, and property history do not apply to hyperedges; property
+  indexes and unique or key constraints do (see below).
+- **GQ** reads and writes them with clauses of their own (`MATCH`,
+  `CREATE` and `MERGE HYPEREDGE`); ordinary patterns, paths and graph
+  algorithms do not see them, and a statement with them is not split
+  across cluster members. Counting or testing them per row is written
+  with a subquery (see below).
+- **Recall and context** do not return hyperedges, by measurement: event
+  nodes answer as well (see "Next stages"). `find_group` and GQ read them.
+- **The memory palace** does not see them: they are not anchored, and
+  entering, walking and reflecting on a room leave them out.
 
 ## Next stages
 
