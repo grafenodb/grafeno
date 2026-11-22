@@ -137,7 +137,8 @@ impl IndexDef {
     }
 
     /// An index on properties of hyperedges with `label`, named like
-    /// [`IndexDef::composite`]: `execution_id`, `decision_project_status`.
+    /// [`IndexDef::composite`] with `hyperedge` after the properties:
+    /// `execution_id_hyperedge`, `decision_project_status_hyperedge`.
     pub fn on_hyperedges(label: &str, keys: &[&str]) -> Self {
         let mut def = Self {
             hyperedges: true,
@@ -159,10 +160,15 @@ impl IndexDef {
     }
 
     /// The name given when none is: labels, then properties, then
+    /// `hyperedge` for an index on hyperedges (so that it is not the name
+    /// an index on nodes or edges of the same label would get), then
     /// `unique`, `key` or `fuzzy`, joined by `_`.
     pub fn generated_name(&self) -> String {
         let mut parts: Vec<&str> = self.labels();
         parts.extend(self.keys());
+        if self.hyperedges {
+            parts.push("hyperedge");
+        }
         if self.fuzzy {
             parts.push("fuzzy");
         } else if self.fulltext.is_some() {

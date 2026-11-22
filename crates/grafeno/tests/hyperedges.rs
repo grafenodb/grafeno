@@ -1495,7 +1495,18 @@ fn property_indexes_follow_every_hyperedge_write() {
         .unwrap();
     // Filled from what exists, then kept by each write.
     let def = grafeno::IndexDef::on_hyperedges("execution", &["execution_id"]);
-    assert_eq!(def.name, "execution_execution_id");
+    assert_eq!(def.name, "execution_execution_id_hyperedge");
+    // Not the name an index on nodes or edges labeled `execution` gets.
+    assert_ne!(
+        def.name,
+        grafeno::IndexDef::composite("execution", &["execution_id"]).name
+    );
+    let mut unique = grafeno::IndexDef::on_hyperedges("execution", &["execution_id"]);
+    unique.unique = true;
+    assert_eq!(
+        unique.generated_name(),
+        "execution_execution_id_hyperedge_unique"
+    );
     assert_eq!(def.kind(), grafeno::RecordKind::HyperEdge);
     let filled = db.write(|tx| tx.create_index(NS, def.clone())).unwrap();
     assert_eq!(filled, 1);
@@ -1840,6 +1851,6 @@ fn a_hyperedge_index_keeps_the_planner_statistics_fresh() {
     let first = db.begin_read().unwrap().planner_stats(NS).unwrap().unwrap();
     let second = db.begin_read().unwrap().planner_stats(NS).unwrap().unwrap();
     assert!(Arc::ptr_eq(&first, &second));
-    assert!(first.index("execution_execution_id").is_none());
+    assert!(first.index("execution_execution_id_hyperedge").is_none());
     assert!(first.index("Agent_name").is_some());
 }
