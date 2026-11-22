@@ -267,8 +267,8 @@ impl IndexDef {
     }
 }
 
-/// The kind of record an index holds.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// The kind of record an index or a property rule is on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum RecordKind {
     Node,
     Edge,
@@ -1406,8 +1406,8 @@ impl WriteTx {
     }
 
     /// [`WriteTx::index_edge`] for a hyperedge: a retracted one keeps its
-    /// entries but no longer holds its unique values. A current one must
-    /// have the properties of the keys (required indexes) on its label.
+    /// entries but no longer holds its unique values. Keys (required
+    /// indexes) are property rules, checked with the others.
     pub(crate) fn index_hyperedge(
         &mut self,
         ns: &str,
@@ -1423,24 +1423,6 @@ impl WriteTx {
             .map(|edge| edge.id.as_u128())
             .expect("a hyperedge to index");
         let live = edge.is_some_and(|edge| !edge.is_retracted());
-        if live && !self.applying {
-            let edge = edge.expect("live");
-            let labels = std::slice::from_ref(&edge.label);
-            for key in defs
-                .iter()
-                .filter(|def| def.hyperedges && def.required && def.covers(labels))
-            {
-                if let Some(missing) = missing_key(key, &edge.props) {
-                    return Err(Error::Invalid(format!(
-                        "{}: hyperedge {} has no {missing} (({}) is a key of {}: each needs a boolean, a number or a string)",
-                        key.name,
-                        edge.id,
-                        key.keys().join(", "),
-                        key.describe()
-                    )));
-                }
-            }
-        }
         let new_labels = edge.map(|edge| vec![edge.label.clone()]);
         let old_labels = previous.map(|edge| vec![edge.label.clone()]);
         self.index_record(

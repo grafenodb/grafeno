@@ -2039,3 +2039,86 @@ fn graphml_carries_hyperedges() {
         .unwrap();
     assert!(!String::from_utf8(out).unwrap().contains("hyperedge"));
 }
+
+#[test]
+fn property_rules_reach_replicas_and_keep_history() {
+    let leader = Grafeno::in_memory().unwrap();
+    leader.enable_replication_log().unwrap();
+    let start = leader.begin_read().unwrap().log_position().unwrap().last;
+    let n = nodes(&leader, NS, 2);
+    leader
+        .write(|tx| {
+            tx.create_constraint(
+                NS,
+                grafeno::Constraint::Functional {
+                    name: "status_history".into(),
+                    label: "decision".into(),
+                    key: "status".into(),
+                    hyperedges: true,
+                },
+            )
+        })
+        .unwrap();
+    let id = leader
+        .write(|tx| {
+            tx.create_hyperedge(
+                NS,
+                NewHyperEdge::new("decision")
+                    .node(n[0])
+                    .node(n[1])
+                    .prop("status", "open"),
+            )
+        })
+        .unwrap();
+    leader
+        .write(|tx| {
+            let mut props = grafeno::Props::new();
+            props.insert("status".into(), "done".into());
+            tx.set_hyperedge_props(NS, id, props)
+        })
+        .unwrap();
+    let history = leader
+        .begin_read()
+        .unwrap()
+        .hyperedge_property_history(NS, id, "status")
+        .unwrap();
+    assert_eq!(history.len(), 1);
+    assert_eq!(history[0].value, serde_json::json!("open"));
+    // The entry declaring a rule on hyperedges has format 8.
+    let entries = leader
+        .begin_read()
+        .unwrap()
+        .log_entries(start, usize::MAX)
+        .unwrap();
+    let declaring = entries
+        .iter()
+        .find(|(_, e)| {
+            e.ops
+                .iter()
+                .any(|op| matches!(op, grafeno::Op::Constraint { .. }))
+        })
+        .unwrap();
+    assert_eq!(declaring.1.format, 8);
+    let member = Grafeno::in_memory().unwrap();
+    member.apply_entries(&entries).unwrap();
+    assert_eq!(
+        member.begin_read().unwrap().constraints(NS).unwrap(),
+        leader.begin_read().unwrap().constraints(NS).unwrap()
+    );
+    // Both kinds at once are refused.
+    let error = leader
+        .write(|tx| {
+            tx.create_constraint(
+                NS,
+                grafeno::Constraint::Exists {
+                    name: "both".into(),
+                    label: "x".into(),
+                    key: "k".into(),
+                    edges: true,
+                    hyperedges: true,
+                },
+            )
+        })
+        .unwrap_err();
+    assert!(error.to_string().contains("not two of them"), "{error}");
+}

@@ -1056,11 +1056,6 @@ impl Parser<'_> {
             def.hyperedges = hyper;
             return Ok(Some(Schema::Create { def, if_not_exists }));
         }
-        if hyper {
-            return Err(self.error(
-                "a constraint on hyperedges is IS UNIQUE or IS KEY: REQUIRE h.key IS UNIQUE",
-            ));
-        }
         let one = |parser: &Self, rule: &str| -> Result<(String, String), QueryError> {
             match (labels.as_slice(), keys.as_slice()) {
                 ([label], [key]) => Ok((label.clone(), key.clone())),
@@ -1073,7 +1068,12 @@ impl Parser<'_> {
                 return Err(self.error("IS FUNCTIONAL is on node properties"));
             }
             let (label, key) = one(self, "IS FUNCTIONAL")?;
-            grafeno::Constraint::Functional { name, label, key }
+            grafeno::Constraint::Functional {
+                name,
+                label,
+                key,
+                hyperedges: hyper,
+            }
         } else if self.at_keyword("NOT") && self.keyword_at(1, "NULL") {
             self.position += 2;
             let (label, key) = one(self, "IS NOT NULL")?;
@@ -1082,6 +1082,7 @@ impl Parser<'_> {
                 label,
                 key,
                 edges,
+                hyperedges: hyper,
             }
         } else if self.eat_keyword("TYPED")
             || (self.peek() == &Token::Colon && self.peek_at(1) == &Token::Colon && {
@@ -1107,6 +1108,7 @@ impl Parser<'_> {
                 key,
                 of,
                 edges,
+                hyperedges: hyper,
             }
         } else {
             return Err(self.unexpected("UNIQUE, KEY, NOT NULL, :: type or FUNCTIONAL after IS"));

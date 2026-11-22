@@ -679,7 +679,23 @@ impl WriteTx {
                 .insert((ns, label, id), ())
                 .map_err(storage)?;
         }
-        self.index_hyperedge(ns, Some(edge), previous)
+        self.index_hyperedge(ns, Some(edge), previous)?;
+        if let Some(old) = previous
+            && !self.applying
+        {
+            self.record_hyperedge_history(ns, edge, old)?;
+        }
+        // Not null, types and keys: now, or at the end of a statement.
+        let defs = self.index_defs(ns)?;
+        self.check_rules_later(
+            ns,
+            crate::index::RecordKind::HyperEdge,
+            id,
+            &defs,
+            std::slice::from_ref(&edge.label),
+            &edge.props,
+            !edge.is_retracted(),
+        )
     }
 
     /// Removes the hyperedge record and its index entries.

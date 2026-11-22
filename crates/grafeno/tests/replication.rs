@@ -90,6 +90,7 @@ fn write_everything(db: &Grafeno) -> (NodeId, NodeId) {
                     name: "Person_city".into(),
                     label: "Person".into(),
                     key: "city".into(),
+                    hyperedges: false,
                 },
             )?;
             tx.create_constraint(

@@ -1453,7 +1453,7 @@ pub struct WriteTx {
     pub(crate) constraint_log: Vec<crate::constraints::ConstraintEvent>,
     /// Records whose property rules (16.5) are checked at
     /// [`WriteTx::check_deferred`] instead of at each write, when on.
-    pub(crate) deferred_rules: Option<Vec<(String, bool, u128)>>,
+    pub(crate) deferred_rules: Option<Vec<(String, crate::index::RecordKind, u128)>>,
     /// The event subscriptions of a namespace, read once (16.10).
     pub(crate) subscription_cache: Option<(String, Arc<Vec<crate::subscriptions::Subscription>>)>,
     /// Whether commits append to the change log.
@@ -2154,7 +2154,15 @@ impl WriteTx {
         if !self.applying {
             self.record_history(ns, node, previous)?;
         }
-        self.check_rules_later(ns, false, id, &defs, &node.labels, &node.props, true)?;
+        self.check_rules_later(
+            ns,
+            crate::index::RecordKind::Node,
+            id,
+            &defs,
+            &node.labels,
+            &node.props,
+            true,
+        )?;
         let op = if previous.is_some() {
             ChangeOp::Updated
         } else {
@@ -2227,7 +2235,15 @@ impl WriteTx {
         self.index_edge_with(&defs, ns, Some(edge), previous.as_ref())?;
         let labels = [edge.label.clone()];
         let live = !edge.is_retracted();
-        self.check_rules_later(ns, true, id, &defs, &labels, &edge.props, live)?;
+        self.check_rules_later(
+            ns,
+            crate::index::RecordKind::Edge,
+            id,
+            &defs,
+            &labels,
+            &edge.props,
+            live,
+        )?;
         self.log_edge(
             ns,
             edge,

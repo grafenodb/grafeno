@@ -305,6 +305,7 @@ fn functional_properties_keep_their_history() {
                     name: "city".into(),
                     label: "Person".into(),
                     key: "city".into(),
+                    hyperedges: false,
                 },
             )?;
             tx.create_node(NS, NewNode::new("Person").prop("city", "Lima"))

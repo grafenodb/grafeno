@@ -697,6 +697,10 @@ impl WriteTx {
         let hyper = |op: &Op| match op {
             Op::HyperEdge { .. } => true,
             Op::Index { def: Some(def), .. } => def.get("hyperedges").is_some(),
+            Op::Constraint {
+                constraint: Some(constraint),
+                ..
+            } => constraint.get("hyperedges").is_some(),
             _ => false,
         };
         let format = if ops.iter().any(hyper) {

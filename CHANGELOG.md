@@ -30,6 +30,14 @@ an experiment found event nodes answer as well (docs/benchmarks.md).
   only memories overtaken by their words. A `supersedes` fact that no
   longer holds marks nothing. `knowledge::replaced_by` gives what
   replaces a memory at a time.
+- **Added**: not null, type and functional rules on hyperedges (`CREATE
+  CONSTRAINT FOR HYPEREDGE h:label REQUIRE h.key IS NOT NULL | IS :: type
+  | IS FUNCTIONAL`, `hyperedges` on `Constraint::Exists`, `Typed` and
+  `Functional`), checked like those on nodes (at the end of a GQ
+  statement); `hyperedge_property_history`, GQ `history(h, key)` and
+  `GET /v1/{ns}/hyperedges/{id}/history/{key}`. `Constraint::kind` gives
+  the record kind; a replication entry declaring a rule on hyperedges has
+  format 8. Code that builds these variants adds the field.
 - **Added**: CSV and GraphML carry hyperedges: a third CSV file
   (`export_hyperedges_csv`, `import_hyperedges_csv`,
   `/v1/{ns}/export/hyperedges.csv` and `/import/hyperedges.csv`,

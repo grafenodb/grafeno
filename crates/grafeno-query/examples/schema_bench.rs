@@ -30,6 +30,7 @@ fn schema(db: &Grafeno) {
                 label: "knows".into(),
                 key: "since".into(),
                 edges: true,
+                hyperedges: false,
             },
         )?;
         tx.create_constraint(
@@ -40,6 +41,7 @@ fn schema(db: &Grafeno) {
                 key: "age".into(),
                 of: PropertyType::Integer,
                 edges: false,
+                hyperedges: false,
             },
         )
     })

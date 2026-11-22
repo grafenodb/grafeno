@@ -458,6 +458,7 @@ Los ids son UUID. Los tiempos en las respuestas son microsegundos desde la
 | `GET`    | `/v1/{ns}/constraints`                |                                                         | restricciones sobre hechos y propiedades: uno por origen, funcional, no nulo, tipo (`CREATE CONSTRAINT` en GQ; las restricciones de unicidad y clave son índices) |
 | `GET`    | `/v1/{ns}/contradictions`             | `?limit=`                                               | `[{constraint, action, new_edge, old_edge, replacement, at, by}]`, las más recientes primero |
 | `GET`    | `/v1/{ns}/nodes/{id}/history/{key}`   |                                                         | `[{value, from, to, by}]`: valores anteriores de una propiedad funcional |
+| `GET`    | `/v1/{ns}/hyperedges/{id}/history/{key}` |                                                      | lo mismo, de una hiperarista |
 | `GET`    | `/v1/{ns}/export.graphml`             |                                                         | el namespace como GraphML (sin los hechos retractados) |
 | `GET`    | `/v1/{ns}/export/nodes.csv`, `/export/edges.csv`, `/export/hyperedges.csv` |                    | como CSV, con cabeceras tipadas (`name:int`, `:LABEL`); las hiperaristas con sus participantes en JSON en `:PARTICIPANTS` |
 | `POST`   | `/v1/{ns}/import/graphml`, `/import/nodes.csv`, `/import/edges.csv`, `/import/hyperedges.csv` | el archivo (admin) | `{nodes, edges, hyperedges, failed, errors}` (`hyperedges` si se escribió alguna); los ids de Grafeno actualizan, los demás ids se asignan a nodos nuevos |

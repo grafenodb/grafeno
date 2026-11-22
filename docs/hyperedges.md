@@ -237,9 +237,9 @@ their nodes exist. `MergeReport` counts `hyperedges_moved` and
 These are not done, and the engine refuses rather than dropping data
 silently where it can:
 
-- **Not null, type and functional rules**, fuzzy, full-text and vector
-  indexes, and property history do not apply to hyperedges; property
-  indexes and unique or key constraints do (see below).
+- **Fuzzy, full-text and vector indexes** do not apply to hyperedges;
+  property indexes, unique and key constraints, not null, type and
+  functional rules and property history do (see below).
 - **GQ** reads and writes them with clauses of their own (`MATCH`,
   `CREATE` and `MERGE HYPEREDGE`); ordinary patterns, paths and graph
   algorithms do not see them, and a statement with them is not split
@@ -432,12 +432,20 @@ UNIQUE`, `REQUIRE (h.a, h.b) IS KEY`). Uniqueness counts every hyperedge
 that is not retracted, invalidated ones included: an invalidated
 hyperedge was true, so its key stays taken, while a retracted one never
 was. A key also needs every current hyperedge of the label to have the
-properties. Not null, type and functional rules, fuzzy, full-text and
-vector indexes are not offered on hyperedges.
+properties.
+
+Not null, type and functional rules hold too (`REQUIRE h.status IS NOT
+NULL`, `IS :: INTEGER`, `IS FUNCTIONAL`; in Rust, `hyperedges: true` on
+`Constraint::Exists`, `Typed` and `Functional`), checked at each write or
+at the end of a GQ statement, and against the data already there when
+declared. A functional property's earlier values are kept with when they
+held: `ReadTx::hyperedge_property_history`, GQ `history(h, key)`, `GET
+/v1/{ns}/hyperedges/{id}/history/{key}`. Fuzzy, full-text and vector
+indexes are not offered on hyperedges.
 
 The definition is stored with the others, so the layout stays 19; a
-replication entry declaring one has format 8 and an export holding one has
-version 3, so that 0.4 refuses them instead of taking it for an index on
+replication entry declaring one (or a rule on hyperedges) has format 8
+and an export holding one has version 3, so that 0.4 refuses them instead of taking it for an index on
 nodes.
 
 ## Replication and clusters

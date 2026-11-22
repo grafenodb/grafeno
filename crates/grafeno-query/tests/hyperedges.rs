@@ -904,8 +904,8 @@ fn constraints_on_hyperedges() {
     );
     for (query, expected) in [
         (
-            "CREATE CONSTRAINT FOR HYPEREDGE h:run REQUIRE h.a IS NOT NULL",
-            "IS UNIQUE or IS KEY",
+            "CREATE CONSTRAINT FOR HYPEREDGE h:run REQUIRE (h.a, h.b) IS NOT NULL",
+            "one property of one label",
         ),
         (
             "CREATE FUZZY INDEX FOR HYPEREDGE h:run ON (h.a)",
@@ -1038,4 +1038,67 @@ fn merge_does_not_duplicate_what_the_caller_cannot_see() {
     )
     .unwrap();
     assert_eq!(other.stats.hyperedges_created, 1);
+}
+
+#[test]
+fn property_rules_and_history_on_hyperedges() {
+    let db = team();
+    run(
+        &db,
+        "CREATE CONSTRAINT FOR HYPEREDGE h:decision REQUIRE h.status IS NOT NULL",
+    );
+    run(
+        &db,
+        "CREATE CONSTRAINT FOR HYPEREDGE h:decision REQUIRE h.votes IS :: INTEGER",
+    );
+    run(
+        &db,
+        "CREATE CONSTRAINT FOR HYPEREDGE h:decision REQUIRE h.status IS FUNCTIONAL",
+    );
+    let shown = run(&db, "SHOW CONSTRAINTS").to_json().to_string();
+    assert!(shown.contains("decision_status_not_null"), "{shown}");
+    assert!(shown.contains("\"hyperedges\""), "{shown}");
+    let bound = "MATCH (p:Agent {name: 'planner'}), (c:Agent {name: 'checker'})";
+    // Without the property, or of another type: refused.
+    let error = fails(
+        &db,
+        &format!("{bound} CREATE HYPEREDGE :decision {{votes: 1}} [(p), (c)]"),
+    );
+    assert!(error.contains("has no status"), "{error}");
+    let error = fails(
+        &db,
+        &format!("{bound} CREATE HYPEREDGE :decision {{status: 'x', votes: 'many'}} [(p), (c)]"),
+    );
+    assert!(error.contains("not of type INTEGER"), "{error}");
+    // A statement is checked at its end: MERGE may set it on creation.
+    let merged = run(
+        &db,
+        &format!(
+            "{bound} MERGE HYPEREDGE h:decision {{key: 'D-7'}} [(p), (c)]
+             ON CREATE SET h.status = 'proposed' RETURN h.status"
+        ),
+    );
+    assert_eq!(merged.stats.hyperedges_created, 1);
+    // A functional property keeps what it was.
+    run(
+        &db,
+        "MATCH HYPEREDGE h:decision {key: 'D-7'} SET h.status = 'approved'",
+    );
+    let history = rows(
+        &db,
+        "MATCH HYPEREDGE h:decision {key: 'D-7'} RETURN [e IN history(h, 'status') | e.value]",
+    );
+    assert_eq!(history, json!([[["proposed"]]]));
+    // Removing it is refused, as on nodes.
+    let error = fails(
+        &db,
+        "MATCH HYPEREDGE h:decision {key: 'D-7'} REMOVE h.status",
+    );
+    assert!(error.contains("has no status"), "{error}");
+    // A rule the data already breaks is not declared.
+    let error = fails(
+        &db,
+        "CREATE CONSTRAINT FOR HYPEREDGE h:review REQUIRE h.score IS NOT NULL",
+    );
+    assert!(error.contains("cannot declare"), "{error}");
 }

@@ -260,10 +260,6 @@ fn plan_info_with(read: &ReadTx, ns: &str, building: bool) -> Result<PlanInfo, Q
 
 const CONSTRAINT_COLUMNS: [&str; 6] = ["name", "kind", "label", "property", "rule", "on"];
 
-fn on(edges: bool) -> Value {
-    Value::Str(if edges { "edges" } else { "nodes" }.into())
-}
-
 /// `nodes`, `edges` or `hyperedges`: what an index holds.
 fn on_kind(def: &IndexDef) -> Value {
     Value::Str(format!("{}s", def.kind().name()))
@@ -271,7 +267,7 @@ fn on_kind(def: &IndexDef) -> Value {
 
 fn constraint_row(constraint: &grafeno::Constraint) -> Vec<Value> {
     let mut row = constraint_cells(constraint);
-    row.push(on(constraint.on_edges()));
+    row.push(Value::Str(format!("{}s", constraint.kind().name())));
     row
 }
 
@@ -309,7 +305,9 @@ fn constraint_cells(constraint: &grafeno::Constraint) -> Vec<Value> {
                 format!("{on_conflict:?}").to_lowercase()
             )),
         ],
-        grafeno::Constraint::Functional { name, label, key } => vec![
+        grafeno::Constraint::Functional {
+            name, label, key, ..
+        } => vec![
             Value::Str(name.clone()),
             Value::Str("functional".into()),
             Value::Str(label.clone()),
@@ -3470,12 +3468,16 @@ fn explain(
             ),
             Schema::Constrain { constraint, .. } => format!(
                 "constraint on {}{}, checked against the current {}",
-                if constraint.on_edges() { "[:" } else { ":" },
+                match constraint.kind() {
+                    grafeno::RecordKind::Edge => "[:",
+                    grafeno::RecordKind::HyperEdge => "hyperedges :",
+                    grafeno::RecordKind::Node => ":",
+                },
                 constraint.label(),
-                if constraint.on_edges() {
-                    "facts"
-                } else {
-                    "nodes"
+                match constraint.kind() {
+                    grafeno::RecordKind::Edge => "facts",
+                    grafeno::RecordKind::HyperEdge => "hyperedges",
+                    grafeno::RecordKind::Node => "nodes",
                 }
             ),
             Schema::Drop { name, .. } => format!("drop {name}"),

@@ -651,10 +651,11 @@ fn hidden_match(
         };
         if edge.participants == wanted
             && holds.accepts(&edge)
-            && new
-                .props
-                .iter()
-                .all(|(key, value)| edge.props.get(key).is_some_and(|stored| same(stored, value)))
+            && new.props.iter().all(|(key, value)| {
+                edge.props
+                    .get(key)
+                    .is_some_and(|stored| same(stored, value))
+            })
         {
             return Ok(true);
         }

@@ -448,6 +448,7 @@ requests accept either that or an ISO 8601 string (`2024-05-01`,
 | `GET`    | `/v1/{ns}/constraints`                |                                                         | constraints on facts and on properties: one per source, functional, not null, type (`CREATE CONSTRAINT` in GQ; unique and key constraints are indexes) |
 | `GET`    | `/v1/{ns}/contradictions`             | `?limit=`                                               | `[{constraint, action, new_edge, old_edge, replacement, at, by}]`, newest first |
 | `GET`    | `/v1/{ns}/nodes/{id}/history/{key}`   |                                                         | `[{value, from, to, by}]`: earlier values of a functional property |
+| `GET`    | `/v1/{ns}/hyperedges/{id}/history/{key}` |                                                      | the same, of a hyperedge |
 | `GET`    | `/v1/{ns}/export.graphml`             |                                                         | the namespace as GraphML (retracted facts left out) |
 | `GET`    | `/v1/{ns}/export/nodes.csv`, `/export/edges.csv`, `/export/hyperedges.csv` |                    | as CSV, with typed headers (`name:int`, `:LABEL`); hyperedges with their participants as JSON in `:PARTICIPANTS` |
 | `POST`   | `/v1/{ns}/import/graphml`, `/import/nodes.csv`, `/import/edges.csv`, `/import/hyperedges.csv` | the file (admin) | `{nodes, edges, hyperedges, failed, errors}` (`hyperedges` when some were written); Grafeno ids update, other ids map to new nodes |

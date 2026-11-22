@@ -959,8 +959,12 @@ CREATE CONSTRAINT FOR (n:Person|Company) REQUIRE n.name IS UNIQUE;    // across 
   `(h.a, h.b) IS KEY`) the unique and key rules hold the same way: a
   retracted hyperedge holds no value, an invalidated one still does (it
   was true; `MERGE HYPEREDGE` on the key then finds it is history and
-  the write that would repeat the value fails). `IS NOT NULL`, types and
-  `IS FUNCTIONAL` are not offered on hyperedges yet.
+  the write that would repeat the value fails). `IS NOT NULL`, `IS ::
+  type` and `IS FUNCTIONAL` hold on hyperedges as on nodes: a statement is
+  checked at its end (`MERGE HYPEREDGE … ON CREATE SET h.status = …`
+  passes a not null rule), and `history(h, 'status')` lists a functional
+  property's earlier values (`GET /v1/{ns}/hyperedges/{id}/history/{key}`
+  over HTTP).
 - Declaring a rule checks the data already there: the first records that
   break it are named, and nothing is declared.
 - Writes are checked as they go, except in a query, where a statement's

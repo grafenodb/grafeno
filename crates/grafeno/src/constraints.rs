@@ -15,12 +15,18 @@
 //! with `unique` and `required`). Writes check them as they go, or, once
 //! [`WriteTx::defer_checks`] is called, when [`WriteTx::check_deferred`]
 //! is (a query checks each statement's end state).
+//!
+//! Property rules and functional properties apply to hyperedges too, with
+//! `hyperedges` set: a hyperedge's earlier values are kept under its id.
 
-use grafeno_core::{Edge, EdgeId, Error, Node, NodeId, Props, Result, Timestamp, Value};
+use grafeno_core::{
+    Edge, EdgeId, Error, HyperEdge, HyperEdgeId, Node, NodeId, Props, Result, Timestamp, Value,
+};
 use redb::{ReadableTable, TableDefinition};
 use serde::{Deserialize, Serialize};
 
 use crate::db::{ReadTx, WriteTx};
+use crate::index::RecordKind;
 use crate::store::{decode, encode, storage};
 use crate::traverse::{Direction, EdgeFilter};
 
@@ -137,6 +143,9 @@ pub enum Constraint {
         name: String,
         label: String,
         key: String,
+        /// On hyperedges with the label instead of nodes.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        hyperedges: bool,
     },
     /// `CREATE CONSTRAINT FOR (n:Person) REQUIRE n.email IS NOT NULL`:
     /// every node (or edge, with `edges`) with the label has the property,
@@ -147,6 +156,9 @@ pub enum Constraint {
         key: String,
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         edges: bool,
+        /// On hyperedges with the label (never with `edges`).
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        hyperedges: bool,
     },
     /// `CREATE CONSTRAINT FOR (n:Person) REQUIRE n.age IS :: INTEGER`: the
     /// property, when set, has this type (16.5).
@@ -157,6 +169,9 @@ pub enum Constraint {
         of: PropertyType,
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         edges: bool,
+        /// On hyperedges with the label (never with `edges`).
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        hyperedges: bool,
     },
 }
 
@@ -201,10 +216,34 @@ impl Constraint {
 
     /// Whether it is on edges.
     pub fn on_edges(&self) -> bool {
+        self.kind() == RecordKind::Edge
+    }
+
+    /// What kind of record it is on.
+    pub fn kind(&self) -> RecordKind {
         match self {
-            Constraint::Edge { .. } => true,
-            Constraint::Functional { .. } => false,
-            Constraint::Exists { edges, .. } | Constraint::Typed { edges, .. } => *edges,
+            Constraint::Edge { .. } => RecordKind::Edge,
+            Constraint::Functional { hyperedges, .. } => {
+                if *hyperedges {
+                    RecordKind::HyperEdge
+                } else {
+                    RecordKind::Node
+                }
+            }
+            Constraint::Exists {
+                edges, hyperedges, ..
+            }
+            | Constraint::Typed {
+                edges, hyperedges, ..
+            } => {
+                if *hyperedges {
+                    RecordKind::HyperEdge
+                } else if *edges {
+                    RecordKind::Edge
+                } else {
+                    RecordKind::Node
+                }
+            }
         }
     }
 
@@ -339,6 +378,24 @@ impl ReadTx {
         Ok(events)
     }
 
+    /// The earlier values of a functional property of a hyperedge, oldest
+    /// first: nothing when the reader may not see it or the property.
+    pub fn hyperedge_property_history(
+        &self,
+        ns: &str,
+        id: HyperEdgeId,
+        key: &str,
+    ) -> Result<Vec<HistoryEntry>> {
+        if let Some(view) = self.view() {
+            match self.hyperedge(ns, id)? {
+                Some(found)
+                    if !view.property_hidden(ns, std::slice::from_ref(&found.label), key) => {}
+                _ => return Ok(Vec::new()),
+            }
+        }
+        history_from(self.state_entries(ns, HISTORY, &format!("{id}/{key}/"), usize::MAX)?)
+    }
+
     /// The earlier values of a functional property of a node, oldest first.
     pub fn property_history(&self, ns: &str, node: NodeId, key: &str) -> Result<Vec<HistoryEntry>> {
         if let Some(view) = self.view() {
@@ -399,6 +456,22 @@ impl WriteTx {
         ));
         if matches!(
             constraint,
+            Constraint::Exists {
+                edges: true,
+                hyperedges: true,
+                ..
+            } | Constraint::Typed {
+                edges: true,
+                hyperedges: true,
+                ..
+            }
+        ) {
+            return Err(Error::Invalid(
+                "a property rule is on nodes, edges or hyperedges, not two of them".into(),
+            ));
+        }
+        if matches!(
+            constraint,
             Constraint::Exists { .. } | Constraint::Typed { .. }
         ) {
             if constraint.key().is_some_and(str::is_empty) {
@@ -407,12 +480,9 @@ impl WriteTx {
             // The data already there must keep it: the first records that
             // do not are named, and nothing is declared.
             let mut broken = Vec::new();
-            for (id, props) in self.labelled(ns, constraint.on_edges(), constraint.label())? {
+            for (id, props) in self.labelled(ns, constraint.kind(), constraint.label())? {
                 if let Some(problem) = constraint.broken_by(&props) {
-                    broken.push(format!(
-                        "{} {id} {problem}",
-                        kind_name(constraint.on_edges())
-                    ));
+                    broken.push(format!("{} {id} {problem}", constraint.kind().name()));
                     if broken.len() == 3 {
                         break;
                     }
@@ -698,6 +768,63 @@ impl WriteTx {
         Ok(())
     }
 
+    /// Keeps the earlier value of a hyperedge's functional properties that
+    /// change.
+    pub(crate) fn record_hyperedge_history(
+        &mut self,
+        ns: &str,
+        edge: &HyperEdge,
+        previous: &HyperEdge,
+    ) -> Result<()> {
+        let constraints = self.cached_constraints(ns)?;
+        for constraint in constraints.iter() {
+            let Constraint::Functional {
+                label,
+                key,
+                hyperedges: true,
+                ..
+            } = constraint
+            else {
+                continue;
+            };
+            if previous.label != *label {
+                continue;
+            }
+            let Some(old) = previous.props.get(key) else {
+                continue;
+            };
+            if edge.props.get(key) == Some(old) {
+                continue;
+            }
+            let prefix = format!("{}/{key}/", edge.id);
+            let from = self
+                .state_entries(ns, HISTORY, &prefix, usize::MAX)?
+                .last()
+                .and_then(|(_, bytes)| serde_json::from_slice::<HistoryEntry>(bytes).ok())
+                .map_or(previous.recorded_at, |entry| entry.to);
+            self.put_history(ns, &prefix, old.clone(), from)?;
+        }
+        Ok(())
+    }
+
+    /// Writes one earlier value, held from `from` until now.
+    fn put_history(&mut self, ns: &str, prefix: &str, value: Value, from: Timestamp) -> Result<()> {
+        let to = Timestamp::now();
+        let entry = HistoryEntry {
+            value,
+            from,
+            to,
+            by: self.actor.as_ref().map(|actor| actor.name.clone()),
+        };
+        let bytes = serde_json::to_vec(&entry).map_err(|e| Error::Serialization(e.to_string()))?;
+        self.put_state(
+            ns,
+            HISTORY,
+            &format!("{prefix}{:020}", to.as_micros()),
+            &bytes,
+        )
+    }
+
     /// Keeps the earlier value of functional properties that change.
     pub(crate) fn record_history(
         &mut self,
@@ -710,7 +837,13 @@ impl WriteTx {
         };
         let constraints = self.cached_constraints(ns)?;
         for constraint in constraints.iter() {
-            let Constraint::Functional { label, key, .. } = constraint else {
+            let Constraint::Functional {
+                label,
+                key,
+                hyperedges: false,
+                ..
+            } = constraint
+            else {
                 continue;
             };
             if !previous.has_label(label) {
@@ -751,6 +884,16 @@ impl WriteTx {
         history_from(self.state_entries(ns, HISTORY, &format!("{node}/{key}/"), usize::MAX)?)
     }
 
+    /// [`ReadTx::hyperedge_property_history`] as written so far (no view).
+    pub fn hyperedge_property_history(
+        &self,
+        ns: &str,
+        id: HyperEdgeId,
+        key: &str,
+    ) -> Result<Vec<HistoryEntry>> {
+        history_from(self.state_entries(ns, HISTORY, &format!("{id}/{key}/"), usize::MAX)?)
+    }
+
     /// From now on, property rules (not null, types, keys) are checked
     /// when [`WriteTx::check_deferred`] is called, on the records' state
     /// then, instead of at each write: a statement may create a node and
@@ -770,18 +913,23 @@ impl WriteTx {
         };
         pending.sort();
         pending.dedup();
-        for (ns, edges, id) in pending {
+        for (ns, kind, id) in pending {
             let defs = self.index_defs(&ns)?;
-            let record = if edges {
-                self.edge(&ns, EdgeId::from_u128(id))?
+            let record = match kind {
+                RecordKind::Edge => self
+                    .edge(&ns, EdgeId::from_u128(id))?
                     .filter(|edge| !edge.is_retracted())
-                    .map(|edge| (vec![edge.label], edge.props))
-            } else {
-                self.node(&ns, NodeId::from_u128(id))?
-                    .map(|node| (node.labels, node.props))
+                    .map(|edge| (vec![edge.label], edge.props)),
+                RecordKind::HyperEdge => self
+                    .hyperedge(&ns, HyperEdgeId::from_u128(id))?
+                    .filter(|edge| !edge.is_retracted())
+                    .map(|edge| (vec![edge.label], edge.props)),
+                RecordKind::Node => self
+                    .node(&ns, NodeId::from_u128(id))?
+                    .map(|node| (node.labels, node.props)),
             };
             if let Some((labels, props)) = record {
-                self.check_record(&ns, edges, id, &defs, &labels, &props)?;
+                self.check_record(&ns, kind, id, &defs, &labels, &props)?;
             }
         }
         Ok(())
@@ -796,7 +944,7 @@ impl WriteTx {
     pub(crate) fn check_rules_later(
         &mut self,
         ns: &str,
-        edges: bool,
+        kind: RecordKind,
         id: u128,
         defs: &[crate::IndexDef],
         labels: &[String],
@@ -808,10 +956,10 @@ impl WriteTx {
         }
         match &mut self.deferred_rules {
             Some(pending) => {
-                pending.push((ns.to_owned(), edges, id));
+                pending.push((ns.to_owned(), kind, id));
                 Ok(())
             }
-            None => self.check_record(ns, edges, id, defs, labels, props),
+            None => self.check_record(ns, kind, id, defs, labels, props),
         }
     }
 
@@ -820,29 +968,25 @@ impl WriteTx {
     fn check_record(
         &mut self,
         ns: &str,
-        edges: bool,
+        kind: RecordKind,
         id: u128,
         defs: &[crate::IndexDef],
         labels: &[String],
         props: &Props,
     ) -> Result<()> {
         let constraints = self.cached_constraints(ns)?;
-        let keys = defs
-            .iter()
-            .filter(|def| def.required && def.edges == edges && !def.hyperedges);
+        let keys = defs.iter().filter(|def| def.required && def.kind() == kind);
         let rules = constraints.iter().filter(|constraint| {
             matches!(
                 constraint,
                 Constraint::Exists { .. } | Constraint::Typed { .. }
-            ) && constraint.on_edges() == edges
+            ) && constraint.kind() == kind
         });
-        let what = kind_name(edges);
-        let name = || {
-            if edges {
-                EdgeId::from_u128(id).to_string()
-            } else {
-                NodeId::from_u128(id).to_string()
-            }
+        let what = kind.name();
+        let name = || match kind {
+            RecordKind::Edge => EdgeId::from_u128(id).to_string(),
+            RecordKind::HyperEdge => HyperEdgeId::from_u128(id).to_string(),
+            RecordKind::Node => NodeId::from_u128(id).to_string(),
         };
         for rule in rules {
             if !labels.iter().any(|label| label == rule.label()) {
@@ -873,9 +1017,21 @@ impl WriteTx {
         Ok(())
     }
 
-    /// Every node (or current edge) with `label`: its id and properties.
-    fn labelled(&self, ns: &str, edges: bool, label: &str) -> Result<Vec<(String, Props)>> {
-        if edges {
+    /// Every node (or current edge or hyperedge) with `label`: its id and
+    /// properties.
+    fn labelled(&self, ns: &str, kind: RecordKind, label: &str) -> Result<Vec<(String, Props)>> {
+        if kind == RecordKind::HyperEdge {
+            let mut out = Vec::new();
+            for id in self.hyperedge_ids_with_label(ns, label, None, usize::MAX)? {
+                if let Some(edge) = self.hyperedge(ns, id)?
+                    && !edge.is_retracted()
+                {
+                    out.push((id.to_string(), edge.props));
+                }
+            }
+            return Ok(out);
+        }
+        if kind == RecordKind::Edge {
             return Ok(self
                 .edges_with_label(ns, label)?
                 .into_iter()
@@ -899,8 +1055,4 @@ impl WriteTx {
         }
         Ok(out)
     }
-}
-
-fn kind_name(edges: bool) -> &'static str {
-    if edges { "edge" } else { "node" }
 }

@@ -1799,21 +1799,41 @@ fn function(ctx: &Context, name: &str, args: Vec<Value>) -> Result<Value, QueryE
         }
         "history" => {
             arity(name, &args, 2..=2)?;
-            let Value::Node(node) = &args[0] else {
-                return Err(error("history(node, property) needs a node"));
-            };
             let key = string_arg(name, &args[1])?;
-            // A property the caller may not read has no history for it.
-            if ctx
-                .per_record()
-                .is_some_and(|view| view.property_hidden(ctx.ns, &node.labels, key))
-                || !ctx.visible(node.id)?
-            {
-                return Ok(Value::List(Vec::new()));
-            }
-            let entries = match ctx.write {
-                Some(tx) => tx.property_history(ctx.ns, node.id, key)?,
-                None => ctx.read.property_history(ctx.ns, node.id, key)?,
+            let entries = match &args[0] {
+                Value::Node(node) => {
+                    // A property the caller may not read has no history for it.
+                    if ctx
+                        .per_record()
+                        .is_some_and(|view| view.property_hidden(ctx.ns, &node.labels, key))
+                        || !ctx.visible(node.id)?
+                    {
+                        return Ok(Value::List(Vec::new()));
+                    }
+                    match ctx.write {
+                        Some(tx) => tx.property_history(ctx.ns, node.id, key)?,
+                        None => ctx.read.property_history(ctx.ns, node.id, key)?,
+                    }
+                }
+                Value::HyperEdge(edge) => {
+                    let label = std::slice::from_ref(&edge.label);
+                    if ctx
+                        .per_record()
+                        .is_some_and(|view| view.property_hidden(ctx.ns, label, key))
+                        || ctx.hyperedge(edge.id)?.is_none()
+                    {
+                        return Ok(Value::List(Vec::new()));
+                    }
+                    match ctx.write {
+                        Some(tx) => tx.hyperedge_property_history(ctx.ns, edge.id, key)?,
+                        None => ctx.read.hyperedge_property_history(ctx.ns, edge.id, key)?,
+                    }
+                }
+                _ => {
+                    return Err(error(
+                        "history(record, property) needs a node or a hyperedge",
+                    ));
+                }
             };
             Value::List(
                 entries

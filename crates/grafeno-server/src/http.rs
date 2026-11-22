@@ -605,6 +605,10 @@ pub fn router_with(state: AppState, options: &Options) -> Router {
         .route("/{ns}/constraints", get(constraints))
         .route("/{ns}/contradictions", get(contradictions))
         .route("/{ns}/nodes/{id}/history/{key}", get(property_history))
+        .route(
+            "/{ns}/hyperedges/{id}/history/{key}",
+            get(hyperedge_property_history),
+        )
         .route("/{ns}/export.graphml", get(export_graphml))
         .route("/{ns}/export/nodes.csv", get(export_nodes_csv))
         .route("/{ns}/export/edges.csv", get(export_edges_csv))
@@ -3807,6 +3811,19 @@ async fn contradictions(
     })
     .await?;
     Ok(Json(events))
+}
+
+/// The earlier values of a functional property of a hyperedge.
+async fn hyperedge_property_history(
+    State(state): State<AppState>,
+    Path((ns, id, key)): Path<(String, String, String)>,
+) -> ApiResult<Json<Vec<grafeno::HistoryEntry>>> {
+    let id = parse_hyperedge_id(&id)?;
+    let entries = blocking(&state, move |db| {
+        db.begin_read()?.hyperedge_property_history(&ns, id, &key)
+    })
+    .await?;
+    Ok(Json(entries))
 }
 
 /// The earlier values of a functional property of a node.
