@@ -12,6 +12,27 @@ break a client of the previous one, and the database files' layout
 version (now 19 for a file that holds hyperedges, 18 otherwise) is
 upgraded in place, with a copy kept first.
 
+## 0.5.1 (2026-11-22)
+
+Fixes. Nothing changes in the files, the HTTP API (still 1) or the
+replication formats: 0.5.0 and 0.5.1 run side by side in a cluster.
+
+- **Fixed**: upgrading on Windows stopped at "DeleteFile failed; code 5"
+  when another program ran `grafeno.exe` (an MCP connection, a shell).
+  The setup now moves the running binary aside and installs the new one;
+  those programs keep the old version until they restart, which the
+  last page says, and the next upgrade or the uninstaller deletes it.
+  The Installers workflow upgrades with a `grafeno.exe` running.
+- **Fixed**: the shell answered "No changes." after creating, deleting
+  or retracting hyperedges; its summary now counts them.
+- **Fixed**: the refusal to delete a node that takes part in hyperedges
+  named only the Rust call; it now names GQ `DETACH DELETE` and the HTTP
+  parameter (`?hyperedges=detach` or `cascade`) too.
+- **Added**: the hyperedge recall experiment at scale (many events per
+  topic) and with word vectors (docs/benchmarks.md), and a proposed
+  design for paths through hyperedges (docs/hyperedge-paths.md), not
+  implemented.
+
 ## 0.5.0 (2026-11-22)
 
 Hyperedges: facts that relate two or more nodes at once, each in a role,

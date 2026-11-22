@@ -605,7 +605,7 @@ exactamente estas). `GET /v1/about` (público) dice qué es el motor:
 ```json
 {
   "product": "grafeno",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "api": { "version": 1, "supported": [1] },
   "layout": 18,
   "capabilities": ["namespaces", "nodes", "…", "cluster.groups", "query.split"],
