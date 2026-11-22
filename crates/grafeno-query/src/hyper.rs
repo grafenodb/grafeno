@@ -617,5 +617,55 @@ pub(crate) fn merge_matches(
         }
         out.push(Arc::unwrap_or_clone(edge));
     }
+    // A match the caller may not see would be duplicated by creating one:
+    // refuse instead, without saying which (as deleting a node with a
+    // hidden hyperedge does).
+    if out.is_empty()
+        && ctx.per_record().is_some()
+        && let Some(tx) = ctx.write
+        && hidden_match(tx, ctx.ns, new, &wanted, now)?
+    {
+        return Err(QueryError::from(grafeno::Error::Forbidden(
+            "MERGE HYPEREDGE matches a hyperedge the caller may not see; it creates none".into(),
+        )));
+    }
     Ok(out)
+}
+
+/// Whether a hyperedge holding at `now` is the one `new` names, as stored
+/// (no view): its label, exactly its participants, and its properties.
+fn hidden_match(
+    tx: &grafeno::WriteTx,
+    ns: &str,
+    new: &grafeno::NewHyperEdge,
+    wanted: &[grafeno::Participant],
+    now: grafeno::Timestamp,
+) -> Result<bool, QueryError> {
+    let Some(first) = wanted.first() else {
+        return Ok(false);
+    };
+    let holds = HyperEdgeFilter::any().valid_at(now).known_at(now);
+    for id in tx.hyperedge_ids_of(ns, first.node, Some(&new.label))? {
+        let Some(edge) = tx.hyperedge(ns, id)? else {
+            continue;
+        };
+        if edge.participants == wanted
+            && holds.accepts(&edge)
+            && new
+                .props
+                .iter()
+                .all(|(key, value)| edge.props.get(key).is_some_and(|stored| same(stored, value)))
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// Equal stored values, numbers compared as numbers (`7` and `7.0`).
+fn same(a: &serde_json::Value, b: &serde_json::Value) -> bool {
+    match (a.as_f64(), b.as_f64()) {
+        (Some(x), Some(y)) if a.is_number() && b.is_number() => x == y,
+        _ => a == b,
+    }
 }

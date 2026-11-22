@@ -813,7 +813,7 @@ fn an_index_on_hyperedges_finds_what_a_scan_finds() {
     // The plans start from the indexes.
     let plan = |query: &str| run(&db, &format!("EXPLAIN {query}")).to_json().to_string();
     assert!(
-        plan(QUERIES[0]).contains("by index execution_execution_id"),
+        plan(QUERIES[0]).contains("by index execution_execution_id_hyperedge"),
         "{}",
         plan(QUERIES[0])
     );
@@ -956,4 +956,86 @@ fn counting_and_testing_hyperedges_per_row() {
         ),
         json!([["checker"]])
     );
+}
+
+/// A view that reads and writes the namespace but may not read hyperedges
+/// (or edges) labeled `label`.
+fn view_hiding_hyperedges(label: &str) -> Arc<View> {
+    let namespace = || Object::Namespace {
+        namespace: NS.into(),
+    };
+    let mut privileges: Vec<Privilege> = [Act::Read, Act::Create, Act::Update, Act::Delete]
+        .into_iter()
+        .map(|act| Privilege::grant(act, namespace()))
+        .collect();
+    privileges.push(Privilege::deny(
+        Act::Read,
+        Object::Label {
+            namespace: NS.into(),
+            label: label.into(),
+            edges: true,
+        },
+    ));
+    let role = RoleDef {
+        name: "r".into(),
+        privileges,
+        grants: Vec::new(),
+        roles: Vec::new(),
+        policies: Vec::new(),
+        description: None,
+        created_at: Timestamp::now(),
+    };
+    let account = Account {
+        name: "me".into(),
+        kind: AccountKind::Service,
+        password_hash: None,
+        grants: Vec::new(),
+        roles: vec!["r".into()],
+        superuser: false,
+        own_only: false,
+        disabled: false,
+        expires_at: None,
+        attributes: Default::default(),
+        description: None,
+        created_at: Timestamp::now(),
+    };
+    let rights = Rights::compute(&account, &HashMap::from([("r".to_owned(), role)]));
+    Arc::new(View::new(Arc::new(rights), Some(&account)))
+}
+
+#[test]
+fn merge_does_not_duplicate_what_the_caller_cannot_see() {
+    let db = team();
+    run(&db, DECIDE);
+    let hidden = Limits {
+        view: Some(view_hiding_hyperedges("decision")),
+        ..Limits::none()
+    };
+    // The caller sees no decision, but one matches: nothing is created.
+    let seen = execute_with(
+        &db,
+        NS,
+        "MATCH HYPEREDGE h:decision RETURN count(h)",
+        &Params::new(),
+        &hidden,
+    )
+    .unwrap();
+    assert_eq!(seen.to_json()["rows"], json!([[0]]));
+    let error = execute_with(&db, NS, DECIDE, &Params::new(), &hidden).unwrap_err();
+    assert!(error.message.contains("may not see"), "{}", error.message);
+    // Nor does it name the hyperedge.
+    assert!(!error.message.contains("D-1"), "{}", error.message);
+    assert_eq!(count_of(&db, "decision"), 2);
+    // Another identity is another event, and the caller may create it.
+    let other = execute_with(
+        &db,
+        NS,
+        "MATCH (p:Agent {name: 'planner'}), (b:Agent {name: 'builder'}), (t:Task {name: 'T2'})
+         MERGE HYPEREDGE h:decision {key: 'D-9'} [(p) AS proposer, (b) AS implementer, (t) AS subject]
+         RETURN h.key",
+        &Params::new(),
+        &hidden,
+    )
+    .unwrap();
+    assert_eq!(other.stats.hyperedges_created, 1);
 }
