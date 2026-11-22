@@ -1,0 +1,433 @@
+events_per_topic,vectors,language,kind,strategy,recall,precision,complete_pct,event_pct,answered_in_role_pct,mrr,ndcg,tokens,stray_participants
+1,no,English,A decisions,A,0.28,0.12,0,0,0,0.33,0.51,287,0.0
+1,no,English,A decisions,B,1.00,0.26,100,100,100,0.31,0.51,284,25.6
+1,no,English,A decisions,C,1.00,0.27,100,100,100,0.33,0.53,284,7.2
+1,no,English,A decisions,C2,1.00,0.24,100,100,100,0.50,0.61,284,8.5
+1,no,English,A decisions,D,0.53,0.21,0,100,12,1.00,0.93,334,0.0
+1,no,English,A decisions,D2,1.00,0.29,100,100,100,1.00,0.93,333,11.0
+1,no,English,B multi-agent runs,A,0.00,0.00,0,0,0,0.00,0.00,166,0.0
+1,no,English,B multi-agent runs,B,1.00,0.14,100,100,100,0.31,0.48,283,26.8
+1,no,English,B multi-agent runs,C,1.00,0.13,100,100,100,0.33,0.50,281,8.2
+1,no,English,B multi-agent runs,C2,1.00,0.13,100,100,100,0.50,0.63,284,9.2
+1,no,English,B multi-agent runs,D,0.25,0.10,0,100,0,1.00,1.00,326,0.0
+1,no,English,B multi-agent runs,D2,1.00,0.14,100,100,100,1.00,1.00,333,11.2
+1,no,English,C sessions,A,0.00,0.00,0,0,0,0.00,0.00,166,0.0
+1,no,English,C sessions,B,1.00,0.14,100,100,100,0.23,0.41,269,25.1
+1,no,English,C sessions,C,1.00,0.13,100,100,100,0.25,0.43,281,7.2
+1,no,English,C sessions,C2,1.00,0.15,100,100,100,0.50,0.63,278,9.0
+1,no,English,C sessions,D,0.20,0.10,0,100,0,1.00,1.00,295,0.0
+1,no,English,C sessions,D2,1.00,0.16,100,100,100,1.00,1.00,320,13.4
+1,no,English,D contradictions,A,0.67,0.59,0,0,0,0.58,0.73,122,0.0
+1,no,English,D contradictions,B,1.00,0.43,100,100,100,0.58,0.67,272,9.2
+1,no,English,D contradictions,C,1.00,0.43,100,100,100,0.58,0.67,272,9.2
+1,no,English,D contradictions,C2,1.00,0.40,100,100,100,0.58,0.68,275,9.5
+1,no,English,D contradictions,D,1.00,0.30,100,100,100,1.00,0.91,356,0.0
+1,no,English,D contradictions,D2,1.00,0.46,100,100,100,1.00,0.91,342,11.2
+1,no,English,E at a date,A,0.00,0.00,0,0,0,0.00,0.00,161,0.0
+1,no,English,E at a date,B,1.00,0.12,100,100,100,0.33,0.50,285,10.0
+1,no,English,E at a date,C,1.00,0.12,100,100,100,0.33,0.50,285,10.0
+1,no,English,E at a date,C2,1.00,0.14,100,100,100,0.33,0.50,282,12.5
+1,no,English,E at a date,D,0.58,0.12,17,100,17,0.24,0.43,348,0.0
+1,no,English,E at a date,D2,1.00,0.16,100,100,100,0.24,0.43,361,14.2
+1,no,English,F single facts,A,1.00,0.10,100,100,100,1.00,1.00,246,0.0
+1,no,English,F single facts,B,1.00,0.14,100,100,100,1.00,1.00,274,12.4
+1,no,English,F single facts,C,1.00,0.12,100,100,100,1.00,1.00,275,6.5
+1,no,English,F single facts,C2,1.00,0.11,100,100,100,1.00,1.00,286,5.8
+1,no,English,F single facts,D,1.00,0.10,100,100,100,1.00,1.00,246,0.0
+1,no,English,F single facts,D2,1.00,0.10,100,100,100,1.00,1.00,246,0.0
+1,no,Spanish,A decisions,A,0.28,0.31,0,0,0,0.50,0.63,134,0.0
+1,no,Spanish,A decisions,B,1.00,0.31,100,100,100,0.46,0.60,281,25.4
+1,no,Spanish,A decisions,C,1.00,0.33,100,100,100,0.50,0.63,272,7.0
+1,no,Spanish,A decisions,C2,1.00,0.28,100,100,100,0.50,0.63,258,7.9
+1,no,Spanish,A decisions,D,0.53,0.26,0,100,12,1.00,0.93,335,0.0
+1,no,Spanish,A decisions,D2,1.00,0.35,100,100,100,1.00,0.93,332,11.0
+1,no,Spanish,B multi-agent runs,A,0.00,0.00,0,0,0,0.00,0.00,218,0.0
+1,no,Spanish,B multi-agent runs,B,1.00,0.16,100,100,100,0.31,0.48,285,25.4
+1,no,Spanish,B multi-agent runs,C,1.00,0.15,100,100,100,0.33,0.50,285,7.0
+1,no,Spanish,B multi-agent runs,C2,1.00,0.17,100,100,100,0.50,0.63,281,9.4
+1,no,Spanish,B multi-agent runs,D,0.25,0.12,0,100,0,0.32,0.49,340,0.0
+1,no,Spanish,B multi-agent runs,D2,1.00,0.16,100,100,100,0.32,0.49,337,11.0
+1,no,Spanish,C sessions,A,0.00,0.00,0,0,0,0.00,0.00,210,0.0
+1,no,Spanish,C sessions,B,0.88,0.13,88,88,88,0.21,0.37,284,24.9
+1,no,Spanish,C sessions,C,1.00,0.15,100,100,100,0.25,0.43,283,6.0
+1,no,Spanish,C sessions,C2,1.00,0.17,100,100,100,0.50,0.63,284,8.6
+1,no,Spanish,C sessions,D,0.20,0.11,0,100,0,1.00,1.00,337,0.0
+1,no,Spanish,C sessions,D2,1.00,0.17,100,100,100,1.00,1.00,330,10.4
+1,no,Spanish,D contradictions,A,0.67,0.49,0,0,0,0.58,0.73,168,0.0
+1,no,Spanish,D contradictions,B,1.00,0.33,100,100,100,0.58,0.67,283,9.2
+1,no,Spanish,D contradictions,C,1.00,0.33,100,100,100,0.58,0.67,283,9.2
+1,no,Spanish,D contradictions,C2,1.00,0.29,100,100,100,0.58,0.68,275,9.7
+1,no,Spanish,D contradictions,D,1.00,0.41,100,100,100,1.00,0.91,334,0.0
+1,no,Spanish,D contradictions,D2,1.00,0.55,100,100,100,1.00,0.91,326,7.5
+1,no,Spanish,E at a date,A,0.00,0.00,0,0,0,0.00,0.00,170,0.0
+1,no,Spanish,E at a date,B,1.00,0.15,100,100,100,0.33,0.50,288,10.0
+1,no,Spanish,E at a date,C,1.00,0.15,100,100,100,0.33,0.50,288,10.0
+1,no,Spanish,E at a date,C2,1.00,0.17,100,100,100,0.33,0.50,274,12.0
+1,no,Spanish,E at a date,D,0.50,0.12,0,100,0,0.25,0.43,364,0.0
+1,no,Spanish,E at a date,D2,1.00,0.17,100,100,100,0.25,0.43,330,11.0
+1,no,Spanish,F single facts,A,1.00,0.11,100,100,100,1.00,1.00,252,0.0
+1,no,Spanish,F single facts,B,1.00,0.16,100,100,100,1.00,1.00,286,11.5
+1,no,Spanish,F single facts,C,1.00,0.14,100,100,100,1.00,1.00,282,6.5
+1,no,Spanish,F single facts,C2,1.00,0.15,100,100,100,1.00,1.00,277,6.8
+1,no,Spanish,F single facts,D,1.00,0.11,100,100,100,1.00,1.00,252,0.0
+1,no,Spanish,F single facts,D2,1.00,0.11,100,100,100,1.00,1.00,252,0.0
+1,yes,English,A decisions,A,0.28,0.11,0,0,0,0.27,0.45,295,0.0
+1,yes,English,A decisions,B,1.00,0.21,100,100,100,0.27,0.47,282,25.4
+1,yes,English,A decisions,C,1.00,0.23,100,100,100,0.30,0.49,283,7.0
+1,yes,English,A decisions,C2,1.00,0.22,100,100,100,0.50,0.60,278,10.8
+1,yes,English,A decisions,D,0.53,0.21,0,100,12,0.92,0.87,330,0.0
+1,yes,English,A decisions,D2,1.00,0.30,100,100,100,0.92,0.87,330,11.5
+1,yes,English,B multi-agent runs,A,0.00,0.00,0,0,0,0.00,0.00,292,0.0
+1,yes,English,B multi-agent runs,B,1.00,0.13,100,100,100,0.26,0.44,282,25.4
+1,yes,English,B multi-agent runs,C,1.00,0.12,100,100,100,0.28,0.46,283,7.0
+1,yes,English,B multi-agent runs,C2,1.00,0.13,100,100,100,0.50,0.63,284,10.2
+1,yes,English,B multi-agent runs,D,0.25,0.10,0,100,0,0.94,0.95,320,0.0
+1,yes,English,B multi-agent runs,D2,1.00,0.14,100,100,100,0.94,0.95,338,13.0
+1,yes,English,C sessions,A,0.00,0.00,0,0,0,0.00,0.00,294,0.0
+1,yes,English,C sessions,B,1.00,0.13,100,100,100,0.22,0.40,287,25.1
+1,yes,English,C sessions,C,1.00,0.12,100,100,100,0.24,0.42,286,6.0
+1,yes,English,C sessions,C2,1.00,0.14,100,100,100,0.50,0.63,286,9.2
+1,yes,English,C sessions,D,0.20,0.10,0,100,0,1.00,1.00,245,0.0
+1,yes,English,C sessions,D2,1.00,0.18,100,100,100,1.00,1.00,285,17.4
+1,yes,English,D contradictions,A,0.67,0.20,0,0,0,0.50,0.64,280,0.0
+1,yes,English,D contradictions,B,1.00,0.30,100,100,100,0.58,0.67,293,9.2
+1,yes,English,D contradictions,C,1.00,0.30,100,100,100,0.58,0.67,293,9.2
+1,yes,English,D contradictions,C2,1.00,0.30,100,100,100,0.58,0.67,291,9.5
+1,yes,English,D contradictions,D,1.00,0.30,100,100,100,1.00,0.91,357,0.0
+1,yes,English,D contradictions,D2,1.00,0.48,100,100,100,1.00,0.91,332,10.5
+1,yes,English,E at a date,A,0.00,0.00,0,0,0,0.00,0.00,281,0.0
+1,yes,English,E at a date,B,1.00,0.12,100,100,100,0.33,0.50,282,10.0
+1,yes,English,E at a date,C,1.00,0.12,100,100,100,0.33,0.50,282,10.0
+1,yes,English,E at a date,C2,1.00,0.13,100,100,100,0.33,0.50,291,12.5
+1,yes,English,E at a date,D,0.50,0.10,0,100,0,0.38,0.53,343,0.0
+1,yes,English,E at a date,D2,1.00,0.14,100,100,100,0.38,0.53,353,15.0
+1,yes,English,F single facts,A,1.00,0.10,100,100,100,0.68,0.75,250,0.0
+1,yes,English,F single facts,B,0.60,0.08,60,100,60,0.60,0.60,272,12.3
+1,yes,English,F single facts,C,1.00,0.12,100,100,100,0.68,0.75,276,6.5
+1,yes,English,F single facts,C2,1.00,0.11,100,100,100,0.68,0.75,285,5.6
+1,yes,English,F single facts,D,1.00,0.10,100,100,100,0.68,0.75,258,0.0
+1,yes,English,F single facts,D2,1.00,0.10,100,100,100,0.68,0.75,258,0.0
+1,yes,Spanish,A decisions,A,0.28,0.14,0,0,0,0.88,0.88,276,0.0
+1,yes,Spanish,A decisions,B,1.00,0.32,100,100,100,0.83,0.89,264,6.5
+1,yes,Spanish,A decisions,C,1.00,0.32,100,100,100,0.85,0.90,273,7.1
+1,yes,Spanish,A decisions,C2,1.00,0.30,100,100,100,0.88,0.91,283,12.1
+1,yes,Spanish,A decisions,D,0.53,0.24,0,100,12,1.00,0.92,347,0.0
+1,yes,Spanish,A decisions,D2,1.00,0.38,100,100,100,1.00,0.92,321,12.1
+1,yes,Spanish,B multi-agent runs,A,0.09,0.04,0,0,0,0.07,0.14,290,0.0
+1,yes,Spanish,B multi-agent runs,B,1.00,0.17,100,100,100,0.30,0.48,283,25.4
+1,yes,Spanish,B multi-agent runs,C,1.00,0.18,100,100,100,0.32,0.49,284,7.0
+1,yes,Spanish,B multi-agent runs,C2,1.00,0.17,100,100,100,0.46,0.60,290,9.9
+1,yes,Spanish,B multi-agent runs,D,0.31,0.13,0,100,12,0.25,0.43,350,0.0
+1,yes,Spanish,B multi-agent runs,D2,1.00,0.19,100,100,100,0.25,0.43,337,11.2
+1,yes,Spanish,C sessions,A,0.05,0.03,0,0,0,0.06,0.10,288,0.0
+1,yes,Spanish,C sessions,B,0.88,0.14,88,88,88,0.20,0.37,285,24.9
+1,yes,Spanish,C sessions,C,1.00,0.16,100,100,100,0.24,0.42,286,6.0
+1,yes,Spanish,C sessions,C2,1.00,0.17,100,100,100,0.50,0.63,291,9.2
+1,yes,Spanish,C sessions,D,0.20,0.10,0,100,0,1.00,1.00,319,0.0
+1,yes,Spanish,C sessions,D2,1.00,0.20,100,100,100,1.00,1.00,293,13.8
+1,yes,Spanish,D contradictions,A,0.61,0.21,0,0,0,0.52,0.67,278,0.0
+1,yes,Spanish,D contradictions,B,0.83,0.28,83,83,83,0.50,0.57,285,9.8
+1,yes,Spanish,D contradictions,C,0.83,0.28,83,83,83,0.50,0.57,284,9.8
+1,yes,Spanish,D contradictions,C2,1.00,0.23,100,100,100,0.58,0.69,263,9.5
+1,yes,Spanish,D contradictions,D,1.00,0.39,100,100,100,1.00,0.92,349,0.0
+1,yes,Spanish,D contradictions,D2,1.00,0.53,100,100,100,1.00,0.92,333,9.0
+1,yes,Spanish,E at a date,A,0.00,0.00,0,0,0,0.00,0.00,282,0.0
+1,yes,Spanish,E at a date,B,1.00,0.15,100,100,100,0.33,0.50,288,10.0
+1,yes,Spanish,E at a date,C,1.00,0.15,100,100,100,0.33,0.50,288,10.0
+1,yes,Spanish,E at a date,C2,1.00,0.17,100,100,100,0.33,0.50,274,12.0
+1,yes,Spanish,E at a date,D,0.50,0.12,0,100,0,0.25,0.43,362,0.0
+1,yes,Spanish,E at a date,D2,1.00,0.17,100,100,100,0.25,0.43,330,11.0
+1,yes,Spanish,F single facts,A,0.90,0.09,90,100,90,0.74,0.78,266,0.0
+1,yes,Spanish,F single facts,B,0.70,0.11,70,100,70,0.70,0.70,278,11.4
+1,yes,Spanish,F single facts,C,0.80,0.12,80,100,80,0.73,0.75,289,8.0
+1,yes,Spanish,F single facts,C2,0.80,0.12,80,100,80,0.72,0.74,285,8.8
+1,yes,Spanish,F single facts,D,0.80,0.08,80,100,80,0.65,0.68,286,0.0
+1,yes,Spanish,F single facts,D2,0.80,0.09,80,100,80,0.65,0.68,279,5.0
+10,no,English,A decisions,A,0.25,0.10,0,0,0,0.33,0.50,287,0.0
+10,no,English,A decisions,B,0.50,0.00,0,0,0,0.00,0.00,272,25.4
+10,no,English,A decisions,C,0.50,0.00,0,0,0,0.00,0.00,266,7.0
+10,no,English,A decisions,C2,1.00,0.17,100,100,100,0.50,0.63,287,6.9
+10,no,English,A decisions,D,0.50,0.22,0,100,0,1.00,0.92,394,0.0
+10,no,English,A decisions,D2,1.00,0.33,100,100,100,1.00,0.92,314,11.0
+10,no,English,B multi-agent runs,A,0.03,0.02,0,0,0,0.03,0.05,166,0.0
+10,no,English,B multi-agent runs,B,0.72,0.00,0,0,0,0.00,0.00,285,26.0
+10,no,English,B multi-agent runs,C,0.75,0.00,0,0,0,0.00,0.00,288,8.0
+10,no,English,B multi-agent runs,C2,1.00,0.17,100,100,100,0.50,0.63,281,10.0
+10,no,English,B multi-agent runs,D,0.22,0.10,0,88,0,0.88,0.88,386,0.0
+10,no,English,B multi-agent runs,D2,0.97,0.17,88,88,88,0.88,0.88,312,13.6
+10,no,English,C sessions,A,0.00,0.00,0,0,0,0.00,0.00,166,0.0
+10,no,English,C sessions,B,0.50,0.00,0,0,0,0.00,0.00,285,26.4
+10,no,English,C sessions,C,0.60,0.00,0,0,0,0.00,0.00,288,8.0
+10,no,English,C sessions,C2,1.00,0.17,100,100,100,0.50,0.63,286,7.0
+10,no,English,C sessions,D,0.20,0.10,0,100,0,1.00,1.00,299,0.0
+10,no,English,C sessions,D2,1.00,0.20,100,100,100,1.00,1.00,295,12.8
+10,no,English,D contradictions,A,0.67,0.59,0,0,0,0.58,0.73,122,0.0
+10,no,English,D contradictions,B,1.00,0.19,100,100,100,0.58,0.69,284,8.2
+10,no,English,D contradictions,C,1.00,0.19,100,100,100,0.58,0.69,284,8.2
+10,no,English,D contradictions,C2,1.00,0.19,100,100,100,0.58,0.69,284,8.2
+10,no,English,D contradictions,D,0.72,0.22,17,100,100,1.00,0.88,318,0.0
+10,no,English,D contradictions,D2,1.00,0.38,100,100,100,1.00,0.88,298,16.0
+10,no,English,E at a date,A,0.00,0.00,0,0,0,0.00,0.00,161,0.0
+10,no,English,E at a date,B,0.50,0.00,0,0,0,0.00,0.00,288,10.0
+10,no,English,E at a date,C,0.50,0.00,0,0,0,0.00,0.00,288,10.0
+10,no,English,E at a date,C2,1.00,0.15,100,100,100,0.50,0.63,293,8.0
+10,no,English,E at a date,D,0.50,0.11,0,100,0,1.00,1.00,395,0.0
+10,no,English,E at a date,D2,1.00,0.15,100,100,100,1.00,1.00,371,11.0
+10,no,English,F single facts,A,1.00,0.10,100,100,100,1.00,1.00,246,0.0
+10,no,English,F single facts,B,1.00,0.16,100,100,100,1.00,1.00,288,9.7
+10,no,English,F single facts,C,1.00,0.13,100,100,100,1.00,1.00,286,5.1
+10,no,English,F single facts,C2,1.00,0.12,100,100,100,1.00,1.00,286,3.5
+10,no,English,F single facts,D,1.00,0.10,100,100,100,1.00,1.00,246,0.0
+10,no,English,F single facts,D2,1.00,0.10,100,100,100,1.00,1.00,246,0.0
+10,no,Spanish,A decisions,A,0.25,0.28,0,0,0,0.50,0.63,134,0.0
+10,no,Spanish,A decisions,B,0.50,0.00,0,0,0,0.00,0.00,277,25.4
+10,no,Spanish,A decisions,C,0.50,0.00,0,0,0,0.00,0.00,272,7.0
+10,no,Spanish,A decisions,C2,1.00,0.20,100,100,100,0.50,0.63,270,6.8
+10,no,Spanish,A decisions,D,0.50,0.26,0,100,0,1.00,0.92,390,0.0
+10,no,Spanish,A decisions,D2,1.00,0.40,100,100,100,1.00,0.92,313,11.0
+10,no,Spanish,B multi-agent runs,A,0.03,0.02,0,0,0,0.03,0.05,218,0.0
+10,no,Spanish,B multi-agent runs,B,0.72,0.00,0,0,0,0.00,0.00,277,24.5
+10,no,Spanish,B multi-agent runs,C,0.75,0.00,0,0,0,0.00,0.00,272,6.0
+10,no,Spanish,B multi-agent runs,C2,1.00,0.20,100,100,100,0.50,0.63,258,7.0
+10,no,Spanish,B multi-agent runs,D,0.22,0.11,0,88,0,0.29,0.44,380,0.0
+10,no,Spanish,B multi-agent runs,D2,0.94,0.18,88,88,88,0.29,0.44,333,12.8
+10,no,Spanish,C sessions,A,0.00,0.00,0,0,0,0.00,0.00,210,0.0
+10,no,Spanish,C sessions,B,0.35,0.00,0,0,0,0.00,0.00,277,25.6
+10,no,Spanish,C sessions,C,0.40,0.00,0,0,0,0.00,0.00,272,7.0
+10,no,Spanish,C sessions,C2,1.00,0.20,100,100,100,0.50,0.63,262,5.9
+10,no,Spanish,C sessions,D,0.20,0.12,0,100,0,1.00,1.00,382,0.0
+10,no,Spanish,C sessions,D2,1.00,0.20,100,100,100,1.00,1.00,340,12.0
+10,no,Spanish,D contradictions,A,0.67,0.49,0,0,0,0.58,0.73,168,0.0
+10,no,Spanish,D contradictions,B,1.00,0.23,100,100,100,0.58,0.69,272,6.2
+10,no,Spanish,D contradictions,C,1.00,0.23,100,100,100,0.58,0.69,272,6.2
+10,no,Spanish,D contradictions,C2,1.00,0.23,100,100,100,0.58,0.69,272,6.2
+10,no,Spanish,D contradictions,D,0.72,0.31,17,100,100,1.00,0.88,291,0.0
+10,no,Spanish,D contradictions,D2,1.00,0.43,100,100,100,1.00,0.88,310,13.3
+10,no,Spanish,E at a date,A,0.00,0.00,0,0,0,0.00,0.00,170,0.0
+10,no,Spanish,E at a date,B,0.50,0.00,0,0,0,0.00,0.00,271,8.0
+10,no,Spanish,E at a date,C,0.50,0.00,0,0,0,0.00,0.00,271,8.0
+10,no,Spanish,E at a date,C2,1.00,0.19,100,100,100,0.50,0.63,262,7.2
+10,no,Spanish,E at a date,D,0.50,0.13,0,100,0,1.00,1.00,385,0.0
+10,no,Spanish,E at a date,D2,1.00,0.17,100,100,100,1.00,1.00,358,9.0
+10,no,Spanish,F single facts,A,1.00,0.11,100,100,100,1.00,1.00,252,0.0
+10,no,Spanish,F single facts,B,1.00,0.20,100,100,100,1.00,1.00,268,7.7
+10,no,Spanish,F single facts,C,1.00,0.16,100,100,100,1.00,1.00,267,3.8
+10,no,Spanish,F single facts,C2,1.00,0.16,100,100,100,1.00,1.00,263,3.8
+10,no,Spanish,F single facts,D,1.00,0.11,100,100,100,1.00,1.00,252,0.0
+10,no,Spanish,F single facts,D2,1.00,0.11,100,100,100,1.00,1.00,252,0.0
+10,yes,English,A decisions,A,0.25,0.10,0,0,0,0.27,0.45,295,0.0
+10,yes,English,A decisions,B,0.50,0.00,0,0,0,0.00,0.00,280,25.1
+10,yes,English,A decisions,C,0.50,0.00,0,0,0,0.00,0.00,270,6.5
+10,yes,English,A decisions,C2,1.00,0.17,100,100,100,0.50,0.63,287,6.9
+10,yes,English,A decisions,D,0.50,0.22,0,100,0,1.00,0.90,393,0.0
+10,yes,English,A decisions,D2,1.00,0.31,100,100,100,1.00,0.93,341,8.2
+10,yes,English,B multi-agent runs,A,0.03,0.01,0,0,0,0.02,0.04,292,0.0
+10,yes,English,B multi-agent runs,B,0.72,0.00,0,0,0,0.00,0.00,277,25.0
+10,yes,English,B multi-agent runs,C,0.75,0.00,0,0,0,0.00,0.00,271,6.5
+10,yes,English,B multi-agent runs,C2,1.00,0.17,100,100,100,0.50,0.63,282,10.6
+10,yes,English,B multi-agent runs,D,0.25,0.11,0,100,0,1.00,1.00,388,0.0
+10,yes,English,B multi-agent runs,D2,1.00,0.20,100,100,100,0.94,0.95,311,12.5
+10,yes,English,C sessions,A,0.03,0.01,0,0,0,0.02,0.04,294,0.0
+10,yes,English,C sessions,B,0.48,0.00,0,0,0,0.00,0.00,282,26.2
+10,yes,English,C sessions,C,0.55,0.00,0,0,0,0.00,0.00,282,7.8
+10,yes,English,C sessions,C2,1.00,0.17,100,100,100,0.50,0.63,286,7.2
+10,yes,English,C sessions,D,0.20,0.10,0,100,0,1.00,1.00,297,0.0
+10,yes,English,C sessions,D2,1.00,0.20,100,100,100,1.00,1.00,293,13.1
+10,yes,English,D contradictions,A,0.67,0.20,0,0,0,0.44,0.59,278,0.0
+10,yes,English,D contradictions,B,1.00,0.19,100,100,100,0.58,0.69,284,8.2
+10,yes,English,D contradictions,C,1.00,0.19,100,100,100,0.58,0.69,284,8.2
+10,yes,English,D contradictions,C2,1.00,0.19,100,100,100,0.58,0.69,284,8.2
+10,yes,English,D contradictions,D,0.33,0.10,0,100,0,0.50,0.63,280,0.0
+10,yes,English,D contradictions,D2,1.00,0.14,100,100,100,0.50,0.63,270,10.0
+10,yes,English,E at a date,A,0.00,0.00,0,0,0,0.00,0.00,280,0.0
+10,yes,English,E at a date,B,0.50,0.00,0,0,0,0.00,0.00,288,10.0
+10,yes,English,E at a date,C,0.50,0.00,0,0,0,0.00,0.00,288,10.0
+10,yes,English,E at a date,C2,1.00,0.15,100,100,100,0.50,0.63,292,8.0
+10,yes,English,E at a date,D,0.50,0.10,0,100,0,0.58,0.69,304,0.0
+10,yes,English,E at a date,D2,1.00,0.13,100,100,100,0.58,0.69,310,9.5
+10,yes,English,F single facts,A,1.00,0.10,100,100,100,0.68,0.75,250,0.0
+10,yes,English,F single facts,B,0.60,0.09,60,100,60,0.60,0.60,290,9.5
+10,yes,English,F single facts,C,1.00,0.13,100,100,100,0.68,0.75,286,5.0
+10,yes,English,F single facts,C2,1.00,0.12,100,100,100,0.68,0.75,286,3.6
+10,yes,English,F single facts,D,1.00,0.10,100,100,100,0.68,0.75,250,0.0
+10,yes,English,F single facts,D2,1.00,0.10,100,100,100,0.68,0.75,250,0.0
+10,yes,Spanish,A decisions,A,0.25,0.12,0,0,0,0.88,0.91,277,0.0
+10,yes,Spanish,A decisions,B,0.50,0.15,0,0,0,0.75,0.75,273,7.9
+10,yes,Spanish,A decisions,C,0.50,0.15,0,0,0,0.75,0.75,270,7.8
+10,yes,Spanish,A decisions,C2,1.00,0.35,100,100,100,0.88,0.91,270,7.4
+10,yes,Spanish,A decisions,D,0.50,0.27,0,100,0,1.00,0.92,386,0.0
+10,yes,Spanish,A decisions,D2,1.00,0.40,100,100,100,1.00,0.92,327,9.1
+10,yes,Spanish,B multi-agent runs,A,0.16,0.07,0,0,0,0.13,0.25,290,0.0
+10,yes,Spanish,B multi-agent runs,B,0.72,0.00,0,0,0,0.00,0.00,277,24.5
+10,yes,Spanish,B multi-agent runs,C,0.75,0.00,0,0,0,0.00,0.00,272,6.0
+10,yes,Spanish,B multi-agent runs,C2,1.00,0.20,100,100,100,0.48,0.61,259,6.6
+10,yes,Spanish,B multi-agent runs,D,0.22,0.10,0,88,0,0.29,0.44,380,0.0
+10,yes,Spanish,B multi-agent runs,D2,0.94,0.18,88,88,88,0.29,0.44,333,12.2
+10,yes,Spanish,C sessions,A,0.03,0.01,0,0,0,0.03,0.05,284,0.0
+10,yes,Spanish,C sessions,B,0.35,0.00,0,0,0,0.00,0.00,277,25.6
+10,yes,Spanish,C sessions,C,0.40,0.00,0,0,0,0.00,0.00,272,7.0
+10,yes,Spanish,C sessions,C2,1.00,0.20,100,100,100,0.50,0.63,263,5.6
+10,yes,Spanish,C sessions,D,0.20,0.12,0,100,0,1.00,1.00,382,0.0
+10,yes,Spanish,C sessions,D2,1.00,0.21,100,100,100,1.00,1.00,332,11.0
+10,yes,Spanish,D contradictions,A,0.67,0.25,0,0,0,0.47,0.62,278,0.0
+10,yes,Spanish,D contradictions,B,1.00,0.23,100,100,100,0.58,0.69,272,6.2
+10,yes,Spanish,D contradictions,C,1.00,0.23,100,100,100,0.58,0.69,272,6.2
+10,yes,Spanish,D contradictions,C2,1.00,0.20,100,100,100,0.50,0.63,272,6.5
+10,yes,Spanish,D contradictions,D,0.61,0.26,0,100,0,1.00,0.93,358,0.0
+10,yes,Spanish,D contradictions,D2,1.00,0.38,100,100,100,1.00,0.93,316,9.8
+10,yes,Spanish,E at a date,A,0.00,0.00,0,0,0,0.00,0.00,280,0.0
+10,yes,Spanish,E at a date,B,0.50,0.00,0,0,0,0.00,0.00,271,8.0
+10,yes,Spanish,E at a date,C,0.50,0.00,0,0,0,0.00,0.00,271,8.0
+10,yes,Spanish,E at a date,C2,1.00,0.19,100,100,100,0.50,0.63,262,7.2
+10,yes,Spanish,E at a date,D,0.50,0.13,0,100,0,1.00,1.00,393,0.0
+10,yes,Spanish,E at a date,D2,1.00,0.17,100,100,100,1.00,1.00,343,8.5
+10,yes,Spanish,F single facts,A,0.90,0.09,90,100,90,0.74,0.78,288,0.0
+10,yes,Spanish,F single facts,B,0.70,0.13,70,100,70,0.60,0.63,282,8.1
+10,yes,Spanish,F single facts,C,0.80,0.14,80,100,80,0.73,0.75,265,5.0
+10,yes,Spanish,F single facts,C2,0.70,0.14,70,100,70,0.70,0.70,260,9.0
+10,yes,Spanish,F single facts,D,0.70,0.07,70,100,70,0.63,0.65,331,0.0
+10,yes,Spanish,F single facts,D2,0.70,0.08,70,100,70,0.63,0.65,309,6.4
+30,no,English,A decisions,A,0.25,0.10,0,0,0,0.33,0.50,287,0.0
+30,no,English,A decisions,B,0.69,0.00,0,0,0,0.00,0.00,272,24.6
+30,no,English,A decisions,C,0.75,0.00,0,0,0,0.00,0.00,266,6.0
+30,no,English,A decisions,C2,1.00,0.17,100,100,100,0.50,0.63,287,8.8
+30,no,English,A decisions,D,0.25,0.11,0,100,0,1.00,1.00,280,0.0
+30,no,English,A decisions,D2,1.00,0.20,100,100,100,1.00,1.00,261,12.0
+30,no,English,B multi-agent runs,A,0.00,0.00,0,0,0,0.00,0.00,166,0.0
+30,no,English,B multi-agent runs,B,0.44,0.00,0,0,0,0.00,0.00,285,27.1
+30,no,English,B multi-agent runs,C,0.50,0.00,0,0,0,0.00,0.00,288,9.0
+30,no,English,B multi-agent runs,C2,1.00,0.17,100,100,100,0.50,0.63,281,8.8
+30,no,English,B multi-agent runs,D,0.25,0.11,0,100,0,0.89,0.92,290,0.0
+30,no,English,B multi-agent runs,D2,0.97,0.17,88,88,88,0.88,0.88,288,14.5
+30,no,English,C sessions,A,0.03,0.02,0,0,0,0.03,0.05,166,0.0
+30,no,English,C sessions,B,0.72,0.00,0,0,0,0.00,0.00,285,25.2
+30,no,English,C sessions,C,0.80,0.00,0,0,0,0.00,0.00,288,7.0
+30,no,English,C sessions,C2,1.00,0.17,100,100,100,0.50,0.63,285,6.8
+30,no,English,C sessions,D,0.20,0.10,0,100,0,1.00,1.00,296,0.0
+30,no,English,C sessions,D2,1.00,0.20,100,100,100,1.00,1.00,292,12.9
+30,no,English,D contradictions,A,0.67,0.59,0,0,0,0.58,0.73,122,0.0
+30,no,English,D contradictions,B,1.00,0.19,100,100,100,0.58,0.69,284,8.2
+30,no,English,D contradictions,C,1.00,0.19,100,100,100,0.58,0.69,284,8.2
+30,no,English,D contradictions,C2,1.00,0.19,100,100,100,0.58,0.69,284,8.2
+30,no,English,D contradictions,D,0.33,0.10,0,100,0,1.00,1.00,289,0.0
+30,no,English,D contradictions,D2,1.00,0.20,100,100,100,1.00,1.00,267,18.0
+30,no,English,E at a date,A,0.00,0.00,0,0,0,0.00,0.00,161,0.0
+30,no,English,E at a date,B,0.50,0.00,0,0,0,0.00,0.00,288,10.0
+30,no,English,E at a date,C,0.50,0.00,0,0,0,0.00,0.00,288,10.0
+30,no,English,E at a date,C2,1.00,0.15,100,100,100,0.50,0.63,293,8.0
+30,no,English,E at a date,D,0.50,0.11,0,100,0,1.00,1.00,280,0.0
+30,no,English,E at a date,D2,1.00,0.18,100,100,100,1.00,1.00,272,13.0
+30,no,English,F single facts,A,1.00,0.10,100,100,100,1.00,1.00,246,0.0
+30,no,English,F single facts,B,1.00,0.16,100,100,100,1.00,1.00,289,7.3
+30,no,English,F single facts,C,1.00,0.13,100,100,100,1.00,1.00,287,2.5
+30,no,English,F single facts,C2,1.00,0.12,100,100,100,1.00,1.00,286,2.3
+30,no,English,F single facts,D,1.00,0.10,100,100,100,1.00,1.00,246,0.0
+30,no,English,F single facts,D2,1.00,0.10,100,100,100,1.00,1.00,246,0.0
+30,no,Spanish,A decisions,A,0.25,0.28,0,0,0,0.50,0.63,134,0.0
+30,no,Spanish,A decisions,B,0.69,0.00,0,0,0,0.00,0.00,277,24.6
+30,no,Spanish,A decisions,C,0.75,0.00,0,0,0,0.00,0.00,272,6.0
+30,no,Spanish,A decisions,C2,1.00,0.20,100,100,100,0.50,0.63,270,5.8
+30,no,Spanish,A decisions,D,0.25,0.14,0,100,0,1.00,1.00,284,0.0
+30,no,Spanish,A decisions,D2,1.00,0.25,100,100,100,1.00,1.00,260,12.4
+30,no,Spanish,B multi-agent runs,A,0.00,0.00,0,0,0,0.00,0.00,218,0.0
+30,no,Spanish,B multi-agent runs,B,0.25,0.00,0,0,0,0.00,0.00,277,26.4
+30,no,Spanish,B multi-agent runs,C,0.25,0.00,0,0,0,0.00,0.00,272,8.0
+30,no,Spanish,B multi-agent runs,C2,1.00,0.20,100,100,100,0.48,0.61,258,7.6
+30,no,Spanish,B multi-agent runs,D,0.25,0.12,0,100,0,0.46,0.59,293,0.0
+30,no,Spanish,B multi-agent runs,D2,0.97,0.22,88,88,88,0.44,0.55,268,13.0
+30,no,Spanish,C sessions,A,0.03,0.02,0,0,0,0.03,0.05,210,0.0
+30,no,Spanish,C sessions,B,0.57,0.00,0,0,0,0.00,0.00,277,24.5
+30,no,Spanish,C sessions,C,0.60,0.00,0,0,0,0.00,0.00,272,6.0
+30,no,Spanish,C sessions,C2,1.00,0.20,100,100,100,0.50,0.63,262,6.6
+30,no,Spanish,C sessions,D,0.20,0.12,0,100,0,1.00,1.00,293,0.0
+30,no,Spanish,C sessions,D2,1.00,0.24,100,100,100,1.00,1.00,268,12.1
+30,no,Spanish,D contradictions,A,0.67,0.49,0,0,0,0.58,0.73,168,0.0
+30,no,Spanish,D contradictions,B,1.00,0.23,100,100,100,0.58,0.69,272,6.2
+30,no,Spanish,D contradictions,C,1.00,0.23,100,100,100,0.58,0.69,272,6.2
+30,no,Spanish,D contradictions,C2,1.00,0.23,100,100,100,0.58,0.69,272,6.2
+30,no,Spanish,D contradictions,D,0.33,0.14,0,100,0,1.00,1.00,275,0.0
+30,no,Spanish,D contradictions,D2,1.00,0.25,100,100,100,1.00,1.00,256,14.0
+30,no,Spanish,E at a date,A,0.00,0.00,0,0,0,0.00,0.00,170,0.0
+30,no,Spanish,E at a date,B,0.50,0.00,0,0,0,0.00,0.00,271,8.0
+30,no,Spanish,E at a date,C,0.50,0.00,0,0,0,0.00,0.00,271,8.0
+30,no,Spanish,E at a date,C2,1.00,0.19,100,100,100,0.50,0.63,262,7.2
+30,no,Spanish,E at a date,D,0.50,0.13,0,100,0,1.00,1.00,285,0.0
+30,no,Spanish,E at a date,D2,1.00,0.20,100,100,100,1.00,1.00,279,12.0
+30,no,Spanish,F single facts,A,1.00,0.11,100,100,100,1.00,1.00,252,0.0
+30,no,Spanish,F single facts,B,1.00,0.20,100,100,100,1.00,1.00,269,6.3
+30,no,Spanish,F single facts,C,1.00,0.16,100,100,100,1.00,1.00,268,2.2
+30,no,Spanish,F single facts,C2,1.00,0.16,100,100,100,1.00,1.00,263,3.1
+30,no,Spanish,F single facts,D,1.00,0.11,100,100,100,1.00,1.00,252,0.0
+30,no,Spanish,F single facts,D2,1.00,0.11,100,100,100,1.00,1.00,252,0.0
+30,yes,English,A decisions,A,0.25,0.10,0,0,0,0.29,0.46,296,0.0
+30,yes,English,A decisions,B,0.62,0.00,0,0,0,0.00,0.00,277,24.6
+30,yes,English,A decisions,C,0.69,0.00,0,0,0,0.00,0.00,270,6.0
+30,yes,English,A decisions,C2,1.00,0.17,100,100,100,0.50,0.63,287,8.8
+30,yes,English,A decisions,D,0.25,0.11,0,100,0,1.00,1.00,288,0.0
+30,yes,English,A decisions,D2,1.00,0.20,100,100,100,1.00,1.00,268,10.8
+30,yes,English,B multi-agent runs,A,0.00,0.00,0,0,0,0.00,0.00,292,0.0
+30,yes,English,B multi-agent runs,B,0.31,0.00,0,0,0,0.00,0.00,277,26.6
+30,yes,English,B multi-agent runs,C,0.34,0.00,0,0,0,0.00,0.00,274,8.4
+30,yes,English,B multi-agent runs,C2,1.00,0.17,100,100,100,0.50,0.63,282,9.4
+30,yes,English,B multi-agent runs,D,0.25,0.11,0,100,0,0.94,0.95,296,0.0
+30,yes,English,B multi-agent runs,D2,1.00,0.20,100,100,100,1.00,1.00,285,13.0
+30,yes,English,C sessions,A,0.03,0.01,0,0,0,0.02,0.04,294,0.0
+30,yes,English,C sessions,B,0.70,0.00,0,0,0,0.00,0.00,282,25.1
+30,yes,English,C sessions,C,0.75,0.00,0,0,0,0.00,0.00,282,6.8
+30,yes,English,C sessions,C2,1.00,0.17,100,100,100,0.50,0.63,286,7.0
+30,yes,English,C sessions,D,0.20,0.10,0,100,0,1.00,1.00,297,0.0
+30,yes,English,C sessions,D2,1.00,0.20,100,100,100,1.00,1.00,292,12.9
+30,yes,English,D contradictions,A,0.67,0.20,0,0,0,0.47,0.62,279,0.0
+30,yes,English,D contradictions,B,1.00,0.19,100,100,100,0.58,0.69,284,8.2
+30,yes,English,D contradictions,C,1.00,0.19,100,100,100,0.58,0.69,284,8.2
+30,yes,English,D contradictions,C2,1.00,0.19,100,100,100,0.58,0.69,284,8.2
+30,yes,English,D contradictions,D,0.33,0.10,0,100,0,0.83,0.88,282,0.0
+30,yes,English,D contradictions,D2,1.00,0.18,100,100,100,0.92,0.94,276,16.7
+30,yes,English,E at a date,A,0.00,0.00,0,0,0,0.00,0.00,282,0.0
+30,yes,English,E at a date,B,0.50,0.00,0,0,0,0.00,0.00,288,10.0
+30,yes,English,E at a date,C,0.50,0.00,0,0,0,0.00,0.00,288,10.0
+30,yes,English,E at a date,C2,1.00,0.15,100,100,100,0.50,0.63,283,7.8
+30,yes,English,E at a date,D,0.50,0.11,0,100,0,1.00,1.00,318,0.0
+30,yes,English,E at a date,D2,1.00,0.16,100,100,100,1.00,1.00,285,9.8
+30,yes,English,F single facts,A,1.00,0.10,100,100,100,0.68,0.75,261,0.0
+30,yes,English,F single facts,B,0.60,0.10,60,100,60,0.60,0.60,285,7.1
+30,yes,English,F single facts,C,1.00,0.13,100,100,100,0.68,0.75,287,2.5
+30,yes,English,F single facts,C2,1.00,0.12,100,100,100,0.59,0.69,286,2.7
+30,yes,English,F single facts,D,1.00,0.10,100,100,100,0.90,0.93,257,0.0
+30,yes,English,F single facts,D2,1.00,0.10,100,100,100,1.00,1.00,257,0.0
+30,yes,Spanish,A decisions,A,0.25,0.12,0,0,0,0.88,0.91,277,0.0
+30,yes,Spanish,A decisions,B,0.69,0.15,0,0,0,0.75,0.75,273,7.1
+30,yes,Spanish,A decisions,C,0.69,0.15,0,0,0,0.75,0.75,270,7.0
+30,yes,Spanish,A decisions,C2,1.00,0.35,100,100,100,0.88,0.91,270,6.4
+30,yes,Spanish,A decisions,D,0.25,0.14,0,100,0,1.00,1.00,284,0.0
+30,yes,Spanish,A decisions,D2,1.00,0.25,100,100,100,1.00,1.00,261,11.4
+30,yes,Spanish,B multi-agent runs,A,0.09,0.04,0,0,0,0.08,0.15,290,0.0
+30,yes,Spanish,B multi-agent runs,B,0.25,0.00,0,0,0,0.00,0.00,277,26.4
+30,yes,Spanish,B multi-agent runs,C,0.25,0.00,0,0,0,0.00,0.00,272,8.0
+30,yes,Spanish,B multi-agent runs,C2,1.00,0.20,100,100,100,0.44,0.58,265,5.8
+30,yes,Spanish,B multi-agent runs,D,0.22,0.11,0,88,0,0.44,0.55,298,0.0
+30,yes,Spanish,B multi-agent runs,D2,0.97,0.22,88,88,88,0.44,0.55,265,11.5
+30,yes,Spanish,C sessions,A,0.12,0.07,0,0,0,0.11,0.21,288,0.0
+30,yes,Spanish,C sessions,B,0.57,0.00,0,0,0,0.00,0.00,277,24.5
+30,yes,Spanish,C sessions,C,0.60,0.00,0,0,0,0.00,0.00,272,6.0
+30,yes,Spanish,C sessions,C2,1.00,0.20,100,100,100,0.50,0.63,264,5.5
+30,yes,Spanish,C sessions,D,0.20,0.12,0,100,0,1.00,1.00,299,0.0
+30,yes,Spanish,C sessions,D2,1.00,0.24,100,100,100,1.00,1.00,265,10.6
+30,yes,Spanish,D contradictions,A,0.61,0.21,0,0,0,0.52,0.67,280,0.0
+30,yes,Spanish,D contradictions,B,0.83,0.20,83,83,83,0.50,0.59,270,5.8
+30,yes,Spanish,D contradictions,C,0.83,0.20,83,83,83,0.50,0.59,270,5.8
+30,yes,Spanish,D contradictions,C2,1.00,0.23,100,100,100,0.58,0.69,270,4.8
+30,yes,Spanish,D contradictions,D,0.39,0.17,0,100,0,1.00,0.98,286,0.0
+30,yes,Spanish,D contradictions,D2,1.00,0.27,100,100,100,1.00,0.98,270,13.5
+30,yes,Spanish,E at a date,A,0.00,0.00,0,0,0,0.00,0.00,282,0.0
+30,yes,Spanish,E at a date,B,0.50,0.00,0,0,0,0.00,0.00,271,8.0
+30,yes,Spanish,E at a date,C,0.50,0.00,0,0,0,0.00,0.00,271,8.0
+30,yes,Spanish,E at a date,C2,1.00,0.19,100,100,100,0.50,0.63,262,6.8
+30,yes,Spanish,E at a date,D,0.50,0.13,0,100,0,1.00,1.00,283,0.0
+30,yes,Spanish,E at a date,D2,1.00,0.20,100,100,100,1.00,1.00,279,12.0
+30,yes,Spanish,F single facts,A,0.90,0.09,90,100,90,0.74,0.78,266,0.0
+30,yes,Spanish,F single facts,B,0.70,0.14,70,100,70,0.70,0.70,276,6.7
+30,yes,Spanish,F single facts,C,0.80,0.14,80,100,80,0.73,0.75,265,3.7
+30,yes,Spanish,F single facts,C2,0.70,0.14,70,100,70,0.70,0.70,261,8.1
+30,yes,Spanish,F single facts,D,1.00,0.11,100,100,100,1.00,1.00,284,0.0
+30,yes,Spanish,F single facts,D2,1.00,0.12,100,100,100,1.00,1.00,291,4.0

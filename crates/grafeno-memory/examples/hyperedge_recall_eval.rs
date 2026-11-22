@@ -9,6 +9,10 @@
 //! - **B**: A, then every hyperedge of each recalled node (incidence).
 //! - **C**: A, then only the hyperedges that share two recalled nodes or a
 //!   word with the question.
+//! - **C2**: A, then the five best hyperedges of all the recalled nodes,
+//!   ranked by the words they share with the question (then shorter
+//!   first, then by recalled nodes they hold), after the first recalled node:
+//!   C when nodes take part in many.
 //! - **D**: today's recall on the event-node memory (no hyperedges).
 //! - **D2**: D with B's expansion: each recalled node packed with its
 //!   outgoing facts inline (an event node with its participants and their
@@ -20,11 +24,18 @@
 //! and, when it asks for one, the node in a role ("who proposed"). Packed
 //! context: recalled nodes and hyperedges as lines, best first, then the
 //! facts among the nodes packed, in at most `BUDGET` tokens (counted by
-//! `estimate_tokens`). No embeddings are used (none of the strategies has a
-//! model), so recall is text search plus graph expansion, and it is
-//! deterministic: only latency varies between runs.
+//! `estimate_tokens`). By default no embeddings are used (none of the
+//! strategies has a model), so recall is text search plus graph expansion,
+//! and it is deterministic: only latency varies between runs.
 //!
-//! `cargo run --release -p grafeno-memory --example hyperedge_recall_eval`
+//! Two arguments widen it. A number (1 to 30) writes that many decisions,
+//! runs and sessions per topic, one per sprint, each naming its sprint, and
+//! the questions ask about one of them: many events crowd the single facts
+//! and one another. `vectors` gives every node, event node and question a
+//! hashed bag-of-words vector (not semantic: near only when words are
+//! shared), the same for every strategy.
+//!
+//! `cargo run --release -p grafeno-memory --example hyperedge_recall_eval -- 10 vectors`
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
@@ -51,6 +62,7 @@ enum Strategy {
     A,
     B,
     C,
+    C2,
     D,
     D2,
 }
@@ -94,6 +106,79 @@ struct Question {
     /// The node the question asks for, in its role.
     answer: Option<(NodeId, String)>,
     at: Option<Timestamp>,
+    /// The question's word vector, when the run uses them.
+    embedding: Option<Vec<f32>>,
+}
+
+/// What a run varies: events per topic (one per sprint) and word vectors.
+#[derive(Clone, Copy)]
+struct Config {
+    per_topic: usize,
+    vectors: bool,
+}
+
+/// Sprint names: the marker that tells the events of one topic apart.
+const SPRINTS: [&str; 30] = [
+    "Vega",
+    "Orion",
+    "Lyra",
+    "Sirius",
+    "Rigel",
+    "Deneb",
+    "Altair",
+    "Antares",
+    "Pollux",
+    "Castor",
+    "Mira",
+    "Spica",
+    "Arcturus",
+    "Capella",
+    "Procyon",
+    "Regulus",
+    "Bellatrix",
+    "Alnilam",
+    "Mizar",
+    "Alcor",
+    "Thuban",
+    "Kochab",
+    "Shaula",
+    "Nunki",
+    "Hadar",
+    "Acrux",
+    "Mimosa",
+    "Gacrux",
+    "Atria",
+    "Avior",
+];
+
+/// Dimensions of the word vectors.
+const DIMS: usize = 256;
+
+/// A hashed bag of words: each word (lowercased, longer than two
+/// characters) adds ±1 to one of `DIMS` buckets, then the vector is scaled
+/// to length one. Not semantic: two texts are near only when they share
+/// words. Every strategy gets the same vectors, so only how events are
+/// stored differs.
+fn hashed(text: &str) -> Vec<f32> {
+    let mut vector = vec![0.0f32; DIMS];
+    for word in text.split(|c: char| !c.is_alphanumeric()) {
+        if word.chars().count() <= 2 {
+            continue;
+        }
+        // FNV-1a.
+        let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+        for byte in word.to_lowercase().bytes() {
+            hash ^= u64::from(byte);
+            hash = hash.wrapping_mul(0x0100_0000_01b3);
+        }
+        let sign = if hash >> 63 == 0 { 1.0 } else { -1.0 };
+        vector[(hash % DIMS as u64) as usize] += sign;
+    }
+    let norm = vector.iter().map(|x| x * x).sum::<f32>().sqrt();
+    if norm > 0.0 {
+        vector.iter_mut().for_each(|x| *x /= norm);
+    }
+    vector
 }
 
 struct Words {
@@ -313,7 +398,8 @@ fn date(text: &str) -> Timestamp {
 
 /// Writes the same nodes into both memories (same ids), then each event
 /// as a hyperedge into one and as an event node into the other.
-fn world(words: &Words, say: &Phrases, language: Language) -> World {
+fn world(words: &Words, say: &Phrases, language: Language, config: Config) -> World {
+    let vector = |text: &str| config.vectors.then(|| hashed(text));
     let hyper = Grafeno::in_memory().unwrap();
     let events = Grafeno::in_memory().unwrap();
     for db in [&hyper, &events] {
@@ -329,7 +415,11 @@ fn world(words: &Words, say: &Phrases, language: Language) -> World {
         id
     };
     let named = |label: &str, name: String, text: String| {
-        both(NewNode::new(label).prop("name", name).text(text))
+        let mut node = NewNode::new(label).prop("name", name);
+        if let Some(v) = vector(&text) {
+            node = node.embedding(v);
+        }
+        both(node.text(text))
     };
     let agents: Vec<NodeId> = (0..12)
         .map(|i| {
@@ -381,13 +471,14 @@ fn world(words: &Words, say: &Phrases, language: Language) -> World {
         let h = hyper.write(|tx| tx.create_hyperedge(NS, new)).unwrap();
         let node = events
             .write(|tx| {
-                let id = tx.create_node(
-                    NS,
-                    NewNode::new("Event")
-                        .prop("name", format!("{label} {}", &h.to_string()[30..]))
-                        .prop("kind", label)
-                        .text(summary.clone()),
-                )?;
+                let mut node = NewNode::new("Event")
+                    .prop("name", format!("{label} {}", &h.to_string()[30..]))
+                    .prop("kind", label)
+                    .text(summary.clone());
+                if let Some(v) = vector(&summary) {
+                    node = node.embedding(v);
+                }
+                let id = tx.create_node(NS, node)?;
                 for (member, role) in members {
                     let mut edge = NewEdge::new(id, *role, *member);
                     edge.valid_from = from;
@@ -402,72 +493,108 @@ fn world(words: &Words, say: &Phrases, language: Language) -> World {
 
     let agent = |i: usize| agents[i % agents.len()];
     let mut questions = Vec::new();
+    let mut question = |kind: Kind,
+                        text: String,
+                        gold: BTreeSet<NodeId>,
+                        event: Option<Event>,
+                        answer: Option<(NodeId, String)>,
+                        at: Option<Timestamp>| {
+        let embedding = vector(&text);
+        questions.push(Question {
+            kind,
+            text,
+            gold,
+            event,
+            answer,
+            at,
+            embedding,
+        });
+    };
+    // The sprint asked about: the middle one.
+    let asked = config.per_topic / 2;
     for (i, (topic, _)) in words.topics.iter().enumerate() {
-        let (p, r) = (agent(i), agent(i + 5));
-        let decision = event(
-            "decision",
-            (say.decision)(topic, 1),
-            &[
-                (p, "proposer"),
-                (r, "reviewer"),
-                (tasks[i], "subject"),
-                (evidence[i], "evidence"),
-            ],
-            None,
-            None,
-        );
-        let runners = [agent(i + 1), agent(i + 3), agent(i + 7)];
-        let execution = event(
-            "execution",
-            (say.execution)(topic, i % 3 != 0),
-            &[
-                (runners[0], "runner"),
-                (runners[1], "runner"),
-                (runners[2], "reviewer"),
-                (tasks[i], "subject"),
-            ],
-            None,
-            None,
-        );
-        let attendees = [agent(i + 2), agent(i + 4), agent(i + 6), agent(i + 9)];
-        let session = event(
-            "session",
-            (say.session)(topic),
-            &[
-                (attendees[0], "host"),
-                (attendees[1], "attendee"),
-                (attendees[2], "attendee"),
-                (attendees[3], "attendee"),
-                (tasks[i], "subject"),
-            ],
-            None,
-            None,
-        );
-        if i < 8 {
-            questions.push(Question {
-                kind: Kind::Decision,
-                text: (say.q_decision)(topic),
-                gold: [p, r, evidence[i]].into(),
-                event: Some(decision),
-                answer: Some((p, "proposer".into())),
-                at: None,
-            });
-            questions.push(Question {
-                kind: Kind::Execution,
-                text: (say.q_execution)(topic),
-                gold: runners.into(),
-                event: Some(execution),
-                answer: Some((runners[0], "runner".into())),
-                at: None,
-            });
-            questions.push(Question {
-                kind: Kind::Session,
-                text: (say.q_session)(topic),
-                gold: attendees.into(),
-                event: Some(session),
-                answer: Some((attendees[0], "host".into())),
-                at: None,
-            });
+        for (k, sprint) in SPRINTS.iter().enumerate().take(config.per_topic) {
+            // One event per topic keeps the texts of the first runs; with
+            // more, each names its sprint, and so does the question.
+            let (mark, ask) = if config.per_topic == 1 {
+                (String::new(), String::new())
+            } else {
+                (
+                    format!(" (sprint {})", sprint),
+                    format!("Sprint {}: ", sprint),
+                )
+            };
+            let (p, r) = (agent(i + k), agent(i + k + 5));
+            let decision = event(
+                "decision",
+                format!("{}{mark}", (say.decision)(topic, 1)),
+                &[
+                    (p, "proposer"),
+                    (r, "reviewer"),
+                    (tasks[i], "subject"),
+                    (evidence[i], "evidence"),
+                ],
+                None,
+                None,
+            );
+            let runners = [agent(i + k + 1), agent(i + k + 3), agent(i + k + 7)];
+            let execution = event(
+                "execution",
+                format!("{}{mark}", (say.execution)(topic, (i + k) % 3 != 0)),
+                &[
+                    (runners[0], "runner"),
+                    (runners[1], "runner"),
+                    (runners[2], "reviewer"),
+                    (tasks[i], "subject"),
+                ],
+                None,
+                None,
+            );
+            let attendees = [
+                agent(i + k + 2),
+                agent(i + k + 4),
+                agent(i + k + 6),
+                agent(i + k + 9),
+            ];
+            let session = event(
+                "session",
+                format!("{}{mark}", (say.session)(topic)),
+                &[
+                    (attendees[0], "host"),
+                    (attendees[1], "attendee"),
+                    (attendees[2], "attendee"),
+                    (attendees[3], "attendee"),
+                    (tasks[i], "subject"),
+                ],
+                None,
+                None,
+            );
+            if i < 8 && k == asked {
+                question(
+                    Kind::Decision,
+                    format!("{ask}{}", (say.q_decision)(topic)),
+                    [p, r, evidence[i]].into(),
+                    Some(decision),
+                    Some((p, "proposer".into())),
+                    None,
+                );
+                question(
+                    Kind::Execution,
+                    format!("{ask}{}", (say.q_execution)(topic)),
+                    runners.into(),
+                    Some(execution),
+                    Some((runners[0], "runner".into())),
+                    None,
+                );
+                question(
+                    Kind::Session,
+                    format!("{ask}{}", (say.q_session)(topic)),
+                    attendees.into(),
+                    Some(session),
+                    Some((attendees[0], "host".into())),
+                    None,
+                );
+            }
         }
         if (8..14).contains(&i) {
             let contradiction = event(
@@ -481,14 +608,14 @@ fn world(words: &Words, say: &Phrases, language: Language) -> World {
                 None,
                 None,
             );
-            questions.push(Question {
-                kind: Kind::Contradiction,
-                text: (say.q_contradiction)(topic),
-                gold: [evidence[i], counters[i]].into(),
-                event: Some(contradiction),
-                answer: Some((counters[i], "contradicting".into())),
-                at: None,
-            });
+            question(
+                Kind::Contradiction,
+                (say.q_contradiction)(topic),
+                [evidence[i], counters[i]].into(),
+                Some(contradiction),
+                Some((counters[i], "contradicting".into())),
+                None,
+            );
         }
         if (14..20).contains(&i) {
             // Two versions: the first held until June, the second since.
@@ -507,33 +634,33 @@ fn world(words: &Words, say: &Phrases, language: Language) -> World {
                 Some(date("2025-06-01")),
                 None,
             );
-            questions.push(Question {
-                kind: Kind::Temporal,
-                text: (say.q_temporal)(topic, "2025-03-01"),
-                gold: [old].into(),
-                event: Some(first),
-                answer: Some((old, "proposer".into())),
-                at: Some(date("2025-03-01")),
-            });
+            question(
+                Kind::Temporal,
+                (say.q_temporal)(topic, "2025-03-01"),
+                [old].into(),
+                Some(first),
+                Some((old, "proposer".into())),
+                Some(date("2025-03-01")),
+            );
         }
     }
     for i in 0..5 {
-        questions.push(Question {
-            kind: Kind::Single,
-            text: (say.q_agent)(words.names[i * 2]),
-            gold: [agents[i * 2]].into(),
-            event: None,
-            answer: None,
-            at: None,
-        });
-        questions.push(Question {
-            kind: Kind::Single,
-            text: (say.q_task)(i * 4 + 2),
-            gold: [tasks[i * 4 + 1]].into(),
-            event: None,
-            answer: None,
-            at: None,
-        });
+        question(
+            Kind::Single,
+            (say.q_agent)(words.names[i * 2]),
+            [agents[i * 2]].into(),
+            None,
+            None,
+            None,
+        );
+        question(
+            Kind::Single,
+            (say.q_task)(i * 4 + 2),
+            [tasks[i * 4 + 1]].into(),
+            None,
+            None,
+            None,
+        );
     }
 
     // For the safety checks, in the hyperedge memory only.
@@ -684,10 +811,14 @@ fn query(question: &Question) -> RecallQuery {
     if let Some(at) = question.at {
         expansion.filter = EdgeFilter::any().valid_at(at);
     }
-    RecallQuery::new()
+    let query = RecallQuery::new()
         .text(question.text.clone())
         .limit(LIMIT)
-        .expand(Some(expansion))
+        .expand(Some(expansion));
+    match &question.embedding {
+        Some(v) => query.embedding(v.clone()),
+        None => query,
+    }
 }
 
 /// Words of a text, lowercased, without the shortest ones.
@@ -713,6 +844,48 @@ fn answer(read: &ReadTx, strategy: Strategy, question: &Question) -> Packed {
     };
     let recalled_set: HashSet<NodeId> = recalled.iter().copied().collect();
     let asked = words(&question.text);
+    if strategy == Strategy::C2 {
+        // The hyperedges of every recalled node, ranked by the words each
+        // shares with the question, then the shortest text first (as text
+        // search weighs length), then by the recalled nodes it holds; the
+        // best five, after the first recalled node.
+        let mut ranked: Vec<(usize, usize, usize, grafeno::HyperEdge)> = Vec::new();
+        for node in &recalled {
+            for edge in read.node_hyperedges(NS, *node, &filter).unwrap() {
+                if edge.participants.len() > SHOWN || !seen.insert(edge.id) {
+                    continue;
+                }
+                let mut text = edge.label.clone();
+                for value in edge.props.values() {
+                    if let Some(s) = value.as_str() {
+                        text.push(' ');
+                        text.push_str(s);
+                    }
+                }
+                let own = words(&text);
+                let common = own.intersection(&asked).count();
+                let shared = edge
+                    .nodes()
+                    .iter()
+                    .filter(|n| recalled_set.contains(n))
+                    .count();
+                if common > 0 || shared >= 2 {
+                    ranked.push((common, shared, own.len(), edge));
+                }
+            }
+        }
+        ranked.sort_by(|a, b| (b.0, a.2, b.1).cmp(&(a.0, b.2, a.1)));
+        let mut nodes = recalled.iter().map(|id| Unit::Node(*id));
+        units.extend(nodes.next());
+        units.extend(
+            ranked
+                .into_iter()
+                .take(PER_NODE)
+                .map(|(_, _, _, edge)| Unit::Hyper(edge)),
+        );
+        units.extend(nodes);
+        return pack(read, units);
+    }
     for node in &recalled {
         if strategy == Strategy::D2 {
             let facts = match question.at {
@@ -932,11 +1105,12 @@ fn mean(values: impl Iterator<Item = f64>) -> f64 {
     }
 }
 
-fn run(language: &str, world: &World) {
+fn run(language: &str, world: &World, config: Config) {
     let strategies = [
         Strategy::A,
         Strategy::B,
         Strategy::C,
+        Strategy::C2,
         Strategy::D,
         Strategy::D2,
     ];
@@ -964,8 +1138,14 @@ fn run(language: &str, world: &World) {
     }
 
     println!(
-        "\n### {language}: {} questions, budget {BUDGET} tokens\n",
-        world.questions.len()
+        "\n### {language}: {} questions, budget {BUDGET} tokens, {} events per topic and kind, {}\n",
+        world.questions.len(),
+        config.per_topic,
+        if config.vectors {
+            "hashed word vectors"
+        } else {
+            "no vectors"
+        }
     );
     println!(
         "| Kind | Strategy | Recall | Precision | Complete | Event | Answered in role | MRR | nDCG | Tokens | Stray participants |"
@@ -1097,10 +1277,29 @@ fn view_hiding(label: &str) -> Arc<grafeno::View> {
     Arc::new(grafeno::View::new(Arc::new(rights), Some(&account)))
 }
 
+/// Arguments: events per topic and kind (1 to 30, default 1), and
+/// `vectors` for hashed word vectors.
 fn main() {
-    let english = world(&WORDS_EN, &PHRASES_EN, Language::English);
-    run("English", &english);
-    safety(&english);
-    let spanish = world(&WORDS_ES, &PHRASES_ES, Language::Spanish);
-    run("Spanish", &spanish);
+    let mut config = Config {
+        per_topic: 1,
+        vectors: false,
+    };
+    for arg in std::env::args().skip(1) {
+        if arg == "vectors" {
+            config.vectors = true;
+        } else {
+            config.per_topic = arg
+                .parse::<usize>()
+                .ok()
+                .filter(|n| (1..=SPRINTS.len()).contains(n))
+                .expect("events per topic: 1 to 30, or `vectors`");
+        }
+    }
+    let english = world(&WORDS_EN, &PHRASES_EN, Language::English, config);
+    run("English", &english, config);
+    if config.per_topic == 1 && !config.vectors {
+        safety(&english);
+    }
+    let spanish = world(&WORDS_ES, &PHRASES_ES, Language::Spanish, config);
+    run("Spanish", &spanish, config);
 }

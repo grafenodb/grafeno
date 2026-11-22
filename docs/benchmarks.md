@@ -1464,3 +1464,85 @@ facts inline, measured on real memories first. Limits: one synthetic
 memory from one generator, no embeddings, and "in role" is checked from
 the structure, not by a model reading the answer.
 
+### At scale, and with word vectors
+
+The same generator with more events, 2026-11-22. A number argument
+writes that many decisions, runs and sessions per topic, one per sprint
+(each summary names its sprint, "sprint Vega"), and the collective
+questions ask about one sprint ("Sprint Lyra: who proposed…"); the
+contradictions, the versions at a date and the single facts stay as
+they were, now among many more events. `vectors` gives every node, event
+node and question a hashed bag-of-words vector of 256 dimensions: not
+semantic (two texts are near only when they share words), the same for
+every strategy, so recall fuses text and vector ranks as it would with a
+model. A sixth strategy joins:
+
+- **C2**: A, then the five best hyperedges of all the recalled nodes,
+  ranked by the words each shares with the question, then the shorter
+  text, then the recalled nodes it holds; packed after the first
+  recalled node.
+
+C2 was written after the first runs at 10 events per topic showed B and
+C failing, and its order was changed twice on what those runs showed
+(recalled nodes first, then text length first): it is fitted to this
+generator, an upper bound for expanding hyperedges, not a measure of a
+strategy picked blind.
+
+```
+cargo run --release -p grafeno-memory --example hyperedge_recall_eval -- 10 vectors
+```
+
+"Complete" on English questions, in percent: collective questions
+(decisions, runs and sessions together, 24) / at a date (6) / single
+facts (10). Spanish is within a few points, except single facts with
+vectors (70 to 90% for every strategy, A included: the vectors of short
+Spanish questions pull in other agents) ([data](data/hyperedge_recall_scale.csv),
+[latency](data/hyperedge_recall_scale_latency.csv)).
+
+| Events per topic | Vectors | A | B | C | C2 | D | D2 |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | no | 0 / 0 / 100 | 100 / 100 / 100 | 100 / 100 / 100 | 100 / 100 / 100 | 0 / 17 / 100 | 100 / 100 / 100 |
+| 1 | yes | 0 / 0 / 100 | 100 / 100 / 60 | 100 / 100 / 100 | 100 / 100 / 100 | 0 / 0 / 100 | 100 / 100 / 100 |
+| 10 | no | 0 / 0 / 100 | 0 / 0 / 100 | 0 / 0 / 100 | 100 / 100 / 100 | 0 / 0 / 100 | 96 / 100 / 100 |
+| 10 | yes | 0 / 0 / 100 | 0 / 0 / 60 | 0 / 0 / 100 | 100 / 100 / 100 | 0 / 0 / 100 | 100 / 100 / 100 |
+| 30 | no | 0 / 0 / 100 | 0 / 0 / 100 | 0 / 0 / 100 | 100 / 100 / 100 | 0 / 0 / 100 | 96 / 100 / 100 |
+| 30 | yes | 0 / 0 / 100 | 0 / 0 / 60 | 0 / 0 / 100 | 100 / 100 / 100 | 0 / 0 / 100 | 100 / 100 / 100 |
+
+Latency p50 / p95 in µs, English, without vectors (vectors add about
+300 µs to every strategy, the vector search):
+
+| Events per topic | A | B | C | C2 | D | D2 |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1 | 45 / 94 | 111 / 292 | 108 / 328 | 118 / 370 | 258 / 371 | 291 / 448 |
+| 10 | 48 / 99 | 177 / 2 118 | 180 / 2 135 | 254 / 3 379 | 617 / 1 437 | 633 / 1 442 |
+| 30 | 48 / 96 | 360 / 6 577 | 386 / 6 662 | 592 / 11 168 | 1 296 / 2 156 | 1 353 / 2 160 |
+
+What it adds:
+
+- **Crowding breaks expansion that does not choose.** With ten events
+  per topic a task takes part in 30 hyperedges or more; B and C take
+  the first five of each recalled node, which are rarely the sprint
+  asked about, and answer no collective question and no question at a
+  date. The token budget is spent on the wrong events.
+- **Choosing needs a ranking of its own.** C2 answers everything, but
+  only by reading every hyperedge of every recalled node and ranking
+  them with a text measure written for this purpose; its p95 grows with
+  the events (3.4 ms at 10 per topic, 11 ms at 30), above D2's (1.4 and
+  2.2 ms).
+- **Event nodes need nothing new.** D2 holds at 96 to 100%: the event
+  node is a node, so the existing text search (and vector search) ranks
+  it among the rest and its summary decides; the one question it misses
+  at 10 and 30 without vectors is a run, where other sprints' runs fill
+  the budget first. D without expansion still answers no collective
+  question.
+- **Hashed vectors change little**, as expected from vectors that only
+  repeat the words: B loses four single facts in ten (the answer is no
+  longer the first node recalled, and the five hyperedges added after
+  each node before it use up the budget), the others hold.
+
+The conclusion stands and is firmer: the default stays as it is. Making
+recall expand hyperedges well would mean a second ranking beside the
+one recall has, at a higher latency, to reach what event nodes reach
+with the ranking that exists. Limits as above, plus: sprints differ in a
+single word, a sharper test than real memories may pose; the vectors are
+not a model's; and C2 is tuned on the data it is scored on.
