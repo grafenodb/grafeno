@@ -183,7 +183,7 @@ jobs:
           if ((Get-Service Grafeno).Status -ne 'Running') { throw "the service did not come back after the upgrade" }
           if ($account -ne 'NT SERVICE\Grafeno') { throw "the upgrade changed the account to $account" }
           if (-not (Select-String -Path "C:\ProgramData\Grafeno\grafeno.toml" -Pattern '7821' -Quiet)) { throw "the upgrade lost the settings" }
-          if ((Get-Item "$app\grafeno.exe").LastWriteTime -ne (Get-Item "target\release\grafeno.exe").LastWriteTime) { throw "the upgrade did not put the new grafeno.exe in place" }
+          if ((Get-FileHash "$app\grafeno.exe").Hash -ne (Get-FileHash "target\release\grafeno.exe").Hash) { throw "the upgrade did not put the new grafeno.exe in place" }
           $aside = @(Get-ChildItem "$app\grafeno.exe.*.old")
           if ($aside.Count -ne 1) { throw "the busy binary was not moved aside ($($aside.Count) found)" }
           if ($busy.HasExited) { throw "the upgrade stopped the other program" }
