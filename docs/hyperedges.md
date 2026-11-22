@@ -408,7 +408,9 @@ is postponed until a use case shows it is needed:
   variable-length steps through hyperedges): which participant pairs a
   step joins, whether roles order it, and how a path holds a hyperedge are
   open choices, and each would change what existing patterns mean if made
-  implicit. A hyperedge is not a set of binary edges here.
+  implicit. A hyperedge is not a set of binary edges here. A proposed
+  design, with what must be shown before building it:
+  [hyperedge-paths.md](hyperedge-paths.md).
 - **`EXISTS { MATCH HYPEREDGE … }` and `COUNT { MATCH HYPEREDGE … }`**: a
   shorter way to write the subqueries above, with no new meaning.
 - **Graph algorithms** (paths, centrality, communities) over hyperedges:
