@@ -167,16 +167,30 @@ jobs:
           if (-not ($events | Where-Object Message -like 'serving on http://127.0.0.1:7821*')) { throw "no readable event in the Event Log" }
           & "C:\Program Files\Grafeno\grafeno.exe" doctor
           if ($LASTEXITCODE -ne 0) { throw "grafeno doctor failed" }
-      - name: Upgrade over it, then uninstall (the data stays)
+      - name: Upgrade over it while another grafeno.exe runs, then uninstall (the data stays)
         shell: pwsh
         run: |
           $setup = "dist\grafeno-0.0.0-windows-x64-setup.exe"
-          Start-Process $setup -Wait -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/TASKS=service,path'
+          $app = "C:\Program Files\Grafeno"
+          # Another program runs the installed binary (as an MCP connection
+          # or a shell would): the upgrade must not stop at it.
+          $busy = Start-Process "$app\grafeno.exe" -PassThru -WindowStyle Hidden -ArgumentList 'serve', '--memory', '--addr', '127.0.0.1:7899'
+          Start-Sleep -Seconds 2
+          if ($busy.HasExited) { throw "the busy grafeno.exe did not start" }
+          Start-Process $setup -Wait -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/LOG=upgrade.log', '/TASKS=service,path'
+          Get-Content upgrade.log | Select-String 'moved aside', 'Error', 'in use'
           $account = ((sc.exe qc Grafeno) -match 'SERVICE_START_NAME' | Out-String).Split(':', 2)[1].Trim()
           if ((Get-Service Grafeno).Status -ne 'Running') { throw "the service did not come back after the upgrade" }
           if ($account -ne 'NT SERVICE\Grafeno') { throw "the upgrade changed the account to $account" }
           if (-not (Select-String -Path "C:\ProgramData\Grafeno\grafeno.toml" -Pattern '7821' -Quiet)) { throw "the upgrade lost the settings" }
+          if ((Get-Item "$app\grafeno.exe").LastWriteTime -ne (Get-Item "target\release\grafeno.exe").LastWriteTime) { throw "the upgrade did not put the new grafeno.exe in place" }
+          $aside = @(Get-ChildItem "$app\grafeno.exe.*.old")
+          if ($aside.Count -ne 1) { throw "the busy binary was not moved aside ($($aside.Count) found)" }
+          if ($busy.HasExited) { throw "the upgrade stopped the other program" }
+          Stop-Process -Id $busy.Id
+          $busy.WaitForExit()
           Start-Process "C:\Program Files\Grafeno\unins000.exe" -Wait -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART'
+          if (Get-ChildItem "$app\grafeno.exe.*.old" -ErrorAction SilentlyContinue) { throw "the uninstaller left the old binary" }
           # The SCM deletes a service once every handle to it is closed.
           foreach ($i in 1..30) { if (-not (Get-Service Grafeno -ErrorAction SilentlyContinue)) { break }; Start-Sleep -Milliseconds 500 }
           if (Get-Service Grafeno -ErrorAction SilentlyContinue) {

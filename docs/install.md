@@ -275,7 +275,10 @@ Restart-Service Grafeno
 Upgrading runs the new installer over the old one (or `winget upgrade
 GrafenoDB.Grafeno`): it stops the service, replaces the program, keeps the
 settings, the data and the service's account (it asks nothing about them
-again) and starts the service. Uninstalling (Settings → Apps) removes the
+again) and starts the service. A `grafeno.exe` other programs still run
+(an MCP connection, a shell) does not stop it: the old binary is moved
+aside, those programs keep the old version until they restart, and the
+next upgrade or the uninstaller deletes it. Uninstalling (Settings → Apps) removes the
 program, the service, the firewall rule and the PATH entry, and asks
 whether to remove the settings and the data too (no by default);
 unattended, `unins000.exe /VERYSILENT` keeps them and

@@ -282,7 +282,11 @@ Restart-Service Grafeno
 Para actualizar, ejecuta el instalador nuevo sobre el anterior (o
 `winget upgrade GrafenoDB.Grafeno`): detiene el servicio, reemplaza el
 programa, conserva la configuración, los datos y la cuenta del servicio (no
-vuelve a preguntar por ellos) e inicia el servicio. Desinstalar
+vuelve a preguntar por ellos) e inicia el servicio. Un `grafeno.exe` que
+otros programas siguen ejecutando (una conexión MCP, una consola) no lo
+detiene: el binario anterior se aparta, esos programas siguen con la
+versión anterior hasta que se reinician, y la siguiente actualización o el
+desinstalador lo borran. Desinstalar
 (Configuración → Aplicaciones) elimina el programa, el servicio, la regla de
 firewall y la entrada del PATH, y pregunta si eliminar también la
 configuración y los datos (por defecto, no); en modo desatendido,

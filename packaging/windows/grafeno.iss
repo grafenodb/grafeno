@@ -116,6 +116,10 @@ Filename: "{sys}\icacls.exe"; Parameters: """{code:InstalledDataDir}"" /grant ""
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""Grafeno {code:Port}"" dir=in action=allow protocol=TCP localport={code:Port}"; Flags: runhidden waituntilterminated; StatusMsg: "Opening the port in the firewall..."; Check: OpensFirewall
 Filename: "{sys}\sc.exe"; Parameters: "start Grafeno"; Flags: runhidden waituntilterminated; StatusMsg: "Starting the Grafeno service..."; Tasks: service
 
+[UninstallDelete]
+; Old binaries an upgrade moved aside while they were running.
+Type: files; Name: "{app}\grafeno.exe.*.old"
+
 [UninstallRun]
 Filename: "{app}\grafeno.exe"; Parameters: "service uninstall"; Flags: runhidden waituntilterminated; RunOnceId: "RemoveService"
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""Grafeno {code:InstalledPort}"""; Flags: runhidden waituntilterminated; RunOnceId: "RemoveFirewallRule"
@@ -137,6 +141,8 @@ var
   // Uninstall: remove the settings and the data too.
   Purge: Boolean;
   PurgeData: String;
+  // The old grafeno.exe was in use and was moved aside.
+  MovedAside: Boolean;
 
 function InitializeSetup(): Boolean;
 begin
@@ -394,16 +400,60 @@ begin
   Result := Pos(';' + Uppercase(Dir) + ';', ';' + Uppercase(Path) + ';') = 0;
 end;
 
-// Upgrades: stop and remove the old service so its binary can be replaced.
+// Old binaries moved aside by earlier upgrades, once nothing runs them.
+procedure DeleteOldBinaries(Dir: string);
+var
+  Found: TFindRec;
+begin
+  if FindFirst(Dir + '\grafeno.exe.*.old', Found) then
+  try
+    repeat
+      DeleteFile(Dir + '\' + Found.Name);
+    until not FindNext(Found);
+  finally
+    FindClose(Found);
+  end;
+end;
+
+// Upgrades: stop and remove the old service, then make room for the new
+// binary. A grafeno.exe still running (an MCP connection, a shell, the old
+// service's process finishing) cannot be deleted, but Windows lets it be
+// renamed: it is moved aside, what runs it keeps running the old version
+// until it restarts, and the next upgrade or the uninstaller deletes it.
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 var
   Code: Integer;
-  OldExe: string;
+  Dir, OldExe, Aside: string;
 begin
   Result := '';
-  OldExe := ExpandConstant('{app}\grafeno.exe');
-  if FileExists(OldExe) then
-    Exec(OldExe, 'service uninstall', '', SW_HIDE, ewWaitUntilTerminated, Code);
+  Dir := ExpandConstant('{app}');
+  OldExe := Dir + '\grafeno.exe';
+  if not FileExists(OldExe) then
+    exit;
+  Exec(OldExe, 'service uninstall', '', SW_HIDE, ewWaitUntilTerminated, Code);
+  DeleteOldBinaries(Dir);
+  Aside := Dir + '\grafeno.exe.' + GetDateTimeString('yyyymmddhhnnss', #0, #0) + '.old';
+  if RenameFile(OldExe, Aside) then
+  begin
+    // Deleted at once when nothing runs it.
+    if not DeleteFile(Aside) then
+    begin
+      MovedAside := True;
+      Log('grafeno.exe is in use: moved aside to ' + Aside);
+    end;
+  end
+  else if not DeleteFile(OldExe) then
+    Result := 'grafeno.exe (' + OldExe + ') is in use and could not be moved aside. ' +
+      'Close the programs that run it (an MCP connection, a Grafeno shell) and run the setup again.';
+end;
+
+// The finished page says when programs still run the old version.
+procedure CurPageChanged(CurPageID: Integer);
+begin
+  if (CurPageID = wpFinished) and MovedAside then
+    WizardForm.FinishedLabel.Caption := WizardForm.FinishedLabel.Caption + #13#10#13#10 +
+      'Programs that were running grafeno (an MCP connection, a shell) keep the ' +
+      'old version until they are restarted.';
 end;
 
 // Uninstall: ask whether to remove the settings and the data too (no by
