@@ -904,3 +904,67 @@ async fn totals(app: &Router) -> (usize, usize) {
         count(app, "f", "hyperedges").await,
     )
 }
+
+async fn raw(app: &Router, method: &str, uri: &str, body: Option<String>) -> (StatusCode, String) {
+    let request = Request::builder()
+        .method(method)
+        .uri(uri)
+        .header(header::AUTHORIZATION, format!("Bearer {OWNER}"));
+    let request = match body {
+        Some(body) => request
+            .header(header::CONTENT_TYPE, "text/csv")
+            .body(Body::from(body)),
+        None => request.body(Body::empty()),
+    }
+    .unwrap();
+    let response = app.clone().oneshot(request).await.unwrap();
+    let status = response.status();
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    (status, String::from_utf8(bytes.to_vec()).unwrap())
+}
+
+#[tokio::test]
+async fn hyperedges_go_out_and_back_in_as_csv() {
+    let app = app();
+    let (a, b) = (node(&app, "c", "one").await, node(&app, "c", "two").await);
+    let (_, made) = call(
+        &app,
+        OWNER,
+        "POST",
+        "/v1/c/hyperedges",
+        Some(
+            json!({ "label": "pair", "participants": [{ "node": a, "role": "left" }, { "node": b }],
+                     "props": { "k": 1 } }),
+        ),
+    )
+    .await;
+    let id = made["id"].as_str().unwrap().to_owned();
+    let (status, csv) = raw(&app, "GET", "/v1/c/export/hyperedges.csv", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(csv.contains(&id) && csv.contains("left"), "{csv}");
+    // Back in after deleting it: the same id.
+    call(
+        &app,
+        OWNER,
+        "DELETE",
+        &format!("/v1/c/hyperedges/{id}"),
+        None,
+    )
+    .await;
+    let (status, stats) = raw(&app, "POST", "/v1/c/import/hyperedges.csv", Some(csv)).await;
+    assert_eq!(status, StatusCode::OK, "{stats}");
+    let stats: Value = serde_json::from_str(&stats).unwrap();
+    assert_eq!(stats["hyperedges"], 1, "{stats}");
+    let (status, back) = call(&app, OWNER, "GET", &format!("/v1/c/hyperedges/{id}"), None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(back["props"]["k"], 1);
+    // An import of nodes only says nothing of hyperedges.
+    let (_, stats) = raw(
+        &app,
+        "POST",
+        "/v1/c/import/nodes.csv",
+        Some("id,name\nx1,Ana\n".into()),
+    )
+    .await;
+    assert!(!stats.contains("hyperedges"), "{stats}");
+}

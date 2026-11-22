@@ -25,11 +25,27 @@
 //! GraphML: `<key>`s for properties (with `attr.type` `string`, `long`,
 //! `double`, `boolean`), a node's labels in the `labels` key (`:A:B`), an edge's label in `label` (or its `label`
 //! attribute), text in `text`.
+//!
+//! Hyperedges: in CSV a third file, one row each, its participants a JSON
+//! list in the `:PARTICIPANTS` column (`[{"node": id, "role": "proposer"}]`,
+//! the role left out when there is none):
+//!
+//! ```text
+//! id:ID,:TYPE,:PARTICIPANTS,valid_from,valid_to,status:string
+//! 0193…,decision,"[{""node"":""0190…"",""role"":""proposer""},{""node"":""0192…""}]",,,approved
+//! ```
+//!
+//! In GraphML, GraphML's own `<hyperedge>` with an `<endpoint node="…"/>`
+//! per participant, its label in the `label` data and the participants'
+//! roles in `roles`, a JSON list in endpoint order (`null` for none).
 
 use std::collections::{BTreeMap, HashMap};
 use std::io::{BufRead, Write};
 
-use grafeno_core::{Edge, EdgeId, Error, NewEdge, NewNode, NodeId, Props, Result, Timestamp};
+use grafeno_core::{
+    Edge, EdgeId, Error, HyperEdge, HyperEdgeId, NewEdge, NewHyperEdge, NewNode, NodeId,
+    Participant, Props, Result, Timestamp,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::db::{Grafeno, ReadTx, WriteTx};
@@ -46,6 +62,10 @@ const PAGE: usize = 2_000;
 pub struct InterchangeStats {
     pub nodes: u64,
     pub edges: u64,
+    /// Left out when none were written, so that a file without them reads
+    /// as before.
+    #[serde(default, skip_serializing_if = "crate::dump::is_zero")]
+    pub hyperedges: u64,
     /// Rows or elements that could not be read, with why (the first 100).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub errors: Vec<String>,
@@ -377,10 +397,58 @@ impl ReadTx {
         Ok(count)
     }
 
-    /// The namespace's nodes and current facts as GraphML.
+    /// The namespace's hyperedges that are not retracted, as CSV (see the
+    /// module). Returns how many.
+    pub fn export_hyperedges_csv(&self, ns: &str, out: &mut impl Write) -> Result<u64> {
+        let kinds = kinds_of_hyperedges(self, ns)?;
+        let mut head: Vec<String> = ["id:ID", ":TYPE", ":PARTICIPANTS", "valid_from", "valid_to"]
+            .map(String::from)
+            .to_vec();
+        head.extend(
+            kinds
+                .iter()
+                .map(|(k, kind)| format!("{k}:{}", kind.csv_name())),
+        );
+        csv_line(out, &head)?;
+        let mut count = 0;
+        for_each_hyperedge(self, ns, |edge| {
+            let mut row = vec![
+                edge.id.to_string(),
+                edge.label.clone(),
+                serde_json::to_string(&edge.participants)
+                    .map_err(|e| Error::Serialization(e.to_string()))?,
+                edge.valid_from.map(Timestamp::iso).unwrap_or_default(),
+                edge.valid_to.map(Timestamp::iso).unwrap_or_default(),
+            ];
+            for key in kinds.keys() {
+                row.push(
+                    edge.props
+                        .get(key)
+                        .filter(|v| !v.is_null())
+                        .map(cell)
+                        .unwrap_or_default(),
+                );
+            }
+            count += 1;
+            csv_line(out, &row)
+        })?;
+        Ok(count)
+    }
+
+    /// The namespace's nodes, current facts and hyperedges as GraphML.
+    /// Returns the nodes and edges written; [`ReadTx::export_graphml_all`]
+    /// counts the hyperedges too.
     pub fn export_graphml(&self, ns: &str, out: &mut impl Write) -> Result<(u64, u64)> {
+        self.export_graphml_all(ns, out)
+            .map(|(nodes, edges, _)| (nodes, edges))
+    }
+
+    /// [`ReadTx::export_graphml`], with the hyperedges written.
+    pub fn export_graphml_all(&self, ns: &str, out: &mut impl Write) -> Result<(u64, u64, u64)> {
         let node_kinds = kinds_of_nodes(self, ns)?;
         let edge_kinds = kinds_of_edges(self, ns)?;
+        let hyper_kinds = kinds_of_hyperedges(self, ns)?;
+        let any_hyperedge = !self.hyperedges_page(ns, None, 1)?.is_empty();
         let w = |out: &mut dyn Write, text: &str| out.write_all(text.as_bytes()).map_err(io);
         w(out, "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n")?;
         w(
@@ -428,6 +496,27 @@ impl ReadTx {
                     kind.graphml_name()
                 ),
             )?;
+        }
+        if any_hyperedge {
+            for name in ["label", "roles", "valid_from", "valid_to"] {
+                w(
+                    out,
+                    &format!(
+                        "  <key id=\"h{name}\" for=\"hyperedge\" attr.name=\"{name}\" attr.type=\"string\"/>\n"
+                    ),
+                )?;
+            }
+            for (key, kind) in &hyper_kinds {
+                w(
+                    out,
+                    &format!(
+                        "  <key id=\"h_{}\" for=\"hyperedge\" attr.name=\"{}\" attr.type=\"{}\"/>\n",
+                        escape(key),
+                        escape(key),
+                        kind.graphml_name()
+                    ),
+                )?;
+            }
         }
         w(
             out,
@@ -482,8 +571,40 @@ impl ReadTx {
             edges += 1;
             w(out, &line)
         })?;
+        let mut hyperedges = 0;
+        for_each_hyperedge(self, ns, |edge| {
+            let mut line = format!("    <hyperedge id=\"{}\">", edge.id);
+            for participant in &edge.participants {
+                line.push_str(&format!("<endpoint node=\"{}\"/>", participant.node));
+            }
+            line.push_str(&data("hlabel", &edge.label));
+            let roles: Vec<Option<&str>> = edge
+                .participants
+                .iter()
+                .map(|p| p.role.as_deref())
+                .collect();
+            if roles.iter().any(Option::is_some) {
+                let roles = serde_json::to_string(&roles)
+                    .map_err(|e| Error::Serialization(e.to_string()))?;
+                line.push_str(&data("hroles", &roles));
+            }
+            if let Some(at) = edge.valid_from {
+                line.push_str(&data("hvalid_from", &at.iso()));
+            }
+            if let Some(at) = edge.valid_to {
+                line.push_str(&data("hvalid_to", &at.iso()));
+            }
+            for (key, value) in &edge.props {
+                if !value.is_null() {
+                    line.push_str(&data(&format!("h_{key}"), &cell(value)));
+                }
+            }
+            line.push_str("</hyperedge>\n");
+            hyperedges += 1;
+            w(out, &line)
+        })?;
         w(out, "  </graph>\n</graphml>\n")?;
-        Ok((nodes, edges))
+        Ok((nodes, edges, hyperedges))
     }
 }
 
@@ -533,6 +654,38 @@ fn kinds_of_edges(read: &ReadTx, ns: &str) -> Result<BTreeMap<String, Kind>> {
     Ok(all)
 }
 
+fn kinds_of_hyperedges(read: &ReadTx, ns: &str) -> Result<BTreeMap<String, Kind>> {
+    let mut all: BTreeMap<String, Kind> = BTreeMap::new();
+    for_each_hyperedge(read, ns, |edge| {
+        for (key, kind) in kinds(std::iter::once(&edge.props)) {
+            all.entry(key)
+                .and_modify(|k| *k = k.join(kind))
+                .or_insert(kind);
+        }
+        Ok(())
+    })?;
+    Ok(all)
+}
+
+/// Hyperedges that are not retracted, as the reader sees them, a page at a
+/// time.
+fn for_each_hyperedge(
+    read: &ReadTx,
+    ns: &str,
+    mut f: impl FnMut(&HyperEdge) -> Result<()>,
+) -> Result<()> {
+    let mut after: Option<HyperEdgeId> = None;
+    loop {
+        let page = read.hyperedges_page(ns, after, PAGE)?;
+        let Some(last) = page.last() else { break };
+        after = Some(last.id);
+        for edge in page.iter().filter(|e| !e.is_retracted()) {
+            f(edge)?;
+        }
+    }
+    Ok(())
+}
+
 /// Current (not retracted) edges, a page at a time.
 fn for_each_edge(read: &ReadTx, ns: &str, mut f: impl FnMut(&Edge) -> Result<()>) -> Result<()> {
     let mut after: Option<EdgeId> = None;
@@ -562,6 +715,17 @@ struct InEdge {
     from: String,
     to: String,
     label: String,
+    props: Props,
+    valid_from: Option<Timestamp>,
+    valid_to: Option<Timestamp>,
+}
+
+/// A hyperedge to write: its source id, label, participants (node as the
+/// file names it, and role), properties and valid time.
+struct InHyper {
+    source: Option<String>,
+    label: String,
+    members: Vec<(String, Option<String>)>,
     props: Props,
     valid_from: Option<Timestamp>,
     valid_to: Option<Timestamp>,
@@ -722,6 +886,123 @@ fn write_edges(
         }
     }
     Ok(())
+}
+
+fn write_hyperedges(
+    db: &Grafeno,
+    ns: &str,
+    hyperedges: Vec<InHyper>,
+    stats: &mut InterchangeStats,
+    options: &InterchangeOptions,
+) -> Result<()> {
+    for chunk in hyperedges.chunks(CHUNK) {
+        let (written, errors) = db.write(|tx| {
+            tx.act_as(options.actor.clone());
+            tx.set_origin(options.origin.clone());
+            let mut written = 0;
+            let mut errors = Vec::new();
+            'hyperedges: for edge in chunk {
+                let name = edge.source.as_deref().unwrap_or("?");
+                let mut participants = Vec::with_capacity(edge.members.len());
+                for (node, role) in &edge.members {
+                    let found = match grafeno_id(node) {
+                        Some(id) if tx.node(ns, id)?.is_some() => Some(id),
+                        _ => mapped(tx, ns, node)?,
+                    };
+                    let Some(id) = found else {
+                        errors.push(format!(
+                            "hyperedge {name}: no node {node:?} in the namespace"
+                        ));
+                        continue 'hyperedges;
+                    };
+                    participants.push(Participant {
+                        node: id,
+                        role: role.clone(),
+                    });
+                }
+                // What creating it would refuse is a row skipped, not the
+                // whole import.
+                let mut sorted = participants.clone();
+                sorted.sort();
+                let mut nodes: Vec<NodeId> = sorted.iter().map(|p| p.node).collect();
+                nodes.dedup();
+                if nodes.len() < 2 || sorted.windows(2).any(|pair| pair[0] == pair[1]) {
+                    errors.push(format!(
+                        "hyperedge {name}: needs two distinct nodes, each (node, role) once"
+                    ));
+                    continue;
+                }
+                match edge
+                    .source
+                    .as_deref()
+                    .and_then(|s| grafeno_id(s).map(|id| HyperEdgeId::from_u128(id.as_u128())))
+                {
+                    // A Grafeno id: written as that hyperedge (a re-import
+                    // replaces it rather than adding a copy).
+                    Some(id) => {
+                        tx.restore_hyperedge(
+                            ns,
+                            HyperEdge {
+                                id,
+                                label: edge.label.clone(),
+                                participants,
+                                props: edge.props.clone(),
+                                sources: Vec::new(),
+                                valid_from: edge.valid_from,
+                                valid_to: edge.valid_to,
+                                recorded_at: Timestamp::now(),
+                                expired_at: None,
+                                recorded_by: tx.actor().map(|a| a.name.clone()),
+                            },
+                        )?;
+                    }
+                    None => {
+                        let mut new = NewHyperEdge::new(edge.label.clone());
+                        new.participants = participants;
+                        new.props = edge.props.clone();
+                        new.valid_from = edge.valid_from;
+                        new.valid_to = edge.valid_to;
+                        tx.create_hyperedge(ns, new)?;
+                    }
+                }
+                written += 1;
+            }
+            Ok((written, errors))
+        })?;
+        stats.hyperedges += written;
+        for error in errors {
+            stats.fail(error);
+        }
+    }
+    Ok(())
+}
+
+/// A `:PARTICIPANTS` cell or a GraphML endpoint list: `[{"node", "role"}]`,
+/// or plain node ids.
+fn members_cell(text: &str) -> std::result::Result<Vec<(String, Option<String>)>, String> {
+    let value: serde_json::Value = serde_json::from_str(text.trim())
+        .map_err(|e| format!("participants are a JSON list: {e}"))?;
+    let list = value
+        .as_array()
+        .ok_or_else(|| "participants are a JSON list".to_owned())?;
+    list.iter()
+        .map(|item| match item {
+            serde_json::Value::String(node) => Ok((node.clone(), None)),
+            serde_json::Value::Object(map) => {
+                let node = map
+                    .get("node")
+                    .and_then(serde_json::Value::as_str)
+                    .ok_or_else(|| "a participant needs a node".to_owned())?;
+                let role = match map.get("role") {
+                    None | Some(serde_json::Value::Null) => None,
+                    Some(serde_json::Value::String(role)) => Some(role.clone()),
+                    Some(_) => return Err("a role is a string".to_owned()),
+                };
+                Ok((node.to_owned(), role))
+            }
+            _ => Err("a participant is a node id or {node, role}".to_owned()),
+        })
+        .collect()
 }
 
 fn time_cell(text: &str) -> std::result::Result<Option<Timestamp>, String> {
@@ -908,6 +1189,98 @@ impl Grafeno {
         Ok(stats)
     }
 
+    /// Imports hyperedges from CSV (see the module): their participants
+    /// must be in the namespace already (by Grafeno id, or by the id an
+    /// earlier import mapped).
+    pub fn import_hyperedges_csv(
+        &self,
+        ns: &str,
+        input: impl BufRead,
+        options: &InterchangeOptions,
+    ) -> Result<InterchangeStats> {
+        let records = csv_records(input)?;
+        let mut stats = InterchangeStats::default();
+        let Some((head, rows)) = records.split_first() else {
+            return Ok(stats);
+        };
+        enum Role {
+            Id,
+            Type,
+            Members,
+            From,
+            To,
+            Prop(String, Option<Kind>),
+            Ignore,
+        }
+        let roles: Vec<Role> = head
+            .iter()
+            .map(|cell| match header(cell) {
+                (_, Some(r)) if r.eq_ignore_ascii_case("TYPE") => Role::Type,
+                (_, Some(r)) if r.eq_ignore_ascii_case("ID") => Role::Id,
+                (_, Some(r)) if r.eq_ignore_ascii_case("PARTICIPANTS") => Role::Members,
+                (n, None) if n.eq_ignore_ascii_case("id") => Role::Id,
+                (n, None) if ["type", "label"].contains(&n.to_ascii_lowercase().as_str()) => {
+                    Role::Type
+                }
+                (n, None) if n.eq_ignore_ascii_case("participants") => Role::Members,
+                (n, _) if n == "valid_from" => Role::From,
+                (n, _) if n == "valid_to" => Role::To,
+                (n, _) if n.is_empty() => Role::Ignore,
+                (n, kind) => Role::Prop(n, kind.as_deref().and_then(Kind::from_name)),
+            })
+            .collect();
+        let mut hyperedges = Vec::with_capacity(rows.len());
+        'rows: for (number, row) in rows.iter().enumerate() {
+            let at = || format!("row {}", number + 2);
+            let mut edge = InHyper {
+                source: None,
+                label: options.default_edge_label.clone(),
+                members: Vec::new(),
+                props: Props::new(),
+                valid_from: None,
+                valid_to: None,
+            };
+            for (role, value) in roles.iter().zip(row) {
+                match role {
+                    Role::Id if !value.is_empty() => edge.source = Some(value.trim().to_owned()),
+                    Role::Type if !value.trim().is_empty() => edge.label = value.trim().to_owned(),
+                    Role::Members => match members_cell(value) {
+                        Ok(members) => edge.members = members,
+                        Err(error) => {
+                            stats.fail(format!("{}: {error}", at()));
+                            continue 'rows;
+                        }
+                    },
+                    Role::From | Role::To => match time_cell(value) {
+                        Ok(time) if matches!(role, Role::From) => edge.valid_from = time,
+                        Ok(time) => edge.valid_to = time,
+                        Err(error) => {
+                            stats.fail(format!("{}: {error}", at()));
+                            continue 'rows;
+                        }
+                    },
+                    Role::Prop(name, kind) if !value.is_empty() => match parse_cell(value, *kind) {
+                        Ok(value) => {
+                            edge.props.insert(name.clone(), value);
+                        }
+                        Err(error) => {
+                            stats.fail(format!("{}: {name}: {error}", at()));
+                            continue 'rows;
+                        }
+                    },
+                    _ => {}
+                }
+            }
+            if edge.members.is_empty() {
+                stats.fail(format!("{}: a hyperedge needs its participants", at()));
+                continue;
+            }
+            hyperedges.push(edge);
+        }
+        write_hyperedges(self, ns, hyperedges, &mut stats, options)?;
+        Ok(stats)
+    }
+
     /// Imports a GraphML document (see the module).
     pub fn import_graphml(
         &self,
@@ -915,9 +1288,10 @@ impl Grafeno {
         input: impl BufRead,
         options: &InterchangeOptions,
     ) -> Result<InterchangeStats> {
-        let (nodes, edges, mut stats) = parse_graphml(input, options)?;
+        let (nodes, edges, hyperedges, mut stats) = parse_graphml(input, options)?;
         write_nodes(self, ns, nodes, &mut stats, options)?;
         write_edges(self, ns, edges, &mut stats, options)?;
+        write_hyperedges(self, ns, hyperedges, &mut stats, options)?;
         Ok(stats)
     }
 }
@@ -928,10 +1302,10 @@ struct KeyDef {
     kind: Kind,
 }
 
-fn parse_graphml(
-    input: impl BufRead,
-    options: &InterchangeOptions,
-) -> Result<(Vec<InNode>, Vec<InEdge>, InterchangeStats)> {
+/// What a GraphML document holds.
+type Parsed = (Vec<InNode>, Vec<InEdge>, Vec<InHyper>, InterchangeStats);
+
+fn parse_graphml(input: impl BufRead, options: &InterchangeOptions) -> Result<Parsed> {
     use quick_xml::events::Event;
     let invalid = |e: &dyn std::fmt::Display| Error::Invalid(format!("invalid GraphML: {e}"));
     let mut reader = quick_xml::Reader::from_reader(input);
@@ -939,10 +1313,14 @@ fn parse_graphml(
     let mut keys: HashMap<String, KeyDef> = HashMap::new();
     let mut nodes = Vec::new();
     let mut edges = Vec::new();
+    let mut hyperedges: Vec<InHyper> = Vec::new();
+    // Roles given in a hyperedge's `roles` data, in endpoint order.
+    let mut roles_of: Vec<Option<Vec<Option<String>>>> = Vec::new();
     let mut stats = InterchangeStats::default();
     enum Open {
         Node(InNode),
         Edge(InEdge),
+        Hyper(InHyper, Option<Vec<Option<String>>>),
     }
     let mut open: Option<Open> = None;
     let mut data_key: Option<String> = None;
@@ -1018,6 +1396,29 @@ fn parse_graphml(
                             edges.push(edge);
                         } else {
                             open = Some(Open::Edge(edge));
+                        }
+                    }
+                    "hyperedge" => {
+                        let edge = InHyper {
+                            source: a.get("id").cloned(),
+                            label: options.default_edge_label.clone(),
+                            members: Vec::new(),
+                            props: Props::new(),
+                            valid_from: None,
+                            valid_to: None,
+                        };
+                        if empty {
+                            hyperedges.push(edge);
+                            roles_of.push(None);
+                        } else {
+                            open = Some(Open::Hyper(edge, None));
+                        }
+                    }
+                    "endpoint" => {
+                        if let Some(Open::Hyper(edge, _)) = &mut open
+                            && let Some(node) = a.get("node")
+                        {
+                            edge.members.push((node.clone(), None));
                         }
                     }
                     "data" if !empty => {
@@ -1105,7 +1506,44 @@ fn parse_graphml(
                                     )),
                                 },
                             },
+                            Some(Open::Hyper(edge, roles)) => match prop.as_str() {
+                                "label" if !text.trim().is_empty() => {
+                                    edge.label = text.trim().to_owned()
+                                }
+                                "roles" => {
+                                    match serde_json::from_str::<Vec<Option<String>>>(&text) {
+                                        Ok(list) => *roles = Some(list),
+                                        Err(error) => stats.fail(format!(
+                                            "hyperedge {}: roles are a JSON list: {error}",
+                                            edge.source.as_deref().unwrap_or("?")
+                                        )),
+                                    }
+                                }
+                                "valid_from" | "valid_to" => match time_cell(&text) {
+                                    Ok(time) if prop == "valid_from" => edge.valid_from = time,
+                                    Ok(time) => edge.valid_to = time,
+                                    Err(error) => stats.fail(format!(
+                                        "hyperedge {}: {error}",
+                                        edge.source.as_deref().unwrap_or("?")
+                                    )),
+                                },
+                                _ => match parse_cell(&text, kind.or(Some(Kind::Str))) {
+                                    Ok(value) => {
+                                        edge.props.insert(prop, value);
+                                    }
+                                    Err(error) => stats.fail(format!(
+                                        "hyperedge {}: {error}",
+                                        edge.source.as_deref().unwrap_or("?")
+                                    )),
+                                },
+                            },
                             None => {}
+                        }
+                    }
+                    "hyperedge" => {
+                        if let Some(Open::Hyper(edge, roles)) = open.take() {
+                            hyperedges.push(edge);
+                            roles_of.push(roles);
                         }
                     }
                     "node" => {
@@ -1131,10 +1569,19 @@ fn parse_graphml(
     }
     // Strings that hold JSON lists or maps (as exports write them) come
     // back as lists and maps.
+    // Roles go to the endpoints in order.
+    for (edge, roles) in hyperedges.iter_mut().zip(roles_of) {
+        if let Some(roles) = roles {
+            for ((_, role), given) in edge.members.iter_mut().zip(roles) {
+                *role = given;
+            }
+        }
+    }
     for props in nodes
         .iter_mut()
         .map(|n| &mut n.props)
         .chain(edges.iter_mut().map(|e| &mut e.props))
+        .chain(hyperedges.iter_mut().map(|h| &mut h.props))
     {
         for value in props.values_mut() {
             if let serde_json::Value::String(s) = value
@@ -1151,5 +1598,5 @@ fn parse_graphml(
             node.labels.push(options.default_label.clone());
         }
     }
-    Ok((nodes, edges, stats))
+    Ok((nodes, edges, hyperedges, stats))
 }

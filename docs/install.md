@@ -502,6 +502,12 @@ grafeno export --format graphml -n notes -o notes.graphml
 grafeno import --format graphml -n notes notes.graphml
 ```
 
+A namespace with hyperedges exports a third CSV file, `hyperedges.csv`
+(each one's participants as JSON in `:PARTICIPANTS`), read back with
+`--hyperedges notes-csv/hyperedges.csv`; GraphML writes them as its own
+`<hyperedge>` elements, and an import reads them from any tool that writes
+them.
+
 ## Settings
 
 `grafeno.toml` is read by the service, and by `grafeno serve --config` and

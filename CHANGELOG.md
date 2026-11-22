@@ -30,6 +30,13 @@ an experiment found event nodes answer as well (docs/benchmarks.md).
   only memories overtaken by their words. A `supersedes` fact that no
   longer holds marks nothing. `knowledge::replaced_by` gives what
   replaces a memory at a time.
+- **Added**: CSV and GraphML carry hyperedges: a third CSV file
+  (`export_hyperedges_csv`, `import_hyperedges_csv`,
+  `/v1/{ns}/export/hyperedges.csv` and `/import/hyperedges.csv`,
+  `grafeno import --hyperedges`, written by `grafeno export --format csv`
+  when there are hyperedges), and GraphML's own `<hyperedge>` elements,
+  roles in a `roles` key; `export_graphml_all` counts them, and
+  `InterchangeStats.hyperedges` (left out when 0).
 - **Added**: `POST /v1/{ns}/batch` takes `create_hyperedge` (with a `ref`
   of its own, and participants that may be `$name`s), `update_hyperedge`
   (properties and participants), `delete_hyperedge`,

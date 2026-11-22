@@ -1854,3 +1854,188 @@ fn a_hyperedge_index_keeps_the_planner_statistics_fresh() {
     assert!(first.index("execution_execution_id_hyperedge").is_none());
     assert!(first.index("Agent_name").is_some());
 }
+
+/// A namespace with a decision (roles, a node in two roles, valid time,
+/// properties of several kinds), a retracted hyperedge and a plain edge.
+fn interchange_source() -> (Grafeno, Vec<NodeId>, HyperEdgeId, HyperEdgeId) {
+    let db = Grafeno::in_memory().unwrap();
+    let n = nodes(&db, NS, 3);
+    let (decision, retracted) = db
+        .write(|tx| {
+            tx.create_edge(NS, NewEdge::new(n[0], "knows", n[1]))?;
+            let decision = tx.create_hyperedge(
+                NS,
+                NewHyperEdge::new("decision")
+                    .member(n[0], "proposer")
+                    .member(n[0], "reviewer")
+                    .node(n[1])
+                    .member(n[2], "subject")
+                    .prop("status", "approved")
+                    .prop("votes", 3)
+                    .prop("tags", serde_json::json!(["a", "b"]))
+                    .valid_from(Timestamp::parse("2026-01-01").unwrap()),
+            )?;
+            let retracted =
+                tx.create_hyperedge(NS, NewHyperEdge::new("mistake").node(n[0]).node(n[1]))?;
+            tx.retract_hyperedge(NS, retracted)?;
+            Ok((decision, retracted))
+        })
+        .unwrap();
+    (db, n, decision, retracted)
+}
+
+#[test]
+fn csv_carries_hyperedges() {
+    let (db, n, decision, retracted) = interchange_source();
+    let read = db.begin_read().unwrap();
+    let (mut nodes_csv, mut edges_csv, mut hyper_csv) = (Vec::new(), Vec::new(), Vec::new());
+    read.export_nodes_csv(NS, &mut nodes_csv).unwrap();
+    read.export_edges_csv(NS, &mut edges_csv).unwrap();
+    // Retracted ones are left out, as retracted edges are.
+    assert_eq!(read.export_hyperedges_csv(NS, &mut hyper_csv).unwrap(), 1);
+    let text = String::from_utf8(hyper_csv.clone()).unwrap();
+    assert!(
+        text.starts_with("id:ID,:TYPE,:PARTICIPANTS,valid_from,valid_to,"),
+        "{text}"
+    );
+    assert!(!text.contains(&retracted.to_string()), "{text}");
+    drop(read);
+
+    // Into another database: the same hyperedge, ids, roles and all.
+    let copy = Grafeno::in_memory().unwrap();
+    let options = grafeno::InterchangeOptions::default();
+    copy.import_nodes_csv(NS, nodes_csv.as_slice(), &options)
+        .unwrap();
+    copy.import_edges_csv(NS, edges_csv.as_slice(), &options)
+        .unwrap();
+    let stats = copy
+        .import_hyperedges_csv(NS, hyper_csv.as_slice(), &options)
+        .unwrap();
+    assert_eq!((stats.hyperedges, stats.failed), (1, 0), "{stats:?}");
+    let original = db
+        .begin_read()
+        .unwrap()
+        .hyperedge(NS, decision)
+        .unwrap()
+        .unwrap();
+    let copied = copy
+        .begin_read()
+        .unwrap()
+        .hyperedge(NS, decision)
+        .unwrap()
+        .unwrap();
+    assert_eq!(copied.participants, original.participants);
+    assert_eq!(copied.props, original.props);
+    assert_eq!(copied.valid_from, original.valid_from);
+    assert_eq!(copied.label, "decision");
+    // Importing again replaces it.
+    copy.import_hyperedges_csv(NS, hyper_csv.as_slice(), &options)
+        .unwrap();
+    assert_eq!(hyperedges_of(&copy, NS).len(), 1);
+    check(&copy, NS);
+
+    // A row whose node is missing, or with one node, is skipped and said.
+    let bad = format!(
+        "id,label,participants\n,x,\"[\"\"{}\"\",\"\"00000000-0000-0000-0000-000000000009\"\"]\"\n,y,\"[\"\"{}\"\",{{\"\"node\"\":\"\"{}\"\",\"\"role\"\":\"\"r\"\"}}]\"\n,z,\"[{{\"\"node\"\":\"\"{}\"\"}},{{\"\"node\"\":\"\"{}\"\",\"\"role\"\":\"\"r\"\"}}]\"\n,w,not json\n",
+        n[0], n[0], n[0], n[0], n[1]
+    );
+    let stats = copy
+        .import_hyperedges_csv(NS, bad.as_bytes(), &options)
+        .unwrap();
+    assert_eq!(stats.hyperedges, 1, "{stats:?}");
+    assert_eq!(stats.failed, 3, "{stats:?}");
+    assert!(
+        stats.errors.iter().any(|e| e.contains("no node")),
+        "{stats:?}"
+    );
+    assert!(
+        stats.errors.iter().any(|e| e.contains("two distinct")),
+        "{stats:?}"
+    );
+    assert!(
+        stats.errors.iter().any(|e| e.contains("JSON list")),
+        "{stats:?}"
+    );
+}
+
+#[test]
+fn graphml_carries_hyperedges() {
+    let (db, _, decision, retracted) = interchange_source();
+    let mut out = Vec::new();
+    let written = db
+        .begin_read()
+        .unwrap()
+        .export_graphml_all(NS, &mut out)
+        .unwrap();
+    assert_eq!(written, (3, 1, 1));
+    let text = String::from_utf8(out.clone()).unwrap();
+    assert!(text.contains("<hyperedge id="), "{text}");
+    assert!(text.contains("for=\"hyperedge\""), "{text}");
+    assert!(!text.contains(&retracted.to_string()), "{text}");
+
+    let copy = Grafeno::in_memory().unwrap();
+    let stats = copy
+        .import_graphml(NS, out.as_slice(), &grafeno::InterchangeOptions::default())
+        .unwrap();
+    assert_eq!(
+        (stats.nodes, stats.edges, stats.hyperedges, stats.failed),
+        (3, 1, 1, 0),
+        "{stats:?}"
+    );
+    let original = db
+        .begin_read()
+        .unwrap()
+        .hyperedge(NS, decision)
+        .unwrap()
+        .unwrap();
+    let copied = copy
+        .begin_read()
+        .unwrap()
+        .hyperedge(NS, decision)
+        .unwrap()
+        .unwrap();
+    assert_eq!(copied.participants, original.participants);
+    assert_eq!(copied.props, original.props);
+    assert_eq!(copied.valid_from, original.valid_from);
+    check(&copy, NS);
+
+    // Another tool's file: its own node ids, a hyperedge with endpoints and
+    // no roles.
+    let foreign = r#"<?xml version="1.0"?>
+<graphml xmlns="http://graphml.graphdrawing.org/xmlns">
+  <key id="w" for="hyperedge" attr.name="weight" attr.type="double"/>
+  <graph edgedefault="undirected">
+    <node id="a"/><node id="b"/><node id="c"/>
+    <hyperedge id="h1"><endpoint node="a"/><endpoint node="b"/><endpoint node="c"/><data key="w">0.5</data></hyperedge>
+    <hyperedge id="h2"><endpoint node="a"/><endpoint node="zz"/></hyperedge>
+  </graph>
+</graphml>"#;
+    let fresh = Grafeno::in_memory().unwrap();
+    let stats = fresh
+        .import_graphml(
+            "g",
+            foreign.as_bytes(),
+            &grafeno::InterchangeOptions::default(),
+        )
+        .unwrap();
+    assert_eq!(
+        (stats.nodes, stats.hyperedges, stats.failed),
+        (3, 1, 1),
+        "{stats:?}"
+    );
+    let found = hyperedges_of(&fresh, "g");
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0].nodes().len(), 3);
+    assert_eq!(found[0].label, "RELATED_TO");
+    assert_eq!(found[0].props["weight"], serde_json::json!(0.5));
+    // Without hyperedges, the file has no hyperedge keys.
+    let plain = Grafeno::in_memory().unwrap();
+    nodes(&plain, NS, 2);
+    let mut out = Vec::new();
+    plain
+        .begin_read()
+        .unwrap()
+        .export_graphml(NS, &mut out)
+        .unwrap();
+    assert!(!String::from_utf8(out).unwrap().contains("hyperedge"));
+}

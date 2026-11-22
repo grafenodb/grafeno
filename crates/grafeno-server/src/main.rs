@@ -297,6 +297,9 @@ enum Command {
         /// CSV: the edges file, read after the nodes.
         #[arg(long)]
         edges: Option<PathBuf>,
+        /// CSV: the hyperedges file, read after the nodes and edges.
+        #[arg(long)]
+        hyperedges: Option<PathBuf>,
     },
 }
 
@@ -1583,16 +1586,27 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                     std::io::BufWriter::new(std::fs::File::create(folder.join("edges.csv"))?);
                 let n = read.export_nodes_csv(ns, &mut nodes)?;
                 let e = read.export_edges_csv(ns, &mut edges)?;
-                eprintln!("exported {n} nodes and {e} edges to {}", folder.display());
+                // A third file only when there are hyperedges.
+                let mut h = 0;
+                if !read.hyperedges_page(ns, None, 1)?.is_empty() {
+                    let mut file = std::io::BufWriter::new(std::fs::File::create(
+                        folder.join("hyperedges.csv"),
+                    )?);
+                    h = read.export_hyperedges_csv(ns, &mut file)?;
+                }
+                eprintln!(
+                    "exported {n} nodes, {e} edges and {h} hyperedges to {}",
+                    folder.display()
+                );
             } else {
-                let (n, e) = match output {
-                    Some(path) => read.export_graphml(
+                let (n, e, h) = match output {
+                    Some(path) => read.export_graphml_all(
                         ns,
                         &mut std::io::BufWriter::new(std::fs::File::create(path)?),
                     )?,
-                    None => read.export_graphml(ns, &mut std::io::stdout().lock())?,
+                    None => read.export_graphml_all(ns, &mut std::io::stdout().lock())?,
                 };
-                eprintln!("exported {n} nodes and {e} edges");
+                eprintln!("exported {n} nodes, {e} edges and {h} hyperedges");
             }
         }
         Command::Import {
@@ -1601,6 +1615,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             format,
             namespace,
             edges,
+            hyperedges,
             ..
         } if format != Format::Jsonl => {
             let ns = namespace.ok_or("CSV and GraphML go into one namespace: give --namespace")?;
@@ -1624,12 +1639,18 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 stats.failed += more.failed;
                 stats.errors.extend(more.errors);
             }
+            if let Some(hyperedges) = hyperedges {
+                let more = db.import_hyperedges_csv(&ns, open(&hyperedges)?, &options)?;
+                stats.hyperedges += more.hyperedges;
+                stats.failed += more.failed;
+                stats.errors.extend(more.errors);
+            }
             for error in &stats.errors {
                 eprintln!("skipped: {error}");
             }
             eprintln!(
-                "imported {} nodes and {} edges into {ns}; {} skipped",
-                stats.nodes, stats.edges, stats.failed
+                "imported {} nodes, {} edges and {} hyperedges into {ns}; {} skipped",
+                stats.nodes, stats.edges, stats.hyperedges, stats.failed
             );
         }
         Command::Export {

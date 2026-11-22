@@ -521,6 +521,12 @@ grafeno export --format graphml -n notes -o notes.graphml
 grafeno import --format graphml -n notes notes.graphml
 ```
 
+Un namespace con hiperaristas exporta un tercer archivo CSV,
+`hyperedges.csv` (los participantes de cada una en JSON en
+`:PARTICIPANTS`), que se lee con `--hyperedges notes-csv/hyperedges.csv`;
+GraphML las escribe como sus propios elementos `<hyperedge>`, y una
+importación las lee de cualquier herramienta que los escriba.
+
 ## Configuración
 
 `grafeno.toml` lo lee el servicio, y también `grafeno serve --config` y

@@ -237,8 +237,6 @@ their nodes exist. `MergeReport` counts `hyperedges_moved` and
 These are not done, and the engine refuses rather than dropping data
 silently where it can:
 
-- **CSV and GraphML** leave hyperedges out; JSON lines exports and
-  backups keep them.
 - **Not null, type and functional rules**, fuzzy, full-text and vector
   indexes, and property history do not apply to hyperedges; property
   indexes and unique or key constraints do (see below).
@@ -344,6 +342,28 @@ Grafeno 0.4 still reads it (and refuses version 3 rather than lose the
 hyperedges). An import writes them as they were, checking their
 participants exist (a missing one fails the import with the line), and
 replaces a hyperedge with the same id.
+
+CSV and GraphML hold current knowledge, as they do for edges: hyperedges
+that are not retracted, with their valid dates.
+
+- **CSV**: a third file (`ReadTx::export_hyperedges_csv`,
+  `GET /v1/{ns}/export/hyperedges.csv`, `hyperedges.csv` beside
+  `nodes.csv` and `edges.csv` in `grafeno export --format csv`), one row
+  per hyperedge: `id:ID`, `:TYPE`, `:PARTICIPANTS` (a JSON list of
+  `{node, role}`, or of plain node ids), `valid_from`, `valid_to` and its
+  properties with typed headers. `Grafeno::import_hyperedges_csv`,
+  `POST /v1/{ns}/import/hyperedges.csv` and `grafeno import --hyperedges`
+  read it after the nodes: a participant is a Grafeno id or an id an
+  earlier import mapped, and a row whose node is missing or that names
+  fewer than two distinct nodes is skipped and reported.
+- **GraphML**: GraphML's own `<hyperedge>`, an `<endpoint node="…"/>` per
+  participant, its label in the `label` data, the roles in `roles` (a JSON
+  list in endpoint order, `null` for none), `valid_from`, `valid_to` and
+  its properties as keys `for="hyperedge"`. An import reads the
+  `<hyperedge>` elements of any tool (roles absent, label `RELATED_TO`
+  unless given). `ReadTx::export_graphml_all` returns how many it wrote.
+
+Import statistics have `hyperedges`, left out when none were written.
 
 ## The change log and events
 

@@ -608,9 +608,11 @@ pub fn router_with(state: AppState, options: &Options) -> Router {
         .route("/{ns}/export.graphml", get(export_graphml))
         .route("/{ns}/export/nodes.csv", get(export_nodes_csv))
         .route("/{ns}/export/edges.csv", get(export_edges_csv))
+        .route("/{ns}/export/hyperedges.csv", get(export_hyperedges_csv))
         .route("/{ns}/import/graphml", post(import_graphml))
         .route("/{ns}/import/nodes.csv", post(import_nodes_csv))
         .route("/{ns}/import/edges.csv", post(import_edges_csv))
+        .route("/{ns}/import/hyperedges.csv", post(import_hyperedges_csv))
         .route("/{ns}/transactions", post(begin_transaction))
         .route("/{ns}/transactions/{id}", get(get_transaction))
         .route("/{ns}/transactions/{id}/query", post(transaction_query))
@@ -3861,6 +3863,20 @@ async fn export_edges_csv(
     Ok(([(header::CONTENT_TYPE, "text/csv; charset=utf-8")], body).into_response())
 }
 
+/// A namespace's hyperedges (not retracted) as CSV.
+async fn export_hyperedges_csv(
+    State(state): State<AppState>,
+    Path(ns): Path<String>,
+) -> ApiResult<Response> {
+    let body = blocking(&state, move |db| {
+        let mut out = Vec::new();
+        db.begin_read()?.export_hyperedges_csv(&ns, &mut out)?;
+        Ok(out)
+    })
+    .await?;
+    Ok(([(header::CONTENT_TYPE, "text/csv; charset=utf-8")], body).into_response())
+}
+
 async fn interchange_body(request: Request) -> ApiResult<axum::body::Bytes> {
     axum::body::to_bytes(request.into_body(), IMPORT_LIMIT)
         .await
@@ -3913,6 +3929,20 @@ async fn import_edges_csv(
     let options = import_options();
     let stats = blocking(&state, move |db| {
         db.import_edges_csv(&ns, body.as_ref(), &options)
+    })
+    .await?;
+    Ok(Json(stats))
+}
+
+async fn import_hyperedges_csv(
+    State(state): State<AppState>,
+    Path(ns): Path<String>,
+    request: Request,
+) -> ApiResult<Json<grafeno::InterchangeStats>> {
+    let body = interchange_body(request).await?;
+    let options = import_options();
+    let stats = blocking(&state, move |db| {
+        db.import_hyperedges_csv(&ns, body.as_ref(), &options)
     })
     .await?;
     Ok(Json(stats))
