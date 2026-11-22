@@ -293,6 +293,30 @@ MCP tools, for agents (also through `POST /v1/{ns}/tools/{name}`):
 `relate_group` and `forget_group` write, so a read-only server refuses
 them.
 
+### Batches
+
+`POST /v1/{ns}/batch` takes `create_hyperedge`, `update_hyperedge`,
+`delete_hyperedge`, `invalidate_hyperedge` and `retract_hyperedge` beside
+the node and edge operations, all in one transaction: if one fails,
+nothing of the batch stays. A hyperedge's participants may name nodes
+created earlier in the batch (`"$name"`); a name given later is unknown
+at that point. `create_hyperedge` takes a `ref` of its own, and later
+operations reach the hyperedge by it; the response lists those in
+`hyperedge_refs`, a field left out when empty so that batches without
+hyperedges answer as before (`refs` keeps holding node ids only). One name
+is one record: a hyperedge's name may not be given again, and a node's
+name where a hyperedge goes, or a hyperedge's where a node goes, fails
+with `invalid`. `delete_node` takes `hyperedges` (`restrict`, `cascade` or
+`detach`), as its route does.
+
+Each operation goes through the same `WriteTx` call as its route, so the
+same checks apply: participants, roles and their limit, the caller's view
+(a hidden participant fails the batch without saying whether it exists),
+`own_only`, and who recorded each write. Retracting or invalidating needs
+the `retract` privilege, checked before the batch starts. The batch's size
+is bounded by the request body limit (32 MiB); there is no separate count
+of operations, so as not to refuse batches that work today.
+
 ## Exports
 
 A JSON lines export (`ReadTx::export`, `GET /v1/export`, `grafeno export`)

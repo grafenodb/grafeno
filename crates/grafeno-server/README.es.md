@@ -539,7 +539,17 @@ operaciones siguientes pueden usar ese nombre donde aceptan un id de nodo.
 Operaciones: `create_node`, `upsert_node` (`node.id` obligatorio),
 `update_node` (`{id, patch}`), `delete_node`, `create_edge`, `delete_edge`,
 `delete_edges_from` (`{from, label?}`), `invalidate_edge` (`{id, at}`) y
-`retract_edge`.
+`retract_edge`; para hiperaristas, `create_hyperedge` (`{ref?, hyperedge}`,
+como el cuerpo de `POST /hyperedges`, con participantes que pueden ser
+`$nombre`), `update_hyperedge` (`{id, patch}`, como el cuerpo de
+`PATCH /hyperedges/{id}`, participantes incluidos), `delete_hyperedge`,
+`invalidate_hyperedge` (`{id, at}`) y `retract_hyperedge`. `delete_node`
+acepta `hyperedges` (`restrict`, por defecto, `cascade` o `detach`), como
+su ruta. Los nombres dados a hiperaristas vuelven en `hyperedge_refs`, que
+se omite si no hay ninguno. Un nombre designa un solo registro: el nombre
+de una hiperarista no puede darse a nada más en el lote, y usar el nombre
+de un nodo donde va un id de hiperarista (o al revés) falla. Retractar o
+invalidar, aristas o hiperaristas, exige además el privilegio `retract`.
 
 Sincronizar una nota y reemplazar sus enlaces en una sola petición:
 

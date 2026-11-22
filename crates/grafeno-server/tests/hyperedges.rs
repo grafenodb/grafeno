@@ -508,3 +508,388 @@ fn the_mcp_tools() {
     let refused = tool(&reader, "forget_group", json!({ "id": id }));
     assert_eq!(refused["isError"], true);
 }
+
+async fn batch(app: &Router, key: &str, ns: &str, ops: Value) -> (StatusCode, Value) {
+    call(
+        app,
+        key,
+        "POST",
+        &format!("/v1/{ns}/batch"),
+        Some(json!({ "ops": ops })),
+    )
+    .await
+}
+
+async fn count(app: &Router, ns: &str, what: &str) -> usize {
+    let (status, body) = call(app, OWNER, "GET", &format!("/v1/{ns}/{what}"), None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    body["items"].as_array().unwrap().len()
+}
+
+fn message(body: &Value) -> &str {
+    body["error"]["message"].as_str().unwrap()
+}
+
+#[tokio::test]
+async fn a_batch_writes_nodes_and_hyperedges_together() {
+    let app = app();
+    let writer = key(
+        &app,
+        "writer",
+        json!([{ "namespace": "b", "role": "write" }]),
+    )
+    .await;
+    let (status, body) = batch(
+        &app,
+        &writer,
+        "b",
+        json!([
+            { "op": "create_node", "ref": "$ana", "node": { "labels": ["Agent"] } },
+            { "op": "create_node", "ref": "$bo", "node": { "labels": ["Agent"] } },
+            { "op": "create_node", "ref": "$task", "node": { "labels": ["Task"] } },
+            { "op": "create_hyperedge", "ref": "$decision", "hyperedge": {
+                "label": "technical_decision",
+                "participants": [
+                    { "node": "$ana", "role": "proposer" },
+                    { "node": "$bo", "role": "implementer" },
+                    { "node": "$task", "role": "subject" }
+                ],
+                "props": { "status": "proposed" } } },
+            { "op": "update_hyperedge", "id": "$decision",
+              "patch": { "props": { "status": "approved" }, "remove_props": [] } },
+            { "op": "create_edge", "edge": { "from": "$ana", "label": "owns", "to": "$task" } }
+        ]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let id = body["hyperedge_refs"]["$decision"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert_eq!(body["results"][3]["id"], id.as_str());
+    assert_eq!(body["refs"].as_object().unwrap().len(), 3);
+
+    let (_, edge) = call(&app, OWNER, "GET", &format!("/v1/b/hyperedges/{id}"), None).await;
+    assert_eq!(edge["props"]["status"], "approved");
+    assert_eq!(edge["participants"].as_array().unwrap().len(), 3);
+    // Written as its caller.
+    assert_eq!(edge["recorded_by"], "writer", "{edge}");
+
+    // Participants replaced, then the hyperedge taken back and deleted,
+    // each by id in later batches.
+    let task = body["refs"]["$task"].as_str().unwrap().to_owned();
+    let ana = body["refs"]["$ana"].as_str().unwrap().to_owned();
+    let (status, changed) = batch(
+        &app,
+        &writer,
+        "b",
+        json!([
+            { "op": "create_node", "ref": "$cy", "node": { "labels": ["Agent"] } },
+            { "op": "update_hyperedge", "id": id, "patch": { "participants": [
+                { "node": ana, "role": "proposer" },
+                { "node": "$cy", "role": "reviewer" },
+                { "node": task, "role": "subject" } ] } },
+            { "op": "invalidate_hyperedge", "id": id, "at": "2030-01-01T00:00:00Z" }
+        ]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{changed}");
+    let (_, edge) = call(&app, OWNER, "GET", &format!("/v1/b/hyperedges/{id}"), None).await;
+    let roles: Vec<&str> = edge["participants"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["role"].as_str().unwrap())
+        .collect();
+    assert!(
+        roles.contains(&"reviewer") && !roles.contains(&"implementer"),
+        "{edge}"
+    );
+    assert!(edge["valid_to"].is_number(), "{edge}");
+
+    let (status, gone) = batch(
+        &app,
+        &writer,
+        "b",
+        json!([
+            { "op": "retract_hyperedge", "id": id },
+            { "op": "delete_hyperedge", "id": id }
+        ]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{gone}");
+    let (status, _) = call(&app, OWNER, "GET", &format!("/v1/b/hyperedges/{id}"), None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    // A batch without hyperedges answers as before: no `hyperedge_refs`.
+    let (_, plain) = batch(
+        &app,
+        &writer,
+        "b",
+        json!([{ "op": "create_node", "node": { "labels": ["Note"] } }]),
+    )
+    .await;
+    assert!(plain.get("hyperedge_refs").is_none(), "{plain}");
+}
+
+#[tokio::test]
+async fn a_failing_batch_leaves_nothing_behind() {
+    let app = app();
+    node(&app, "f", "seed").await;
+    let start = totals(&app).await;
+
+    let cases = [
+        // A hyperedge with one node.
+        (
+            json!([
+                { "op": "create_node", "ref": "$a", "node": { "labels": ["A"] } },
+                { "op": "create_hyperedge", "hyperedge": { "label": "x",
+                  "participants": [{ "node": "$a" }, { "node": "$a" }] } }
+            ]),
+            "operation 1:",
+        ),
+        // A reference made later in the batch.
+        (
+            json!([
+                { "op": "create_node", "ref": "$a", "node": { "labels": ["A"] } },
+                { "op": "create_hyperedge", "hyperedge": { "label": "x",
+                  "participants": [{ "node": "$a" }, { "node": "$b" }] } },
+                { "op": "create_node", "ref": "$b", "node": { "labels": ["A"] } }
+            ]),
+            "unknown reference \"$b\"",
+        ),
+        // A node name used as a hyperedge, and the other way round.
+        (
+            json!([
+                { "op": "create_node", "ref": "$a", "node": { "labels": ["A"] } },
+                { "op": "retract_hyperedge", "id": "$a" }
+            ]),
+            "names a node, not a hyperedge",
+        ),
+        (
+            json!([
+                { "op": "create_node", "ref": "$a", "node": { "labels": ["A"] } },
+                { "op": "create_node", "ref": "$b", "node": { "labels": ["A"] } },
+                { "op": "create_hyperedge", "ref": "$h", "hyperedge": { "label": "x",
+                  "participants": [{ "node": "$a" }, { "node": "$b" }] } },
+                { "op": "update_node", "id": "$h", "patch": { "props": { "k": 1 } } }
+            ]),
+            "names a hyperedge, not a node",
+        ),
+        // One name for two records.
+        (
+            json!([
+                { "op": "create_node", "ref": "$a", "node": { "labels": ["A"] } },
+                { "op": "create_node", "ref": "$b", "node": { "labels": ["A"] } },
+                { "op": "create_hyperedge", "ref": "$a", "hyperedge": { "label": "x",
+                  "participants": [{ "node": "$a" }, { "node": "$b" }] } }
+            ]),
+            "already taken",
+        ),
+        // A node in a hyperedge is not deleted unless the batch says how.
+        (
+            json!([
+                { "op": "create_node", "ref": "$a", "node": { "labels": ["A"] } },
+                { "op": "create_node", "ref": "$b", "node": { "labels": ["A"] } },
+                { "op": "create_hyperedge", "hyperedge": { "label": "x",
+                  "participants": [{ "node": "$a" }, { "node": "$b" }] } },
+                { "op": "delete_node", "id": "$a" }
+            ]),
+            "operation 3:",
+        ),
+        // An unknown hyperedge id.
+        (
+            json!([
+                { "op": "create_node", "node": { "labels": ["A"] } },
+                { "op": "delete_hyperedge", "id": "0190f5c2-7a3e-7cde-8f01-00000000dead" }
+            ]),
+            "operation 1:",
+        ),
+    ];
+    for (ops, expected) in cases {
+        let (status, body) = batch(&app, OWNER, "f", ops.clone()).await;
+        assert!(status.is_client_error(), "{ops} -> {status} {body}");
+        assert!(message(&body).contains(expected), "{ops} -> {body}");
+        assert_eq!(totals(&app).await, start, "{ops} left records");
+    }
+
+    // With a policy, deleting a participant in the same batch works.
+    let (status, body) = batch(
+        &app,
+        OWNER,
+        "f",
+        json!([
+            { "op": "create_node", "ref": "$a", "node": { "labels": ["A"] } },
+            { "op": "create_node", "ref": "$b", "node": { "labels": ["A"] } },
+            { "op": "create_node", "ref": "$c", "node": { "labels": ["A"] } },
+            { "op": "create_hyperedge", "ref": "$h", "hyperedge": { "label": "x",
+              "participants": [{ "node": "$a" }, { "node": "$b" }, { "node": "$c" }] } },
+            { "op": "delete_node", "id": "$a", "hyperedges": "detach" }
+        ]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let id = body["hyperedge_refs"]["$h"].as_str().unwrap();
+    let (_, edge) = call(&app, OWNER, "GET", &format!("/v1/f/hyperedges/{id}"), None).await;
+    assert_eq!(edge["participants"].as_array().unwrap().len(), 2);
+    let (status, body) = batch(
+        &app,
+        OWNER,
+        "f",
+        json!([{ "op": "delete_node", "id": "$x", "hyperedges": "sideways" }]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+}
+
+#[tokio::test]
+async fn a_batch_keeps_to_its_callers_rights() {
+    let app = app();
+    let (a, b) = (node(&app, "r", "one").await, node(&app, "r", "two").await);
+    let (_, made) = call(
+        &app,
+        OWNER,
+        "POST",
+        "/v1/r/hyperedges",
+        Some(json!({ "label": "x", "participants": [{ "node": a }, { "node": b }] })),
+    )
+    .await;
+    let id = made["id"].as_str().unwrap().to_owned();
+
+    // Writing without taking back: no retract or invalidate in a batch.
+    let (status, _) = call(
+        &app,
+        OWNER,
+        "PUT",
+        "/v1/roles/no-retract",
+        Some(json!({ "privileges": [
+            { "action": "read", "object": { "on": "namespace", "namespace": "r" } },
+            { "action": "create", "object": { "on": "namespace", "namespace": "r" } },
+            { "action": "update", "object": { "on": "namespace", "namespace": "r" } },
+            { "action": "delete", "object": { "on": "namespace", "namespace": "r" } }
+        ] })),
+    )
+    .await;
+    assert!(status.is_success());
+    let writer = account_key(&app, "no-retract").await;
+    for op in [
+        json!({ "op": "retract_hyperedge", "id": id }),
+        json!({ "op": "invalidate_hyperedge", "id": id, "at": "2030-01-01T00:00:00Z" }),
+    ] {
+        let (status, body) = batch(&app, &writer, "r", json!([op])).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    }
+    let (status, body) = batch(
+        &app,
+        &writer,
+        "r",
+        json!([{ "op": "update_hyperedge", "id": id, "patch": { "props": { "k": 1 } } }]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    // A reader writes nothing.
+    let reader = key(
+        &app,
+        "reader",
+        json!([{ "namespace": "r", "role": "read" }]),
+    )
+    .await;
+    let (status, _) = batch(
+        &app,
+        &reader,
+        "r",
+        json!([{ "op": "create_hyperedge", "hyperedge": { "label": "x",
+                 "participants": [{ "node": a }, { "node": b }] } }]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+
+    // Seeing only `Public` nodes: a hidden node is no participant, and the
+    // error does not say whether it exists; nothing stays.
+    let (_, hidden) = call(
+        &app,
+        OWNER,
+        "POST",
+        "/v1/r/nodes",
+        Some(json!({ "labels": ["Secret"] })),
+    )
+    .await;
+    let hidden = hidden["id"].as_str().unwrap().to_owned();
+    let label = |action: &str| json!({ "action": action, "object": { "on": "label", "namespace": "r", "label": "Public" } });
+    let (status, role) = call(
+        &app,
+        OWNER,
+        "PUT",
+        "/v1/roles/public-only",
+        Some(json!({ "privileges": [
+            label("read"),
+            label("write"),
+            // Hyperedge labels are granted as edge labels.
+            json!({ "action": "read", "object": { "on": "label", "namespace": "r", "label": "x", "edges": true } }),
+            json!({ "action": "write", "object": { "on": "label", "namespace": "r", "label": "x", "edges": true } })
+        ] })),
+    )
+    .await;
+    assert!(status.is_success(), "{role}");
+    let narrow = account_key(&app, "public-only").await;
+    let nodes_before = count(&app, "r", "nodes").await;
+    let (status, body) = batch(
+        &app,
+        &narrow,
+        "r",
+        json!([
+            { "op": "create_node", "ref": "$p", "node": { "labels": ["Public"] } },
+            { "op": "create_node", "ref": "$q", "node": { "labels": ["Public"] } },
+            { "op": "create_hyperedge", "hyperedge": { "label": "x",
+              "participants": [{ "node": "$p" }, { "node": "$q" }, { "node": hidden }] } }
+        ]),
+    )
+    .await;
+    assert!(status.is_client_error(), "{status} {body}");
+    assert!(!message(&body).contains("Secret"), "{body}");
+    assert_eq!(count(&app, "r", "nodes").await, nodes_before);
+    // Without the hidden node it goes through.
+    let (status, body) = batch(
+        &app,
+        &narrow,
+        "r",
+        json!([
+            { "op": "create_node", "ref": "$p", "node": { "labels": ["Public"] } },
+            { "op": "create_node", "ref": "$q", "node": { "labels": ["Public"] } },
+            { "op": "create_hyperedge", "hyperedge": { "label": "x",
+              "participants": [{ "node": "$p" }, { "node": "$q" }] } }
+        ]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+}
+
+async fn account_key(app: &Router, role: &str) -> String {
+    let (status, body) = call(
+        app,
+        OWNER,
+        "POST",
+        "/v1/accounts",
+        Some(json!({ "name": format!("{role}-account"), "kind": "service", "roles": [role] })),
+    )
+    .await;
+    assert!(status.is_success(), "{body}");
+    let (status, body) = call(
+        app,
+        OWNER,
+        "POST",
+        "/v1/keys",
+        Some(json!({ "name": format!("{role}-key"), "account": format!("{role}-account") })),
+    )
+    .await;
+    assert!(status.is_success(), "{body}");
+    body["secret"].as_str().unwrap().to_owned()
+}
+
+async fn totals(app: &Router) -> (usize, usize) {
+    (
+        count(app, "f", "nodes").await,
+        count(app, "f", "hyperedges").await,
+    )
+}

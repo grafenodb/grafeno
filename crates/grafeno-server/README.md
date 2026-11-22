@@ -524,7 +524,18 @@ nodes they create with `ref` (`"$name"`) and later operations can use that
 name wherever they take a node id. Operations: `create_node`, `upsert_node`
 (`node.id` required), `update_node` (`{id, patch}`), `delete_node`,
 `create_edge`, `delete_edge`, `delete_edges_from` (`{from, label?}`),
-`invalidate_edge` (`{id, at}`) and `retract_edge`.
+`invalidate_edge` (`{id, at}`) and `retract_edge`; for hyperedges,
+`create_hyperedge` (`{ref?, hyperedge}`, as the body of
+`POST /hyperedges`, with participants that may be `$name`s),
+`update_hyperedge` (`{id, patch}`, as the body of `PATCH /hyperedges/{id}`,
+participants included), `delete_hyperedge`, `invalidate_hyperedge`
+(`{id, at}`) and `retract_hyperedge`. `delete_node` takes `hyperedges`
+(`restrict`, the default, `cascade` or `detach`), as its route does. The
+names given to hyperedges come back in `hyperedge_refs`, left out when
+there are none. A name stands for one record: a hyperedge's name may not
+be given to anything else in the batch, and using a node's name where a
+hyperedge id goes (or the other way round) fails. Retracting or
+invalidating, of edges or hyperedges, needs the `retract` privilege too.
 
 Syncing a note and replacing its links in one request:
 

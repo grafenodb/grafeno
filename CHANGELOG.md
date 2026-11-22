@@ -21,6 +21,13 @@ and MCP tools of their own; the change log and event subscriptions
 follow them, and JSON lines exports carry them. Recall does not know them
 yet.
 
+- **Added**: `POST /v1/{ns}/batch` takes `create_hyperedge` (with a `ref`
+  of its own, and participants that may be `$name`s), `update_hyperedge`
+  (properties and participants), `delete_hyperedge`,
+  `invalidate_hyperedge` and `retract_hyperedge`, and `delete_node` takes
+  `hyperedges` (`restrict`, `cascade` or `detach`). Hyperedge names come
+  back in `hyperedge_refs`, left out when there are none; a name stands for
+  one record, and a node's name where a hyperedge goes fails.
 - **Added**: `HyperEdge`, `Participant`, `NewHyperEdge` and `HyperEdgeId`;
   on `WriteTx`, `create_hyperedge`, `set_hyperedge_props`,
   `remove_hyperedge_props`, `set_hyperedge_participants`,

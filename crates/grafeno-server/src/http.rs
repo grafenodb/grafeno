@@ -2338,8 +2338,12 @@ pub enum BatchOp {
         id: NodeRef,
         patch: PatchNode,
     },
+    /// Deletes a node; `hyperedges` says what happens to the hyperedges it
+    /// takes part in (`restrict`, the default, `cascade` or `detach`).
     DeleteNode {
         id: NodeRef,
+        #[serde(default)]
+        hyperedges: Option<String>,
     },
     CreateEdge {
         edge: EdgeInput,
@@ -2359,6 +2363,70 @@ pub enum BatchOp {
     RetractEdge {
         id: EdgeId,
     },
+    /// Creates a hyperedge; its participants may name nodes created earlier
+    /// in the batch, and `ref` lets later operations point to it.
+    CreateHyperedge {
+        #[serde(default, rename = "ref")]
+        reference: Option<String>,
+        hyperedge: BatchHyperEdge,
+    },
+    /// Merges `props`, removes `remove_props`, then replaces the
+    /// participants when given, as `PATCH /hyperedges/{id}` does.
+    UpdateHyperedge {
+        id: HyperEdgeRef,
+        patch: BatchHyperEdgePatch,
+    },
+    DeleteHyperedge {
+        id: HyperEdgeRef,
+    },
+    InvalidateHyperedge {
+        id: HyperEdgeRef,
+        at: TimeInput,
+    },
+    RetractHyperedge {
+        id: HyperEdgeRef,
+    },
+}
+
+/// A hyperedge id, or a `$name` given to one created earlier in the batch.
+type HyperEdgeRef = String;
+
+/// A participant of a hyperedge in a batch: a node id or `$name`.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BatchParticipant {
+    node: NodeRef,
+    #[serde(default)]
+    role: Option<String>,
+}
+
+/// A hyperedge to create in a batch: as on `POST /hyperedges`, with
+/// participants that may be `$name`s.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BatchHyperEdge {
+    label: String,
+    participants: Vec<BatchParticipant>,
+    #[serde(default)]
+    props: Props,
+    #[serde(default)]
+    sources: Vec<NodeId>,
+    #[serde(default)]
+    valid_from: Option<TimeInput>,
+    #[serde(default)]
+    valid_to: Option<TimeInput>,
+}
+
+/// A hyperedge update in a batch, as on `PATCH /hyperedges/{id}`.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BatchHyperEdgePatch {
+    #[serde(default)]
+    props: Option<Props>,
+    #[serde(default)]
+    remove_props: Vec<String>,
+    #[serde(default)]
+    participants: Option<Vec<BatchParticipant>>,
 }
 
 #[derive(Deserialize)]
@@ -2371,29 +2439,122 @@ struct BatchInput {
 struct BatchOutput {
     results: Vec<Value>,
     refs: HashMap<String, NodeId>,
+    /// The `$name`s given to hyperedges (left out when there are none, so
+    /// a batch without them answers as before).
+    #[serde(skip_serializing_if = "HashMap::is_empty")]
+    hyperedge_refs: HashMap<String, grafeno::HyperEdgeId>,
+}
+
+/// The `$name`s a batch gave: one name stands for one kind of record.
+#[derive(Default)]
+struct BatchRefs {
+    nodes: HashMap<String, NodeId>,
+    hyperedges: HashMap<String, grafeno::HyperEdgeId>,
+}
+
+fn check_ref_name(reference: &str) -> grafeno::Result<()> {
+    if !reference.starts_with('$') || reference.len() < 2 {
+        return Err(Error::Invalid(format!(
+            "reference {reference:?} must look like \"$name\""
+        )));
+    }
+    Ok(())
 }
 
 fn remember_ref(
-    refs: &mut HashMap<String, NodeId>,
+    refs: &mut BatchRefs,
     reference: Option<String>,
     id: NodeId,
 ) -> grafeno::Result<()> {
     if let Some(reference) = reference {
-        if !reference.starts_with('$') || reference.len() < 2 {
+        check_ref_name(&reference)?;
+        if refs.hyperedges.contains_key(&reference) {
             return Err(Error::Invalid(format!(
-                "reference {reference:?} must look like \"$name\""
+                "reference {reference:?} already names a hyperedge"
             )));
         }
-        refs.insert(reference, id);
+        // A node name given again points to the newer node, as before.
+        refs.nodes.insert(reference, id);
     }
     Ok(())
+}
+
+fn remember_hyperedge_ref(
+    refs: &mut BatchRefs,
+    reference: Option<String>,
+    id: grafeno::HyperEdgeId,
+) -> grafeno::Result<()> {
+    if let Some(reference) = reference {
+        check_ref_name(&reference)?;
+        if refs.nodes.contains_key(&reference) || refs.hyperedges.contains_key(&reference) {
+            return Err(Error::Invalid(format!(
+                "reference {reference:?} is already taken in this batch"
+            )));
+        }
+        refs.hyperedges.insert(reference, id);
+    }
+    Ok(())
+}
+
+fn resolve_node_ref(reference: &str, refs: &BatchRefs) -> grafeno::Result<NodeId> {
+    if refs.hyperedges.contains_key(reference) {
+        return Err(Error::Invalid(format!(
+            "reference {reference:?} names a hyperedge, not a node"
+        )));
+    }
+    resolve_ref(reference, &refs.nodes)
+}
+
+fn resolve_hyperedge_ref(
+    reference: &str,
+    refs: &BatchRefs,
+) -> grafeno::Result<grafeno::HyperEdgeId> {
+    if reference.starts_with('$') {
+        if refs.nodes.contains_key(reference) {
+            return Err(Error::Invalid(format!(
+                "reference {reference:?} names a node, not a hyperedge"
+            )));
+        }
+        return refs
+            .hyperedges
+            .get(reference)
+            .copied()
+            .ok_or_else(|| Error::Invalid(format!("unknown reference {reference:?}")));
+    }
+    parse_hyperedge_id(reference)
+}
+
+fn batch_participants(
+    participants: Vec<BatchParticipant>,
+    refs: &BatchRefs,
+) -> grafeno::Result<Vec<grafeno::Participant>> {
+    participants
+        .into_iter()
+        .map(|p| {
+            Ok(grafeno::Participant {
+                node: resolve_node_ref(&p.node, refs)?,
+                role: p.role,
+            })
+        })
+        .collect()
+}
+
+fn on_hyperedges(policy: Option<&str>) -> grafeno::Result<grafeno::OnHyperEdges> {
+    match policy {
+        None | Some("restrict") => Ok(grafeno::OnHyperEdges::Restrict),
+        Some("cascade") => Ok(grafeno::OnHyperEdges::Cascade),
+        Some("detach") => Ok(grafeno::OnHyperEdges::Detach),
+        Some(other) => Err(Error::Invalid(format!(
+            "hyperedges is restrict, cascade or detach, not {other:?}"
+        ))),
+    }
 }
 
 fn apply_op(
     tx: &mut WriteTx,
     ns: &str,
     op: BatchOp,
-    refs: &mut HashMap<String, NodeId>,
+    refs: &mut BatchRefs,
 ) -> grafeno::Result<Value> {
     Ok(match op {
         BatchOp::CreateNode { reference, node } => {
@@ -2415,16 +2576,20 @@ fn apply_op(
             json!({ "id": id, "created": created })
         }
         BatchOp::UpdateNode { id, patch } => {
-            let id = resolve_ref(&id, refs)?;
+            let id = resolve_node_ref(&id, refs)?;
             apply_patch(tx, ns, id, patch)?;
             json!({ "id": id })
         }
-        BatchOp::DeleteNode { id } => {
-            tx.delete_node(ns, resolve_ref(&id, refs)?)?;
+        BatchOp::DeleteNode { id, hyperedges } => {
+            let policy = on_hyperedges(hyperedges.as_deref())?;
+            tx.delete_node_with(ns, resolve_node_ref(&id, refs)?, policy)?;
             json!({})
         }
         BatchOp::CreateEdge { edge } => {
-            let id = tx.create_edge(ns, edge.into_new(refs)?)?;
+            for end in [&edge.from, &edge.to] {
+                resolve_node_ref(end, refs)?;
+            }
+            let id = tx.create_edge(ns, edge.into_new(&refs.nodes)?)?;
             json!({ "id": id })
         }
         BatchOp::DeleteEdge { id } => {
@@ -2432,7 +2597,8 @@ fn apply_op(
             json!({})
         }
         BatchOp::DeleteEdgesFrom { from, label } => {
-            let deleted = tx.delete_edges_from(ns, resolve_ref(&from, refs)?, label.as_deref())?;
+            let deleted =
+                tx.delete_edges_from(ns, resolve_node_ref(&from, refs)?, label.as_deref())?;
             json!({ "deleted": deleted })
         }
         BatchOp::InvalidateEdge { id, at } => {
@@ -2441,6 +2607,56 @@ fn apply_op(
         }
         BatchOp::RetractEdge { id } => {
             tx.retract_edge(ns, id)?;
+            json!({})
+        }
+        BatchOp::CreateHyperedge {
+            reference,
+            hyperedge,
+        } => {
+            let mut new = grafeno::NewHyperEdge::new(hyperedge.label);
+            new.participants = batch_participants(hyperedge.participants, refs)?;
+            new.props = hyperedge.props;
+            new.sources = hyperedge.sources;
+            new.valid_from = hyperedge
+                .valid_from
+                .as_ref()
+                .map(TimeInput::resolve)
+                .transpose()?;
+            new.valid_to = hyperedge
+                .valid_to
+                .as_ref()
+                .map(TimeInput::resolve)
+                .transpose()?;
+            let id = tx.create_hyperedge(ns, new)?;
+            remember_hyperedge_ref(refs, reference, id)?;
+            json!({ "id": id })
+        }
+        BatchOp::UpdateHyperedge { id, patch } => {
+            let id = resolve_hyperedge_ref(&id, refs)?;
+            tx.hyperedge(ns, id)?.ok_or(Error::HyperEdgeNotFound(id))?;
+            if let Some(props) = patch.props {
+                tx.set_hyperedge_props(ns, id, props)?;
+            }
+            if !patch.remove_props.is_empty() {
+                let keys: Vec<&str> = patch.remove_props.iter().map(String::as_str).collect();
+                tx.remove_hyperedge_props(ns, id, &keys)?;
+            }
+            if let Some(participants) = patch.participants {
+                let participants = batch_participants(participants, refs)?;
+                tx.set_hyperedge_participants(ns, id, participants)?;
+            }
+            json!({ "id": id })
+        }
+        BatchOp::DeleteHyperedge { id } => {
+            tx.delete_hyperedge(ns, resolve_hyperedge_ref(&id, refs)?)?;
+            json!({})
+        }
+        BatchOp::InvalidateHyperedge { id, at } => {
+            tx.invalidate_hyperedge(ns, resolve_hyperedge_ref(&id, refs)?, at.resolve()?)?;
+            json!({})
+        }
+        BatchOp::RetractHyperedge { id } => {
+            tx.retract_hyperedge(ns, resolve_hyperedge_ref(&id, refs)?)?;
             json!({})
         }
     })
@@ -2456,7 +2672,10 @@ async fn batch(
     let takes_back = input.ops.iter().any(|op| {
         matches!(
             op,
-            BatchOp::RetractEdge { .. } | BatchOp::InvalidateEdge { .. }
+            BatchOp::RetractEdge { .. }
+                | BatchOp::InvalidateEdge { .. }
+                | BatchOp::RetractHyperedge { .. }
+                | BatchOp::InvalidateHyperedge { .. }
         )
     });
     if takes_back {
@@ -2472,7 +2691,7 @@ async fn batch(
         let result = writer.write(move |tx| {
             tx.act_as(actor.clone());
             tx.set_origin(origin.clone());
-            let mut refs = HashMap::new();
+            let mut refs = BatchRefs::default();
             let mut results = Vec::with_capacity(input.ops.len());
             let mut outcome = Ok(());
             for (index, op) in input.ops.iter().cloned().enumerate() {
@@ -2487,7 +2706,11 @@ async fn batch(
             }
             tx.act_as(None);
             tx.set_origin(None);
-            outcome.map(|()| BatchOutput { results, refs })
+            outcome.map(|()| BatchOutput {
+                results,
+                refs: refs.nodes,
+                hyperedge_refs: refs.hyperedges,
+            })
         });
         let failed_at = *failed_at.lock().expect("not poisoned");
         result.map_err(|error| (failed_at, error))
