@@ -1557,7 +1557,7 @@ impl WriteTx {
                     .tx
                     .open_table(crate::hyperedge::HYPEREDGES)
                     .map_err(storage)?;
-                Ok(read_record::<HyperEdge>(&table, ns, id)?
+                Ok(crate::hyperedge_codec::read(&table, ns, id)?
                     .filter(|edge| !edge.is_retracted())
                     .map(|edge| edge.props))
             }
@@ -1577,7 +1577,7 @@ impl WriteTx {
                 .tx
                 .open_table(crate::hyperedge::HYPEREDGES)
                 .map_err(storage)?;
-            let records: Vec<HyperEdge> = crate::store::scan_records(&table, ns)?;
+            let records: Vec<HyperEdge> = crate::hyperedge_codec::scan(&table, ns)?;
             for edge in records {
                 if def.covers(std::slice::from_ref(&edge.label)) {
                     let live = !edge.is_retracted();

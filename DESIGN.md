@@ -132,7 +132,9 @@ are keyed by a space: a namespace (its node embeddings) or `ns\0index`
   `u128`.
 - Adjacency lists keyed by `(node, label)` make "neighbors of X through
   `mentions`" one contiguous range.
-- Records are serialized as JSON. Measured against CBOR and a binary
+- Records are serialized as JSON, but for hyperedges (binary but for
+  their properties, since their participants were most of what reading
+  one cost; docs/benchmarks.md, *Hyperedges*). Measured against CBOR and a binary
   header (docs/benchmarks.md, *Record encodings*), the cost of reading a
   record is mostly building its properties, not the format: a binary
   encoding would save little and cost a layout migration, while decoding

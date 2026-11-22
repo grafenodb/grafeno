@@ -79,7 +79,7 @@ Three redb tables, added by layout 19:
 
 | Table | Key | Value |
 | --- | --- | --- |
-| `hyperedges` | `(ns, hyperedge_id)` | the `HyperEdge` record (JSON, like nodes and edges) |
+| `hyperedges` | `(ns, hyperedge_id)` | the `HyperEdge` record: binary for its id, label, participants, sources and times, JSON for its properties (`hyperedge_codec.rs`) |
 | `hyperedge_incidence` | `(ns, node_id, label, hyperedge_id)` | `()` |
 | `hyperedge_labels` | `(ns, label, hyperedge_id)` | `()` |
 

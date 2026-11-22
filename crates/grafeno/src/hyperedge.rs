@@ -39,9 +39,7 @@ use grafeno_core::{
 use redb::{ReadableTable, TableDefinition};
 
 use crate::db::{ReadTx, WriteTx, check_interval, merge_props};
-use crate::store::{
-    AdjKey, LabelKey, RecordKey, check_label, check_namespace, decode, encode, storage,
-};
+use crate::store::{AdjKey, LabelKey, RecordKey, check_label, check_namespace, storage};
 
 /// `(ns, hyperedge_id) -> HyperEdge` (JSON).
 pub(crate) const HYPEREDGES: TableDefinition<RecordKey, &[u8]> = TableDefinition::new("hyperedges");
@@ -202,10 +200,7 @@ fn read_hyperedge(
     ns: &str,
     id: HyperEdgeId,
 ) -> Result<Option<HyperEdge>> {
-    match table.get((ns, id.as_u128())).map_err(storage)? {
-        Some(guard) => decode(guard.value()).map(Some),
-        None => Ok(None),
-    }
+    crate::hyperedge_codec::read(table, ns, id.as_u128())
 }
 
 /// Up to `limit` ids of the hyperedges with `label` after `after`, in id order.
@@ -646,7 +641,7 @@ impl WriteTx {
         };
         self.log_hyperedge(ns, edge, op);
         let label = edge.label.as_str();
-        let bytes = encode(edge)?;
+        let bytes = crate::hyperedge_codec::encode(edge)?;
         self.tx
             .open_table(HYPEREDGES)
             .map_err(storage)?
@@ -745,7 +740,7 @@ impl WriteTx {
         }
         let records: Vec<HyperEdge> = {
             let table = self.tx.open_table(HYPEREDGES).map_err(storage)?;
-            crate::store::scan_records(&table, ns)?
+            crate::hyperedge_codec::scan(&table, ns)?
         };
         let (mut kept, mut dropped) = (0, 0);
         for mut edge in records {
@@ -839,7 +834,6 @@ impl ReadTx {
         let ids = page_ids(records, ns, after, limit)?;
         self.visible_ids(ns, ids)
     }
-
 
     /// The hyperedge as this snapshot's view sees it: hidden when its label
     /// or any participant is, without hidden properties.
@@ -1007,10 +1001,8 @@ impl ReadTx {
         limit: usize,
     ) -> Result<Vec<HyperEdge>> {
         let records = &self.hyperedges;
-        let page: Vec<HyperEdge> =
-            crate::store::scan_page(records, ns, after.map(HyperEdgeId::as_u128), limit, |_| {
-                true
-            })?;
+        let page =
+            crate::hyperedge_codec::page(records, ns, after.map(HyperEdgeId::as_u128), limit)?;
         let mut out = Vec::with_capacity(page.len());
         for edge in page {
             if let Some(edge) = self.seen_hyperedge(ns, edge)? {
@@ -1029,7 +1021,7 @@ impl ReadTx {
         let mut expected_incidence: BTreeSet<(u128, String, u128)> = BTreeSet::new();
         let mut expected_labels: BTreeSet<(String, u128)> = BTreeSet::new();
         let mut count = 0u64;
-        for edge in crate::store::scan_records::<HyperEdge>(records, ns)? {
+        for edge in crate::hyperedge_codec::scan(records, ns)? {
             count += 1;
             let id = edge.id;
             if edge.participants.windows(2).any(|pair| pair[0] >= pair[1]) {

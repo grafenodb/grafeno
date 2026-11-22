@@ -34,7 +34,7 @@ const EXPIRED: u8 = 1;
 const VALID_FROM: u8 = 2;
 const VALID_TO: u8 = 4;
 
-fn put_varint(out: &mut Vec<u8>, value: i64) {
+pub(crate) fn put_varint(out: &mut Vec<u8>, value: i64) {
     let mut zigzag = ((value << 1) ^ (value >> 63)) as u64;
     loop {
         let byte = (zigzag & 0x7F) as u8;
@@ -47,7 +47,7 @@ fn put_varint(out: &mut Vec<u8>, value: i64) {
     }
 }
 
-fn take_varint(data: &[u8], at: &mut usize) -> i64 {
+pub(crate) fn take_varint(data: &[u8], at: &mut usize) -> i64 {
     let mut zigzag = 0u64;
     let mut shift = 0;
     while let Some(&byte) = data.get(*at) {
@@ -339,7 +339,7 @@ pub(crate) const EDGE_LABEL_COUNTS: TableDefinition<CountKey, u64> =
 pub(crate) type CountKey = (&'static str, &'static str);
 
 /// A key range with explicit bounds.
-type Bounds<K> = (Bound<K>, Bound<K>);
+pub(crate) type Bounds<K> = (Bound<K>, Bound<K>);
 
 /// Up to `limit` records of a namespace with an id greater than `after`, in
 /// id order, that pass `keep`.

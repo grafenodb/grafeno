@@ -418,8 +418,8 @@ fn index_candidates(
     Ok(Some(ids.into_iter().take(limit).collect()))
 }
 
-/// Rows extending `row` with each match of `pattern`. `filter` (the
-/// clause's `WHERE`) only picks where to start; the caller applies it.
+/// Rows extending `row` with each match of `pattern` that passes `filter`
+/// (the clause's `WHERE`), which also picks where to start.
 /// With `slice` (part, parts), only that share of the candidates, in id
 /// order: a part of a query split across cluster members.
 pub(crate) fn match_rows(
@@ -465,6 +465,15 @@ pub(crate) fn match_rows(
             }
             for (var, node) in bindings {
                 next.insert(var, Value::Node(node));
+            }
+            // The WHERE, as each row is made: rows it drops are never held.
+            if let Some(filter) = filter
+                && crate::eval::truth(&eval(ctx, filter, Scope::Row(&next))?)? != Some(true)
+            {
+                if let Some(trace) = ctx.trace {
+                    trace.drop_row(&crate::exec::row_values(&next), filter);
+                }
+                continue;
             }
             out.push(next);
             ctx.budget.rows(out.len())?;

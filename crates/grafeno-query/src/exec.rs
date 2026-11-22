@@ -1511,7 +1511,7 @@ impl<'a> Runner<'a> {
                         shared.clone()
                     };
                     let ctx = self.ctx(&edges);
-                    let mut rows = crate::hyper::match_rows(
+                    let rows = crate::hyper::match_rows(
                         &ctx,
                         pattern,
                         &hyper,
@@ -1519,9 +1519,6 @@ impl<'a> Runner<'a> {
                         &row,
                         slice,
                     )?;
-                    if let Some(filter) = filter {
-                        rows = keep(&ctx, rows, filter)?;
-                    }
                     if rows.is_empty() && *optional {
                         let mut row = row;
                         for var in &new_vars {

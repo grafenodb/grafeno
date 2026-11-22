@@ -1253,7 +1253,7 @@ impl ReadTx {
                 Op::HyperEdge {
                     ns: owned(ns),
                     id: HyperEdgeId::from_u128(key.value().1),
-                    hyperedge: Some(decode(value.value())?),
+                    hyperedge: Some(crate::hyperedge_codec::decode(value.value())?),
                 },
                 &mut ops,
             )?;

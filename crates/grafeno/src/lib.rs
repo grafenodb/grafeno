@@ -32,6 +32,7 @@ mod db;
 mod dump;
 mod fulltext;
 mod hyperedge;
+mod hyperedge_codec;
 mod index;
 mod interchange;
 mod memory;

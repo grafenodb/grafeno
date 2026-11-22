@@ -1294,6 +1294,21 @@ both adjacency entries.
 | 50 | 4 443 (225) | 10.5 / 15.6 | 238 / 423 | 916 / 1 162 | 22.6 / 39.9 | 303 / 461 | 7 059 | 6 440 |
 | 100 | 2 051 (488) | 18.1 / 32.5 | 828 / 1 466 | 1 605 / 1 771 | 38.5 / 103 | 919 / 1 170 | 3 781 | 2 878 |
 
+Since 2026-11-22 a record is binary but for its properties (ids as 16
+bytes, roles and times inline; `crates/grafeno/src/hyperedge_codec.rs`).
+The same benchmark, the commit before and after alternated twice (means):
+
+| Participants | Record bytes before / after | By id p50 µs | A node's hyperedges p50 µs | A label's page of 100 p50 µs | Create /s |
+| --- | --- | --- | --- | --- | --- |
+| 3 | 409 / 131 | 1.65 / 0.90 | 4.6 / 3.9 | 161 / 82 | 38 089 / 37 813 |
+| 10 | 865 / 294 | 2.9 / 1.1 | 18.5 / 9.5 | 292 / 120 | 16 313 / 15 833 |
+| 50 | 3 466 / 1 229 | 9.5 / 3.2 | 246 / 85 | 911 / 308 | (one run) |
+| 100 | 6 666 / 2 416 | 25.4 / 5.8 | 876 / 289 | 1 691 / 561 | (one run) |
+
+Writes cost the same; reads that return many records gain most, as they
+spent their time decoding participants. The tables below are from the
+JSON records.
+
 Bytes stored with B-tree metadata, per hyperedge:
 
 | Participants | `hyperedges` | `hyperedge_incidence` | `hyperedge_labels` |
@@ -1350,21 +1365,28 @@ indexed query of the namespace). Fixed, with a test, before these numbers.
 nodes beside them; the best of five runs. Release build, in memory,
 2026-11-22, one run per build, the three builds alternated on one machine.
 
-| Read | Before | Tables opened once | And participants read on demand |
-| --- | --- | --- | --- |
-| Every hyperedge by id | 3.31 µs each | 1.68 µs | 1.65 µs |
-| Every hyperedge in pages of 1 000 | 1.30 µs | 1.32 µs | 1.30 µs |
-| `MATCH HYPEREDGE h:execution WHERE h.execution_id = …` | 9.54 µs a hyperedge | 7.92 µs | 3.69 µs |
-| The same scan over nodes | 0.37 µs a node | 0.37 µs | 0.39 µs |
+| Read | Before | Tables opened once | And participants read on demand | And binary records, `WHERE` as rows are made |
+| --- | --- | --- | --- | --- |
+| Every hyperedge by id | 3.31 µs each | 1.68 µs | 1.65 µs | 1.02 µs |
+| Every hyperedge in pages of 1 000 | 1.30 µs | 1.32 µs | 1.30 µs | 0.67 µs |
+| `MATCH HYPEREDGE h:execution WHERE h.execution_id = …` | 9.54 µs a hyperedge | 7.92 µs | 3.69 µs | 1.99 µs |
+| The same scan over nodes | 0.37 µs a node | 0.37 µs | 0.39 µs | 0.37 µs |
+
+The last column was measured as an A/B of two release builds (the commit
+before and after), run alternately twice: the figures are the means.
 
 Two costs had nothing to do with hyperedges themselves: each read of one
 opened two tables (a snapshot now opens the three hyperedge tables once,
 as it does those of nodes), and matching a pattern read every
 participant's node, even when the pattern named none (now only the nodes
-of participants a member may take, when it is first needed). What is left
-is decoding the record, JSON like a node's but with its participants, and
-the rows themselves: a label scan stays ten times a node scan, and an
-index is the answer for lookups by property.
+of participants a member may take, when it is first needed). Then two
+that were about them: the record held its participants as JSON (ids as
+text), and `MATCH HYPEREDGE` made every row before its `WHERE` dropped
+them. Records are now binary but for their properties (see the hyperedge
+section above), and the `WHERE` runs as each row is made. A label scan is
+five times a node scan, from 26; the rest is fetching each record by id
+and making its row, and an index is still the answer for lookups by
+property.
 
 A participant in 300 hyperedges looked up with a key (`MATCH (a:Agent {n:
 77}) MATCH HYPEREDGE h:execution [(a)] WHERE h.execution_id = …`): 2.81

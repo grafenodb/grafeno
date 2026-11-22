@@ -33,6 +33,11 @@ an experiment found event nodes answer as well (docs/benchmarks.md).
 - **Added**: a read query that starts with `MATCH HYPEREDGE` is split
   across cluster members, each part taking its share of the candidate
   hyperedges in id order.
+- **Changed**: hyperedge records are binary but for their properties: a
+  third of the bytes (131 instead of 409 with three participants), reads
+  2 to 3 times faster; records written as JSON by development builds are
+  still read. `MATCH HYPEREDGE` applies its `WHERE` as each row is made
+  (a label scan 3.9 → 2.0 µs a hyperedge).
 - **Changed**: reading hyperedges is faster: a snapshot opens their
   tables once (a read by id 3.3 → 1.7 µs), and matching a pattern reads
   only the participants' nodes it needs (a label scan 9.5 → 3.7 µs a

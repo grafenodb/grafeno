@@ -183,7 +183,7 @@ impl ReadTx {
                 .tx
                 .open_table(crate::hyperedge::HYPEREDGES)
                 .map_err(storage)?;
-            crate::store::scan_records(&table, ns)?
+            crate::hyperedge_codec::scan(&table, ns)?
         } else {
             Vec::new()
         };
