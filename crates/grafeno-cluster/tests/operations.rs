@@ -262,3 +262,135 @@ fn the_leader_writes_no_format_a_member_cannot_read() {
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Waits until every database holds `count` nodes of `NS`.
+fn all_hold(dbs: &[Arc<Grafeno>], count: u64) {
+    for _ in 0..500 {
+        if dbs
+            .iter()
+            .all(|db| db.begin_read().unwrap().stats(NS).unwrap().nodes == count)
+        {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let counts: Vec<u64> = dbs
+        .iter()
+        .map(|db| db.begin_read().unwrap().stats(NS).unwrap().nodes)
+        .collect();
+    panic!("members hold {counts:?} nodes, not {count}");
+}
+
+#[test]
+fn a_member_of_the_version_before_holds_back_hyperedges_only() {
+    let dir = temp("rolling");
+    let hub = Hub::new();
+    let dbs: Vec<Arc<Grafeno>> = (0..3)
+        .map(|_| Arc::new(Grafeno::in_memory().unwrap()))
+        .collect();
+    let nodes: Vec<Arc<Node>> = (1..=3)
+        .map(|id| start(&hub, &dir, &dbs[id as usize - 1], id, &[1, 2, 3]))
+        .collect();
+    let refs: Vec<&Arc<Node>> = nodes.iter().collect();
+    write(&refs, "a");
+    write(&refs, "b");
+    let lead = leader(&refs);
+    // Every member upgraded but one, which still runs 0.4 (format 7).
+    for id in 1..=3 {
+        lead.note_member(id, MemberInfo::here());
+    }
+    let old = (1..=3).find(|id| *id != lead.id()).unwrap();
+    lead.note_member(
+        old,
+        MemberInfo {
+            version: "0.4.0".into(),
+            format: 7,
+            layout: 18,
+        },
+    );
+    assert_eq!(lead.cluster_format(), 7);
+    all_hold(&dbs, 2);
+    let ids = dbs[0]
+        .begin_read()
+        .unwrap()
+        .nodes_page(NS, None, None, 10)
+        .unwrap()
+        .iter()
+        .map(|node| node.id)
+        .collect::<Vec<NodeId>>();
+    let (a, b) = (ids[0], ids[1]);
+    // Hyperedges, and indexes on them, wait for the upgrade.
+    let refused = lead
+        .write(move |tx| {
+            tx.create_hyperedge(NS, grafeno::NewHyperEdge::new("pair").node(a).node(b))
+                .map(|_| ())
+        })
+        .unwrap_err();
+    assert!(
+        refused.to_string().contains("upgrade every member"),
+        "{refused}"
+    );
+    let refused = lead
+        .write(|tx| {
+            tx.create_index(NS, grafeno::IndexDef::on_hyperedges("pair", &["k"]))
+                .map(|_| ())
+        })
+        .unwrap_err();
+    assert!(
+        refused.to_string().contains("upgrade every member"),
+        "{refused}"
+    );
+    // Everything else goes on, to every member, the old one too.
+    write(&refs, "c");
+    lead.write(move |tx| {
+        tx.create_edge(NS, grafeno::NewEdge::new(a, "knows", b))
+            .map(|_| ())
+    })
+    .unwrap();
+    lead.write(|tx| {
+        tx.create_index(NS, grafeno::IndexDef::new("Note", "name"))
+            .map(|_| ())
+    })
+    .unwrap();
+    all_hold(&dbs, 3);
+    for db in &dbs {
+        let read = db.begin_read().unwrap();
+        assert_eq!(read.stats(NS).unwrap().edges, 1);
+        assert!(read.hyperedges_page(NS, None, 10).unwrap().is_empty());
+    }
+    // Upgraded, it reads format 8: hyperedges are written, everywhere.
+    lead.note_member(old, MemberInfo::here());
+    assert_eq!(lead.cluster_format(), grafeno::ENTRY_FORMAT);
+    lead.write(move |tx| {
+        tx.create_hyperedge(NS, grafeno::NewHyperEdge::new("pair").node(a).node(b))
+            .map(|_| ())
+    })
+    .unwrap();
+    for _ in 0..500 {
+        if dbs.iter().all(|db| {
+            db.begin_read()
+                .unwrap()
+                .hyperedges_page(NS, None, 10)
+                .unwrap()
+                .len()
+                == 1
+        }) {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    for db in &dbs {
+        assert_eq!(
+            db.begin_read()
+                .unwrap()
+                .hyperedges_page(NS, None, 10)
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+    for node in &nodes {
+        node.stop();
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}

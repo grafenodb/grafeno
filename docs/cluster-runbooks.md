@@ -129,6 +129,27 @@ upgraded first). Database layout upgrades happen as each member opens
 its file. The order does not matter for safety; upgrading the leader
 last saves an election per member.
 
+From 0.4 to a version with hyperedges:
+
+- While a 0.4 member votes (it reads entry format 7), writing a
+  hyperedge, or declaring an index or a rule on hyperedges, fails with
+  "upgrade every member first"; nothing is written. Every other write
+  (nodes, edges, indexes and rules on them, accounts, namespaces) goes on
+  and reaches every member, the 0.4 one included.
+- Once the last member is upgraded, the leader hears it within a
+  heartbeat and hyperedge writes go through, in entries of format 8.
+- A member's file stays layout 18 through the upgrade and turns 19 when
+  it applies the first entry with a hyperedge (or an index or rule on
+  them), so until then a member can still go back to 0.4 with its file
+  as it is. After that, going back means restoring a backup taken before.
+- `grafeno cluster status` shows, per member, the version and the entry
+  format it reads (`members`), and the format the leader writes
+  (`format`).
+
+`crates/grafeno-cluster/tests/operations.rs`
+(`a_member_of_the_version_before_holds_back_hyperedges_only`) runs this
+with a member that says it is 0.4.
+
 ## The drill
 
 `packaging/compose/drill.sh` runs every runbook above on the compose

@@ -30,6 +30,9 @@ an experiment found event nodes answer as well (docs/benchmarks.md).
   only memories overtaken by their words. A `supersedes` fact that no
   longer holds marks nothing. `knowledge::replaced_by` gives what
   replaces a memory at a time.
+- **Added**: the cluster runbook's rolling upgrade from 0.4 says what
+  waits (hyperedge writes and declarations) and what goes on meanwhile,
+  and a test runs it with a member that reads only format 7.
 - **Added**: a read query that starts with `MATCH HYPEREDGE` is split
   across cluster members, each part taking its share of the candidate
   hyperedges in id order.

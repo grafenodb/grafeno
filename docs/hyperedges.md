@@ -482,7 +482,8 @@ format that holds them. A member of an earlier version refuses an entry
 of format 8 instead of losing what it says, and while one such member
 votes, the leader refuses writes of hyperedges ("upgrade every member
 first"), as it does for other work that needs a newer format. Upgrade
-every member before writing hyperedges in a cluster.
+every member before writing hyperedges in a cluster: every other write
+goes on meanwhile (docs/cluster-runbooks.md, *A rolling upgrade*).
 
 ## Measurements
 
