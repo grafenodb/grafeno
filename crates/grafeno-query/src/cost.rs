@@ -184,9 +184,19 @@ impl<'i> Model<'i> {
                 // incidence is taken as a few hyperedges, a label or a
                 // scan as many.
                 let bound = self.bound.clone();
-                let per_row = match crate::hyper::Anchor::of(pattern, &|var| bound.contains(var)) {
+                let conditions = filter
+                    .as_ref()
+                    .map(crate::plan::conjuncts)
+                    .unwrap_or_default();
+                let anchor = crate::hyper::Anchor::of(
+                    pattern,
+                    &|var| bound.contains(var),
+                    &conditions,
+                    &self.info.indexes,
+                );
+                let per_row = match anchor {
                     crate::hyper::Anchor::Bound | crate::hyper::Anchor::Id => 1.0,
-                    crate::hyper::Anchor::Nodes(_) => 4.0,
+                    crate::hyper::Anchor::Nodes(_) | crate::hyper::Anchor::Index(_) => 4.0,
                     crate::hyper::Anchor::Labels => 100.0,
                     crate::hyper::Anchor::All => 1_000.0,
                 };

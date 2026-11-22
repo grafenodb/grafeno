@@ -692,7 +692,14 @@ impl WriteTx {
             .entries()
             .iter()
             .any(|(_, change)| change.values.is_some());
-        let format = if ops.iter().any(|op| matches!(op, Op::HyperEdge { .. })) {
+        // Hyperedges, and indexes on them, would be lost or misread by a
+        // member of an earlier format.
+        let hyper = |op: &Op| match op {
+            Op::HyperEdge { .. } => true,
+            Op::Index { def: Some(def), .. } => def.get("hyperedges").is_some(),
+            _ => false,
+        };
+        let format = if ops.iter().any(hyper) {
             8
         } else if values || ops.iter().any(newer_schema) {
             7

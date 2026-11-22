@@ -770,3 +770,190 @@ fn merges_reach_replicas_once() {
     assert_eq!(rows(&member, query), json!([[1, "proposed", 1]]));
     assert_eq!(rows(&member, query), rows(&leader, query));
 }
+
+/// Forty executions among the agents, with ids, projects and statuses.
+fn executions() -> Grafeno {
+    let db = team();
+    run(
+        &db,
+        "UNWIND range(0, 39) AS i
+         MATCH (p:Agent {name: 'planner'}), (b:Agent {name: 'builder'})
+         CREATE HYPEREDGE :execution {execution_id: 'E-' + toString(i),
+                                      project: 'P-' + toString(i % 4),
+                                      status: CASE WHEN i % 2 = 0 THEN 'approved' ELSE 'open' END}
+                [(p) AS runner, (b) AS reviewer]",
+    );
+    db
+}
+
+const QUERIES: [&str; 5] = [
+    "MATCH HYPEREDGE h:execution WHERE h.execution_id = 'E-7' RETURN h.execution_id",
+    "MATCH HYPEREDGE h:execution {execution_id: 'E-8'} RETURN h.project",
+    "MATCH HYPEREDGE h:execution WHERE h.project = 'P-1' AND h.status = 'open' RETURN h.execution_id ORDER BY h.execution_id",
+    "MATCH HYPEREDGE h:execution WHERE h.project = 'P-2' RETURN count(h)",
+    "UNWIND ['E-1', 'E-30', 'none'] AS id MATCH HYPEREDGE h:execution WHERE h.execution_id = id RETURN id, h.project",
+];
+
+#[test]
+fn an_index_on_hyperedges_finds_what_a_scan_finds() {
+    let db = executions();
+    let before: Vec<Json> = QUERIES.iter().map(|query| rows(&db, query)).collect();
+    let created = run(
+        &db,
+        "CREATE INDEX FOR HYPEREDGE h:execution ON (h.execution_id)",
+    );
+    assert_eq!(created.to_json()["rows"][0][4], 40, "{}", created.to_json());
+    run(
+        &db,
+        "CREATE INDEX by_project IF NOT EXISTS FOR HYPEREDGE h:execution ON (h.project, h.status)",
+    );
+    for (query, expected) in QUERIES.iter().zip(&before) {
+        assert_eq!(&rows(&db, query), expected, "{query}");
+    }
+    // The plans start from the indexes.
+    let plan = |query: &str| run(&db, &format!("EXPLAIN {query}")).to_json().to_string();
+    assert!(
+        plan(QUERIES[0]).contains("by index execution_execution_id"),
+        "{}",
+        plan(QUERIES[0])
+    );
+    assert!(
+        plan(QUERIES[2]).contains("by index by_project"),
+        "{}",
+        plan(QUERIES[2])
+    );
+    assert!(
+        plan(QUERIES[3]).contains("by index by_project"),
+        "{}",
+        plan(QUERIES[3])
+    );
+    // Fewer reads than the label scan.
+    let reads = |query: &str| -> u64 {
+        run(&db, &format!("PROFILE {query}"))
+            .profile
+            .unwrap()
+            .iter()
+            .filter_map(|step| step.reads)
+            .sum()
+    };
+    assert!(reads(QUERIES[0]) < 10, "{}", reads(QUERIES[0]));
+    // A bound participant still anchors first; the index is not used then.
+    let anchored = "MATCH (p:Agent {name: 'planner'}) MATCH HYPEREDGE h:execution [(p)] WHERE h.execution_id = 'E-7' RETURN count(h)";
+    assert!(
+        plan(anchored).contains("incidence index"),
+        "{}",
+        plan(anchored)
+    );
+    assert_eq!(rows(&db, anchored), json!([[1]]));
+
+    // It is listed, on hyperedges.
+    let shown = run(&db, "SHOW INDEXES").to_json();
+    assert!(shown.to_string().contains("\"hyperedges\""), "{shown}");
+    // Writes keep it: a changed value is found under its new one.
+    run(
+        &db,
+        "MATCH HYPEREDGE h:execution {execution_id: 'E-7'} SET h.execution_id = 'E-7b'",
+    );
+    assert_eq!(rows(&db, QUERIES[0]), json!([]));
+    assert_eq!(
+        rows(
+            &db,
+            "MATCH HYPEREDGE h:execution WHERE h.execution_id = 'E-7b' RETURN count(h)"
+        ),
+        json!([[1]])
+    );
+    run(&db, "DROP INDEX by_project");
+    assert_eq!(rows(&db, QUERIES[3]), before[3]);
+}
+
+#[test]
+fn constraints_on_hyperedges() {
+    let db = executions();
+    run(
+        &db,
+        "CREATE CONSTRAINT FOR HYPEREDGE h:execution REQUIRE h.execution_id IS UNIQUE",
+    );
+    let error = fails(
+        &db,
+        "MATCH (p:Agent {name: 'planner'}), (c:Agent {name: 'checker'})
+         CREATE HYPEREDGE :execution {execution_id: 'E-3'} [(p), (c)]",
+    );
+    assert!(error.contains("must be unique"), "{error}");
+    // With the constraint, MERGE on the key cannot be raced into two.
+    let merged = run(
+        &db,
+        "MATCH (p:Agent {name: 'planner'}), (b:Agent {name: 'builder'})
+         MERGE HYPEREDGE h:execution {execution_id: 'E-3'} [(p) AS runner, (b) AS reviewer]
+         RETURN h.project",
+    );
+    assert_eq!(merged.stats.hyperedges_created, 0);
+    run(
+        &db,
+        "CREATE CONSTRAINT run_key FOR HYPEREDGE h:run REQUIRE (h.a, h.b) IS KEY",
+    );
+    let error = fails(
+        &db,
+        "MATCH (p:Agent {name: 'planner'}), (c:Agent {name: 'checker'})
+         CREATE HYPEREDGE :run {a: 1} [(p), (c)]",
+    );
+    assert!(error.contains("has no b"), "{error}");
+    let shown = run(&db, "SHOW CONSTRAINTS").to_json().to_string();
+    assert!(
+        shown.contains("run_key") && shown.contains("\"hyperedges\""),
+        "{shown}"
+    );
+    for (query, expected) in [
+        (
+            "CREATE CONSTRAINT FOR HYPEREDGE h:run REQUIRE h.a IS NOT NULL",
+            "IS UNIQUE or IS KEY",
+        ),
+        (
+            "CREATE FUZZY INDEX FOR HYPEREDGE h:run ON (h.a)",
+            "by value",
+        ),
+        ("CREATE INDEX FOR HYPEREDGE h:run ON (x.a)", "expected `h`"),
+    ] {
+        let error = fails(&db, query);
+        assert!(error.contains(expected), "{query}\n→ {error}");
+    }
+}
+
+/// What `EXISTS { … }` and `COUNT { … }` over hyperedges would ask, as GQ
+/// already says it: a `CALL { … }` subquery per row, or OPTIONAL MATCH.
+#[test]
+fn counting_and_testing_hyperedges_per_row() {
+    let db = team();
+    // How many decisions each agent proposed (COUNT { … }).
+    assert_eq!(
+        rows(
+            &db,
+            "MATCH (a:Agent)
+             CALL { WITH a MATCH HYPEREDGE h:decision [(a) AS proposer] RETURN count(h) AS proposed }
+             RETURN a.name, proposed ORDER BY a.name"
+        ),
+        json!([["builder", 0], ["checker", 0], ["idle", 0], ["planner", 1]])
+    );
+    // The agents in no hyperedge at all (NOT EXISTS { … }).
+    assert_eq!(
+        rows(
+            &db,
+            "MATCH (a:Agent)
+             OPTIONAL MATCH HYPEREDGE h [(a)]
+             WITH a, count(h) AS taking_part WHERE taking_part = 0
+             RETURN a.name"
+        ),
+        json!([["idle"]])
+    );
+    // Agents who reviewed something and also took part in a review of T2,
+    // as a filter in WHERE through the subquery's result.
+    assert_eq!(
+        rows(
+            &db,
+            "MATCH (a:Agent)
+             CALL { WITH a MATCH HYPEREDGE h [(a) AS reviewer] RETURN count(h) AS reviews }
+             WITH a, reviews WHERE reviews > 0
+             RETURN a.name ORDER BY a.name"
+        ),
+        json!([["checker"]])
+    );
+}

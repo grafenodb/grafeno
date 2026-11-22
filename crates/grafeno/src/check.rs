@@ -11,7 +11,7 @@ use redb::ReadableTable;
 use serde::Serialize;
 
 use crate::db::{ReadTx, WriteTx};
-use crate::index::{INDEX_ENTRIES, entries_of, entry_bytes, record_entries, values_of};
+use crate::index::{INDEX_ENTRIES, RecordKind, entries_of, entry_bytes, record_entries, values_of};
 use crate::memory::names_of;
 use crate::stats::{bump_edge_label, bump_namespace, label_counts};
 use crate::store::{
@@ -120,7 +120,7 @@ impl ReadTx {
             unique_clash(
                 &defs,
                 &mut unique_seen,
-                false,
+                RecordKind::Node,
                 &node.labels,
                 &node.props,
                 &id.to_string(),
@@ -147,7 +147,7 @@ impl ReadTx {
             }
             let (label, edge_id) = (edge.label.as_str(), edge.id.as_u128());
             let labels = [edge.label.clone()];
-            for (def, bytes) in record_entries(&defs, true, &labels, &edge.props) {
+            for (def, bytes) in record_entries(&defs, RecordKind::Edge, &labels, &edge.props) {
                 *index_counts.entry(def.name.clone()).or_default() += 1;
                 index_expected.add(&(def.name.as_str(), bytes.as_slice(), edge_id));
             }
@@ -155,7 +155,7 @@ impl ReadTx {
                 unique_clash(
                     &defs,
                     &mut unique_seen,
-                    true,
+                    RecordKind::Edge,
                     &labels,
                     &edge.props,
                     &edge.id.to_string(),
@@ -174,6 +174,36 @@ impl ReadTx {
                 edge_id,
                 adjacency_value(&edge, edge.from),
             ));
+        }
+
+        // Hyperedges, when an index holds them.
+        let hyperedge_indexes = defs.iter().any(|def| def.hyperedges);
+        let hyperedge_records: Vec<grafeno_core::HyperEdge> = if hyperedge_indexes {
+            let table = self
+                .tx
+                .open_table(crate::hyperedge::HYPEREDGES)
+                .map_err(storage)?;
+            crate::store::scan_records(&table, ns)?
+        } else {
+            Vec::new()
+        };
+        for edge in &hyperedge_records {
+            let labels = [edge.label.clone()];
+            for (def, bytes) in record_entries(&defs, RecordKind::HyperEdge, &labels, &edge.props) {
+                *index_counts.entry(def.name.clone()).or_default() += 1;
+                index_expected.add(&(def.name.as_str(), bytes.as_slice(), edge.id.as_u128()));
+            }
+            if !edge.is_retracted() {
+                unique_clash(
+                    &defs,
+                    &mut unique_seen,
+                    RecordKind::HyperEdge,
+                    &labels,
+                    &edge.props,
+                    &edge.id.to_string(),
+                    &mut problems,
+                );
+            }
         }
 
         drop(unique_seen);
@@ -308,7 +338,7 @@ impl ReadTx {
                 }
                 let edge: Edge = decode(value.value())?;
                 let labels = [edge.label.clone()];
-                for (def, bytes) in record_entries(&defs, true, &labels, &edge.props) {
+                for (def, bytes) in record_entries(&defs, RecordKind::Edge, &labels, &edge.props) {
                     if self
                         .index_entries
                         .get((ns, def.name.as_str(), bytes.as_slice(), edge.id.as_u128()))
@@ -316,6 +346,22 @@ impl ReadTx {
                         .is_none()
                     {
                         problems.push(format!("index {:?} misses edge {}", def.name, edge.id));
+                    }
+                }
+            }
+            for edge in &hyperedge_records {
+                let labels = [edge.label.clone()];
+                for (def, bytes) in
+                    record_entries(&defs, RecordKind::HyperEdge, &labels, &edge.props)
+                {
+                    if self
+                        .index_entries
+                        .get((ns, def.name.as_str(), bytes.as_slice(), edge.id.as_u128()))
+                        .map_err(storage)?
+                        .is_none()
+                        && problems.len() < MAX_PROBLEMS
+                    {
+                        problems.push(format!("index {:?} misses hyperedge {}", def.name, edge.id));
                     }
                 }
             }
@@ -765,7 +811,7 @@ impl WriteTx {
 fn unique_clash<S: AsRef<str>>(
     defs: &[crate::IndexDef],
     seen: &mut [HashMap<String, String>],
-    edges: bool,
+    kind: RecordKind,
     labels: &[S],
     props: &grafeno_core::Props,
     id: &str,
@@ -774,14 +820,14 @@ fn unique_clash<S: AsRef<str>>(
     for (def, seen) in defs.iter().zip(seen.iter_mut()) {
         // Only values the index holds can clash: not a null.
         if def.unique
-            && def.edges == edges
+            && def.kind() == kind
             && def.covers(labels)
             && entry_bytes(def, props).is_some()
             && let Some(other) = seen.insert(values_of(def, props), id.to_owned())
         {
             problems.push(format!(
-                "{} {other} and {id} share {} = {} in unique index {:?}",
-                if edges { "edges" } else { "nodes" },
+                "{}s {other} and {id} share {} = {} in unique index {:?}",
+                kind.name(),
                 def.keys().join(", "),
                 values_of(def, props),
                 def.name

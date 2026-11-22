@@ -827,7 +827,9 @@ impl WriteTx {
         props: &Props,
     ) -> Result<()> {
         let constraints = self.cached_constraints(ns)?;
-        let keys = defs.iter().filter(|def| def.required && def.edges == edges);
+        let keys = defs
+            .iter()
+            .filter(|def| def.required && def.edges == edges && !def.hyperedges);
         let rules = constraints.iter().filter(|constraint| {
             matches!(
                 constraint,

@@ -679,7 +679,7 @@ impl WriteTx {
                 .insert((ns, label, id), ())
                 .map_err(storage)?;
         }
-        Ok(())
+        self.index_hyperedge(ns, Some(edge), previous)
     }
 
     /// Removes the hyperedge record and its index entries.
@@ -702,6 +702,7 @@ impl WriteTx {
             .map_err(storage)?
             .remove((ns, label, id))
             .map_err(storage)?;
+        self.index_hyperedge(ns, None, Some(edge))?;
         self.tx
             .open_table(HYPEREDGES)
             .map_err(storage)?

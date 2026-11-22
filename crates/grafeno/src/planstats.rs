@@ -288,12 +288,19 @@ impl PlannerStats {
         let drift = |then: u64, now: u64| then.abs_diff(now) > (then / 10).max(100);
         drift(self.nodes, nodes)
             || drift(self.edges, edges)
-            || self.indexes.len() != defs.iter().filter(|def| def.by_value()).count()
-            || defs.iter().filter(|def| def.by_value()).any(|def| {
+            || self.indexes.len() != defs.iter().filter(|def| planned(def)).count()
+            || defs.iter().filter(|def| planned(def)).any(|def| {
                 self.index(&def.name)
                     .is_none_or(|index| index.key != def.keys().join(","))
             })
     }
+}
+
+/// Whether the statistics cover an index: by value, on nodes or edges
+/// (hyperedge indexes have no label counts to weigh them by; GQ starts
+/// from them whenever they fit).
+fn planned(def: &IndexDef) -> bool {
+    def.by_value() && !def.hyperedges
 }
 
 /// The statistics of every namespace of a database, shared by its
@@ -387,7 +394,7 @@ fn build(
 ) -> Result<PlannerStats> {
     let started = Instant::now();
     let mut indexes = Vec::new();
-    for def in defs.iter().filter(|def| def.by_value()) {
+    for def in defs.iter().filter(|def| planned(def)) {
         let counts = if def.edges {
             &read.edge_label_counts
         } else {

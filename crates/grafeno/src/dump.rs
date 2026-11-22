@@ -171,10 +171,12 @@ impl ReadTx {
         } else {
             namespaces.to_vec()
         };
-        // Version 3 only when a hyperedge is in it (as the reader sees).
+        // Version 3 only when a hyperedge, or an index on them, is in it
+        // (as the reader sees): 0.4 would misread either.
         let mut hyperedges = false;
         for ns in &names {
-            hyperedges |= !self.hyperedge_ids(ns, None, 1)?.is_empty();
+            hyperedges |= !self.hyperedge_ids(ns, None, 1)?.is_empty()
+                || self.index_defs(ns)?.iter().any(|def| def.hyperedges);
         }
         write_record(
             out,

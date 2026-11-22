@@ -1464,3 +1464,382 @@ fn an_import_refuses_a_hyperedge_without_its_nodes() {
             .is_empty()
     );
 }
+
+fn seek(db: &Grafeno, name: &str, value: serde_json::Value) -> Vec<HyperEdgeId> {
+    db.begin_read()
+        .unwrap()
+        .index_seek_hyperedges(
+            NS,
+            name,
+            &[],
+            Some(&grafeno::IndexRange::Equal(value)),
+            usize::MAX,
+        )
+        .unwrap()
+}
+
+fn execution(n: &[NodeId], id: &str, project: &str) -> NewHyperEdge {
+    NewHyperEdge::new("execution")
+        .member(n[0], "runner")
+        .member(n[1], "reviewer")
+        .prop("execution_id", id)
+        .prop("project", project)
+}
+
+#[test]
+fn property_indexes_follow_every_hyperedge_write() {
+    let db = Grafeno::in_memory().unwrap();
+    let n = nodes(&db, NS, 4);
+    let early = db
+        .write(|tx| tx.create_hyperedge(NS, execution(&n, "E-1", "P")))
+        .unwrap();
+    // Filled from what exists, then kept by each write.
+    let def = grafeno::IndexDef::on_hyperedges("execution", &["execution_id"]);
+    assert_eq!(def.name, "execution_execution_id");
+    assert_eq!(def.kind(), grafeno::RecordKind::HyperEdge);
+    let filled = db.write(|tx| tx.create_index(NS, def.clone())).unwrap();
+    assert_eq!(filled, 1);
+    let name = def.name.as_str();
+    assert_eq!(seek(&db, name, "E-1".into()), vec![early]);
+
+    let later = db
+        .write(|tx| tx.create_hyperedge(NS, execution(&n, "E-2", "P")))
+        .unwrap();
+    assert_eq!(seek(&db, name, "E-2".into()), vec![later]);
+    // A property changed moves its entry; one removed takes it out.
+    db.write(|tx| {
+        let mut props = grafeno::Props::new();
+        props.insert("execution_id".into(), "E-3".into());
+        tx.set_hyperedge_props(NS, later, props)
+    })
+    .unwrap();
+    assert!(seek(&db, name, "E-2".into()).is_empty());
+    assert_eq!(seek(&db, name, "E-3".into()), vec![later]);
+    // Participants changing leaves the entry where it is.
+    db.write(|tx| {
+        tx.set_hyperedge_participants(
+            NS,
+            later,
+            vec![Participant::new(n[2]), Participant::new(n[3])],
+        )
+    })
+    .unwrap();
+    assert_eq!(seek(&db, name, "E-3".into()), vec![later]);
+    // A retracted one keeps its entry (history); a deleted one does not.
+    db.write(|tx| tx.retract_hyperedge(NS, early)).unwrap();
+    assert_eq!(seek(&db, name, "E-1".into()), vec![early]);
+    db.write(|tx| tx.delete_hyperedge(NS, later)).unwrap();
+    assert!(seek(&db, name, "E-3".into()).is_empty());
+    db.write(|tx| tx.remove_hyperedge_props(NS, early, &["execution_id"]))
+        .unwrap();
+    assert!(seek(&db, name, "E-1".into()).is_empty());
+    // A node deleted with its hyperedges takes their entries.
+    let doomed = db
+        .write(|tx| tx.create_hyperedge(NS, execution(&n, "E-4", "P")))
+        .unwrap();
+    db.write(|tx| tx.delete_node_with(NS, n[1], OnHyperEdges::Cascade))
+        .unwrap();
+    assert!(seek(&db, name, "E-4".into()).is_empty(), "{doomed}");
+    check(&db, NS);
+
+    // Rebuilding writes them back; dropping the index removes them.
+    let rebuilt = db.write(|tx| tx.rebuild_indexes(NS)).unwrap();
+    check(&db, NS);
+    assert_eq!(rebuilt.hyperedges, 0);
+    let again = db
+        .write(|tx| tx.create_hyperedge(NS, execution(&n[2..], "E-5", "P")))
+        .unwrap();
+    db.write(|tx| tx.rebuild_indexes(NS)).unwrap();
+    assert_eq!(seek(&db, name, "E-5".into()), vec![again]);
+    check(&db, NS);
+    assert!(db.write(|tx| tx.drop_index(NS, name)).unwrap());
+    let error = db
+        .begin_read()
+        .unwrap()
+        .index_seek_hyperedges(NS, name, &[], None, 10)
+        .unwrap_err();
+    assert!(error.to_string().contains(name), "{error}");
+
+    // A node index is not read as a hyperedge one, nor the other way.
+    db.write(|tx| tx.create_index(NS, grafeno::IndexDef::new("Agent", "name")))
+        .unwrap();
+    let error = db
+        .begin_read()
+        .unwrap()
+        .index_seek_hyperedges(NS, "Agent_name", &[], None, 10)
+        .unwrap_err();
+    assert!(error.to_string().contains("on nodes"), "{error}");
+}
+
+#[test]
+fn unique_and_key_indexes_on_hyperedges() {
+    let db = Grafeno::in_memory().unwrap();
+    let n = nodes(&db, NS, 3);
+    let first = db
+        .write(|tx| tx.create_hyperedge(NS, execution(&n, "E-1", "P")))
+        .unwrap();
+    db.write(|tx| tx.create_hyperedge(NS, execution(&n, "E-1", "Q")))
+        .unwrap();
+    let mut unique = grafeno::IndexDef::on_hyperedges("execution", &["execution_id"]);
+    unique.unique = true;
+    unique.name = "execution_unique".into();
+    // Two share a value: the constraint cannot be made.
+    let error = db
+        .write(|tx| tx.create_index(NS, unique.clone()))
+        .unwrap_err();
+    assert!(error.to_string().contains("cannot make"), "{error}");
+    db.write(|tx| {
+        let second = tx
+            .hyperedge_ids_with_label(NS, "execution", None, 10)?
+            .into_iter()
+            .find(|id| *id != first)
+            .unwrap();
+        tx.delete_hyperedge(NS, second)
+    })
+    .unwrap();
+    db.write(|tx| tx.create_index(NS, unique.clone())).unwrap();
+
+    // A write that repeats the value fails, and nothing of it stays.
+    let error = db
+        .write(|tx| tx.create_hyperedge(NS, execution(&n, "E-1", "R")))
+        .unwrap_err();
+    assert!(error.to_string().contains("must be unique"), "{error}");
+    assert_eq!(hyperedges_of(&db, NS).len(), 1);
+    // Once retracted, the value is free: a retraction says it never held.
+    db.write(|tx| tx.retract_hyperedge(NS, first)).unwrap();
+    db.write(|tx| tx.create_hyperedge(NS, execution(&n, "E-1", "R")))
+        .unwrap();
+    // An invalidated one still holds it: it was true, and is history.
+    let current = db
+        .begin_read()
+        .unwrap()
+        .hyperedges_with_label(NS, "execution", &HyperEdgeFilter::any(), None, 10)
+        .unwrap()[0]
+        .id;
+    db.write(|tx| tx.invalidate_hyperedge(NS, current, Timestamp::now()))
+        .unwrap();
+    let error = db
+        .write(|tx| tx.create_hyperedge(NS, execution(&n, "E-1", "S")))
+        .unwrap_err();
+    assert!(error.to_string().contains("must be unique"), "{error}");
+    check(&db, NS);
+
+    // A key: present and unique on every current hyperedge of the label.
+    let mut key = grafeno::IndexDef::on_hyperedges("run", &["run_id"]);
+    key.unique = true;
+    key.required = true;
+    key.name = "run_key".into();
+    db.write(|tx| tx.create_index(NS, key)).unwrap();
+    let error = db
+        .write(|tx| {
+            tx.create_hyperedge(
+                NS,
+                NewHyperEdge::new("run")
+                    .node(n[0])
+                    .node(n[1])
+                    .prop("other", 1),
+            )
+        })
+        .unwrap_err();
+    assert!(error.to_string().contains("has no run_id"), "{error}");
+    db.write(|tx| {
+        tx.create_hyperedge(
+            NS,
+            NewHyperEdge::new("run")
+                .node(n[0])
+                .node(n[1])
+                .prop("run_id", 1),
+        )
+    })
+    .unwrap();
+    let error = db
+        .write(|tx| {
+            let id = tx.hyperedge_ids_with_label(NS, "run", None, 1)?[0];
+            tx.remove_hyperedge_props(NS, id, &["run_id"])
+        })
+        .unwrap_err();
+    assert!(error.to_string().contains("has no run_id"), "{error}");
+
+    // What an index on hyperedges cannot be.
+    for (def, expected) in [
+        (
+            grafeno::IndexDef {
+                fuzzy: true,
+                ..grafeno::IndexDef::on_hyperedges("x", &["k"])
+            },
+            "fuzzy",
+        ),
+        (
+            grafeno::IndexDef {
+                edges: true,
+                name: "both".into(),
+                ..grafeno::IndexDef::on_hyperedges("x", &["k"])
+            },
+            "not two of them",
+        ),
+    ] {
+        let error = db.write(|tx| tx.create_index(NS, def)).unwrap_err();
+        assert!(error.to_string().contains(expected), "{error}");
+    }
+}
+
+#[test]
+fn composite_indexes_on_hyperedges_seek_by_prefix() {
+    let db = Grafeno::in_memory().unwrap();
+    let n = nodes(&db, NS, 2);
+    let def = grafeno::IndexDef::on_hyperedges("execution", &["project", "execution_id"]);
+    db.write(|tx| tx.create_index(NS, def.clone())).unwrap();
+    let ids: Vec<HyperEdgeId> = db
+        .write(|tx| {
+            (0..6)
+                .map(|i| {
+                    tx.create_hyperedge(NS, execution(&n, &format!("E-{i}"), ["P", "Q"][i % 2]))
+                })
+                .collect()
+        })
+        .unwrap();
+    let read = db.begin_read().unwrap();
+    let in_p = read
+        .index_seek_hyperedges(NS, &def.name, &["P".into()], None, usize::MAX)
+        .unwrap();
+    let mut expected: Vec<HyperEdgeId> = ids.iter().step_by(2).copied().collect();
+    expected.sort();
+    let mut found = in_p.clone();
+    found.sort();
+    assert_eq!(found, expected);
+    let one = read
+        .index_seek_hyperedges(
+            NS,
+            &def.name,
+            &["Q".into()],
+            Some(&grafeno::IndexRange::Equal("E-3".into())),
+            usize::MAX,
+        )
+        .unwrap();
+    assert_eq!(one, vec![ids[3]]);
+}
+
+#[test]
+fn hyperedge_indexes_reach_replicas_and_views_apply() {
+    let leader = Grafeno::in_memory().unwrap();
+    leader.enable_replication_log().unwrap();
+    let start = leader.begin_read().unwrap().log_position().unwrap().last;
+    let n = nodes(&leader, NS, 3);
+    let def = grafeno::IndexDef::on_hyperedges("execution", &["execution_id"]);
+    leader.write(|tx| tx.create_index(NS, def.clone())).unwrap();
+    let id = leader
+        .write(|tx| tx.create_hyperedge(NS, execution(&n, "E-1", "P")))
+        .unwrap();
+    let entries = leader
+        .begin_read()
+        .unwrap()
+        .log_entries(start, usize::MAX)
+        .unwrap();
+    // The entry that declares the index has the format members need.
+    let declaring = entries
+        .iter()
+        .find(|(_, entry)| {
+            entry
+                .ops
+                .iter()
+                .any(|op| matches!(op, grafeno::Op::Index { .. }))
+        })
+        .unwrap();
+    assert_eq!(declaring.1.format, 8);
+    let member = Grafeno::in_memory().unwrap();
+    member.apply_entries(&entries).unwrap();
+    assert_eq!(seek(&member, &def.name, "E-1".into()), vec![id]);
+    check(&member, NS);
+
+    // A reader who may not see a participant finds nothing by the index.
+    let view = view_hiding_secrets();
+    let secret = leader
+        .write(|tx| tx.create_node(NS, NewNode::new("Secret")))
+        .unwrap();
+    leader
+        .write(|tx| {
+            tx.create_hyperedge(
+                NS,
+                NewHyperEdge::new("execution")
+                    .node(n[0])
+                    .node(secret)
+                    .prop("execution_id", "E-2"),
+            )
+        })
+        .unwrap();
+    let read = leader.begin_read().unwrap().with_view(Some(view));
+    let found = read
+        .index_seek_hyperedges(
+            NS,
+            &def.name,
+            &[],
+            Some(&grafeno::IndexRange::Equal("E-2".into())),
+            10,
+        )
+        .unwrap();
+    assert!(found.is_empty());
+    let found = read
+        .index_seek_hyperedges(
+            NS,
+            &def.name,
+            &[],
+            Some(&grafeno::IndexRange::Equal("E-1".into())),
+            10,
+        )
+        .unwrap();
+    assert_eq!(found, vec![id]);
+}
+
+#[test]
+fn exports_carry_hyperedge_indexes() {
+    let db = Grafeno::in_memory().unwrap();
+    let n = nodes(&db, NS, 2);
+    let mut def = grafeno::IndexDef::on_hyperedges("execution", &["execution_id"]);
+    def.unique = true;
+    def.name = "execution_unique".into();
+    db.write(|tx| tx.create_index(NS, def.clone())).unwrap();
+    // An index on hyperedges alone makes it version 3: 0.4 would take it
+    // for an index on nodes.
+    assert!(
+        export_text(&db)
+            .lines()
+            .next()
+            .unwrap()
+            .contains("\"version\":3")
+    );
+    let id = db
+        .write(|tx| tx.create_hyperedge(NS, execution(&n, "E-1", "P")))
+        .unwrap();
+    let text = export_text(&db);
+    let copy = Grafeno::in_memory().unwrap();
+    copy.import(text.as_bytes()).unwrap();
+    assert_eq!(seek(&copy, &def.name, "E-1".into()), vec![id]);
+    check(&copy, NS);
+    // The constraint came along.
+    let error = copy
+        .write(|tx| tx.create_hyperedge(NS, execution(&n, "E-1", "Q")))
+        .unwrap_err();
+    assert!(error.to_string().contains("must be unique"), "{error}");
+}
+
+#[test]
+fn a_hyperedge_index_keeps_the_planner_statistics_fresh() {
+    let db = Grafeno::in_memory().unwrap();
+    nodes(&db, NS, 3);
+    db.write(|tx| tx.create_index(NS, grafeno::IndexDef::new("Agent", "name")))
+        .unwrap();
+    db.write(|tx| {
+        tx.create_index(
+            NS,
+            grafeno::IndexDef::on_hyperedges("execution", &["execution_id"]),
+        )
+    })
+    .unwrap();
+    // Built once, then kept: an index the statistics leave out must not
+    // make them look stale on every query.
+    let first = db.begin_read().unwrap().planner_stats(NS).unwrap().unwrap();
+    let second = db.begin_read().unwrap().planner_stats(NS).unwrap().unwrap();
+    assert!(Arc::ptr_eq(&first, &second));
+    assert!(first.index("execution_execution_id").is_none());
+    assert!(first.index("Agent_name").is_some());
+}

@@ -21,11 +21,14 @@
 //! escape their zero bytes and end with two), so byte order is still value
 //! order, property by property. Single-property indexes keep their first
 //! encoding, so no layout changed.
+//!
+//! An index may also be on hyperedges (`hyperedges: true`): its entries
+//! hold hyperedge ids in the same table, kept by every hyperedge write.
 
 use std::collections::HashMap;
 use std::ops::Bound;
 
-use grafeno_core::{Edge, EdgeId, Error, Node, NodeId, Props, Result};
+use grafeno_core::{Edge, EdgeId, Error, HyperEdge, HyperEdgeId, Node, NodeId, Props, Result};
 use redb::{ReadableTable, TableDefinition};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as Json;
@@ -68,6 +71,10 @@ pub struct IndexDef {
     /// On edges with the label(s) instead of nodes.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub edges: bool,
+    /// On hyperedges with the label(s) instead of nodes (never with
+    /// `edges`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub hyperedges: bool,
     /// Every record with the label(s) must have every property, with a
     /// value the index can hold (with `unique`: a key constraint).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -129,6 +136,28 @@ impl IndexDef {
         }
     }
 
+    /// An index on properties of hyperedges with `label`, named like
+    /// [`IndexDef::composite`]: `execution_id`, `decision_project_status`.
+    pub fn on_hyperedges(label: &str, keys: &[&str]) -> Self {
+        let mut def = Self {
+            hyperedges: true,
+            ..Self::composite(label, keys)
+        };
+        def.name = def.generated_name();
+        def
+    }
+
+    /// What kind of record it holds.
+    pub fn kind(&self) -> RecordKind {
+        if self.hyperedges {
+            RecordKind::HyperEdge
+        } else if self.edges {
+            RecordKind::Edge
+        } else {
+            RecordKind::Node
+        }
+    }
+
     /// The name given when none is: labels, then properties, then
     /// `unique`, `key` or `fuzzy`, joined by `_`.
     pub fn generated_name(&self) -> String {
@@ -167,6 +196,7 @@ impl IndexDef {
         self.more_keys.is_empty()
             && self.more_labels.is_empty()
             && !self.edges
+            && !self.hyperedges
             && self.fulltext.is_none()
             && self.vector.is_none()
     }
@@ -196,6 +226,7 @@ impl IndexDef {
         sorted(self) == sorted(other)
             && self.keys() == other.keys()
             && self.edges == other.edges
+            && self.hyperedges == other.hyperedges
             && self.unique == other.unique
             && self.fuzzy == other.fuzzy
             && self.fulltext == other.fulltext
@@ -213,10 +244,10 @@ impl IndexDef {
     pub fn describe(&self) -> String {
         let labels = self.labels().join("|");
         let keys = self.keys().join(", ");
-        if self.edges {
-            format!("[:{labels}]({keys})")
-        } else {
-            format!(":{labels}({keys})")
+        match self.kind() {
+            RecordKind::Edge => format!("[:{labels}]({keys})"),
+            RecordKind::HyperEdge => format!("hyperedges :{labels}({keys})"),
+            RecordKind::Node => format!(":{labels}({keys})"),
         }
     }
 
@@ -226,6 +257,25 @@ impl IndexDef {
             name: Self::default_fuzzy_name(label, key),
             fuzzy: true,
             ..Self::new(label, key)
+        }
+    }
+}
+
+/// The kind of record an index holds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RecordKind {
+    Node,
+    Edge,
+    HyperEdge,
+}
+
+impl RecordKind {
+    /// `node`, `edge` or `hyperedge`.
+    pub fn name(self) -> &'static str {
+        match self {
+            RecordKind::Node => "node",
+            RecordKind::Edge => "edge",
+            RecordKind::HyperEdge => "hyperedge",
         }
     }
 }
@@ -513,21 +563,21 @@ pub(crate) fn byte_range(range: &IndexRange) -> Option<(Vec<u8>, Vec<u8>)> {
 
 /// The index entries a node should have under these definitions.
 pub(crate) fn entries_of<'a>(defs: &'a [IndexDef], node: &Node) -> Vec<(&'a IndexDef, Vec<u8>)> {
-    record_entries(defs, false, &node.labels, &node.props)
+    record_entries(defs, RecordKind::Node, &node.labels, &node.props)
 }
 
-/// The index entries of a node (`edges` false) or an edge with these
-/// labels and properties.
+/// The index entries of a record of `kind` with these labels and
+/// properties.
 pub(crate) fn record_entries<'a, S: AsRef<str>>(
     defs: &'a [IndexDef],
-    edges: bool,
+    kind: RecordKind,
     labels: &[S],
     props: &Props,
 ) -> Vec<(&'a IndexDef, Vec<u8>)> {
     let mut out = Vec::new();
     for def in defs
         .iter()
-        .filter(|def| def.edges == edges && def.covers(labels))
+        .filter(|def| def.kind() == kind && def.covers(labels))
     {
         if let Some(fulltext) = &def.fulltext {
             if let Some(doc) = crate::fulltext::doc_of(def, fulltext, props) {
@@ -834,8 +884,11 @@ impl ReadTx {
         limit: usize,
     ) -> Result<Vec<NodeId>> {
         let def = find_def(self.index_defs(ns)?, name)?;
-        if def.edges {
-            return Err(Error::Invalid(format!("{name} is an index on edges")));
+        if def.kind() != RecordKind::Node {
+            return Err(Error::Invalid(format!(
+                "{name} is an index on {}s",
+                def.kind().name()
+            )));
         }
         let Some(view) = self.view() else {
             return Ok(
@@ -878,8 +931,11 @@ impl ReadTx {
         limit: usize,
     ) -> Result<Vec<EdgeId>> {
         let def = find_def(self.index_defs(ns)?, name)?;
-        if !def.edges {
-            return Err(Error::Invalid(format!("{name} is an index on nodes")));
+        if def.kind() != RecordKind::Edge {
+            return Err(Error::Invalid(format!(
+                "{name} is an index on {}s",
+                def.kind().name()
+            )));
         }
         let viewed = self.view().is_some();
         let wanted = if viewed { usize::MAX } else { limit };
@@ -888,6 +944,40 @@ impl ReadTx {
             let id = EdgeId::from_u128(id);
             // `edge` gives nothing the view hides.
             if !viewed || self.edge(ns, id)?.is_some() {
+                out.push(id);
+                if out.len() == limit {
+                    break;
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// [`ReadTx::index_seek_nodes`] for an index on hyperedges: the
+    /// hyperedges found that the caller sees, retracted ones included
+    /// (check them).
+    pub fn index_seek_hyperedges(
+        &self,
+        ns: &str,
+        name: &str,
+        prefix: &[Json],
+        range: Option<&IndexRange>,
+        limit: usize,
+    ) -> Result<Vec<HyperEdgeId>> {
+        let def = find_def(self.index_defs(ns)?, name)?;
+        if def.kind() != RecordKind::HyperEdge {
+            return Err(Error::Invalid(format!(
+                "{name} is an index on {}s",
+                def.kind().name()
+            )));
+        }
+        let viewed = self.view().is_some();
+        let wanted = if viewed { usize::MAX } else { limit };
+        let mut out = Vec::new();
+        for id in seek_ids(&self.index_entries, ns, &def, prefix, range, wanted)? {
+            let id = HyperEdgeId::from_u128(id);
+            // `hyperedge` gives nothing the view hides.
+            if !viewed || self.hyperedge(ns, id)?.is_some() {
                 out.push(id);
                 if out.len() == limit {
                     break;
@@ -913,8 +1003,11 @@ impl WriteTx {
         limit: usize,
     ) -> Result<Vec<NodeId>> {
         let def = find_def(self.index_defs(ns)?, name)?;
-        if def.edges {
-            return Err(Error::Invalid(format!("{name} is an index on edges")));
+        if def.kind() != RecordKind::Node {
+            return Err(Error::Invalid(format!(
+                "{name} is an index on {}s",
+                def.kind().name()
+            )));
         }
         let table = self.tx.open_table(INDEX_ENTRIES).map_err(storage)?;
         Ok(seek_ids(&table, ns, &def, prefix, range, limit)?
@@ -933,13 +1026,40 @@ impl WriteTx {
         limit: usize,
     ) -> Result<Vec<EdgeId>> {
         let def = find_def(self.index_defs(ns)?, name)?;
-        if !def.edges {
-            return Err(Error::Invalid(format!("{name} is an index on nodes")));
+        if def.kind() != RecordKind::Edge {
+            return Err(Error::Invalid(format!(
+                "{name} is an index on {}s",
+                def.kind().name()
+            )));
         }
         let table = self.tx.open_table(INDEX_ENTRIES).map_err(storage)?;
         Ok(seek_ids(&table, ns, &def, prefix, range, limit)?
             .into_iter()
             .map(EdgeId::from_u128)
+            .collect())
+    }
+
+    /// [`ReadTx::index_seek_hyperedges`] as written so far in this
+    /// transaction (no view applies).
+    pub fn index_seek_hyperedges(
+        &self,
+        ns: &str,
+        name: &str,
+        prefix: &[Json],
+        range: Option<&IndexRange>,
+        limit: usize,
+    ) -> Result<Vec<HyperEdgeId>> {
+        let def = find_def(self.index_defs(ns)?, name)?;
+        if def.kind() != RecordKind::HyperEdge {
+            return Err(Error::Invalid(format!(
+                "{name} is an index on {}s",
+                def.kind().name()
+            )));
+        }
+        let table = self.tx.open_table(INDEX_ENTRIES).map_err(storage)?;
+        Ok(seek_ids(&table, ns, &def, prefix, range, limit)?
+            .into_iter()
+            .map(HyperEdgeId::from_u128)
             .collect())
     }
 
@@ -1021,6 +1141,11 @@ impl WriteTx {
                 def.name
             )));
         }
+        if def.edges && def.hyperedges {
+            return Err(Error::Invalid(
+                "an index is on nodes, edges or hyperedges, not two of them".into(),
+            ));
+        }
         if def.fuzzy && (def.unique || !def.is_simple()) {
             return Err(Error::Invalid(
                 "a fuzzy index is on one property of one node label, and not unique".into(),
@@ -1031,6 +1156,7 @@ impl WriteTx {
                 || def.required
                 || def.fuzzy
                 || def.edges
+                || def.hyperedges
                 || def.fulltext.is_some()
                 || !def.more_keys.is_empty()
             {
@@ -1050,7 +1176,7 @@ impl WriteTx {
             }
         }
         if let Some(fulltext) = &def.fulltext {
-            if def.unique || def.required || def.fuzzy || def.edges {
+            if def.unique || def.required || def.fuzzy || def.edges || def.hyperedges {
                 return Err(Error::Invalid(
                     "a full-text index is on node properties, and neither unique nor fuzzy".into(),
                 ));
@@ -1104,7 +1230,7 @@ impl WriteTx {
         let mut seen: HashMap<Vec<u8>, (u128, Props)> = HashMap::new();
         let mut entries = Vec::new();
         let mut docs = Vec::new();
-        let what = if def.edges { "edges" } else { "nodes" };
+        let what = format!("{}s", def.kind().name());
         for (id, props, live) in &records {
             if def.required
                 && *live
@@ -1223,7 +1349,7 @@ impl WriteTx {
         self.index_record(
             defs,
             ns,
-            false,
+            RecordKind::Node,
             id,
             node.map(|node| (node.labels.as_slice(), &node.props)),
             previous.map(|node| (node.labels.as_slice(), &node.props)),
@@ -1259,16 +1385,66 @@ impl WriteTx {
             .or(previous)
             .map(|edge| edge.id.as_u128())
             .expect("an edge to index");
+        let kind = RecordKind::Edge;
         let new_labels = edge.map(|edge| vec![edge.label.clone()]);
         let old_labels = previous.map(|edge| vec![edge.label.clone()]);
         self.index_record(
             defs,
             ns,
-            true,
+            kind,
             id,
             new_labels.as_deref().zip(edge.map(|edge| &edge.props)),
             old_labels.as_deref().zip(previous.map(|edge| &edge.props)),
             edge.is_some_and(|edge| !edge.is_retracted()),
+        )
+    }
+
+    /// [`WriteTx::index_edge`] for a hyperedge: a retracted one keeps its
+    /// entries but no longer holds its unique values. A current one must
+    /// have the properties of the keys (required indexes) on its label.
+    pub(crate) fn index_hyperedge(
+        &mut self,
+        ns: &str,
+        edge: Option<&HyperEdge>,
+        previous: Option<&HyperEdge>,
+    ) -> Result<()> {
+        let defs = self.index_defs(ns)?;
+        if !defs.iter().any(|def| def.hyperedges) {
+            return Ok(());
+        }
+        let id = edge
+            .or(previous)
+            .map(|edge| edge.id.as_u128())
+            .expect("a hyperedge to index");
+        let live = edge.is_some_and(|edge| !edge.is_retracted());
+        if live && !self.applying {
+            let edge = edge.expect("live");
+            let labels = std::slice::from_ref(&edge.label);
+            for key in defs
+                .iter()
+                .filter(|def| def.hyperedges && def.required && def.covers(labels))
+            {
+                if let Some(missing) = missing_key(key, &edge.props) {
+                    return Err(Error::Invalid(format!(
+                        "{}: hyperedge {} has no {missing} (({}) is a key of {}: each needs a boolean, a number or a string)",
+                        key.name,
+                        edge.id,
+                        key.keys().join(", "),
+                        key.describe()
+                    )));
+                }
+            }
+        }
+        let new_labels = edge.map(|edge| vec![edge.label.clone()]);
+        let old_labels = previous.map(|edge| vec![edge.label.clone()]);
+        self.index_record(
+            &defs,
+            ns,
+            RecordKind::HyperEdge,
+            id,
+            new_labels.as_deref().zip(edge.map(|edge| &edge.props)),
+            old_labels.as_deref().zip(previous.map(|edge| &edge.props)),
+            live,
         )
     }
 
@@ -1279,28 +1455,29 @@ impl WriteTx {
         &mut self,
         defs: &[IndexDef],
         ns: &str,
-        edges: bool,
+        kind: RecordKind,
         id: u128,
         new: Option<(&[String], &Props)>,
         old: Option<(&[String], &Props)>,
         check: bool,
     ) -> Result<()> {
-        if !defs.iter().any(|def| def.edges == edges) {
+        if !defs.iter().any(|def| def.kind() == kind) {
             return Ok(());
         }
-        if !edges && defs.iter().any(|def| def.vector.is_some()) {
+        let nodes = kind == RecordKind::Node;
+        if nodes && defs.iter().any(|def| def.vector.is_some()) {
             self.index_vectors(defs, ns, id, new, old)?;
         }
         let old_entries = old
-            .map(|(labels, props)| record_entries(defs, edges, labels, props))
+            .map(|(labels, props)| record_entries(defs, kind, labels, props))
             .unwrap_or_default();
         let new_entries = new
-            .map(|(labels, props)| record_entries(defs, edges, labels, props))
+            .map(|(labels, props)| record_entries(defs, kind, labels, props))
             .unwrap_or_default();
         // A full-text index holds the words of its fields, and BM25 their
         // counts: kept as the entries are.
-        if !edges {
-            for def in defs.iter().filter(|def| !def.edges) {
+        if nodes {
+            for def in defs.iter().filter(|def| def.kind() == RecordKind::Node) {
                 let Some(fulltext) = &def.fulltext else {
                     continue;
                 };
@@ -1356,14 +1533,14 @@ impl WriteTx {
                 for other in others {
                     // Equal bytes are equal values except for huge
                     // integers: compare the values themselves.
-                    if let Some(other_props) = self.live_props(ns, edges, other)?
+                    if let Some(other_props) = self.live_props(ns, kind, other)?
                         && same_values(def, &other_props, props)
                     {
                         return Err(Error::Invalid(format!(
                             "{} must be unique among {}: {} {} already has {}",
                             def.keys().join(", "),
                             def.describe(),
-                            if edges { "edge" } else { "node" },
+                            kind.name(),
                             record_name(def, other),
                             values_of(def, props)
                         )));
@@ -1377,16 +1554,29 @@ impl WriteTx {
         Ok(())
     }
 
-    /// The properties of a node, or of an edge that is not retracted.
-    fn live_props(&self, ns: &str, edges: bool, id: u128) -> Result<Option<Props>> {
-        if edges {
-            let table = self.tx.open_table(EDGES).map_err(storage)?;
-            Ok(read_record::<Edge>(&table, ns, id)?
-                .filter(|edge| !edge.is_retracted())
-                .map(|edge| edge.props))
-        } else {
-            let table = self.tx.open_table(NODES).map_err(storage)?;
-            Ok(read_record::<Node>(&table, ns, id)?.map(|node| node.props))
+    /// The properties of a node, or of an edge or hyperedge that is not
+    /// retracted.
+    fn live_props(&self, ns: &str, kind: RecordKind, id: u128) -> Result<Option<Props>> {
+        match kind {
+            RecordKind::Edge => {
+                let table = self.tx.open_table(EDGES).map_err(storage)?;
+                Ok(read_record::<Edge>(&table, ns, id)?
+                    .filter(|edge| !edge.is_retracted())
+                    .map(|edge| edge.props))
+            }
+            RecordKind::HyperEdge => {
+                let table = self
+                    .tx
+                    .open_table(crate::hyperedge::HYPEREDGES)
+                    .map_err(storage)?;
+                Ok(read_record::<HyperEdge>(&table, ns, id)?
+                    .filter(|edge| !edge.is_retracted())
+                    .map(|edge| edge.props))
+            }
+            RecordKind::Node => {
+                let table = self.tx.open_table(NODES).map_err(storage)?;
+                Ok(read_record::<Node>(&table, ns, id)?.map(|node| node.props))
+            }
         }
     }
 
@@ -1394,6 +1584,20 @@ impl WriteTx {
     /// current (a retracted edge is not).
     pub(crate) fn records_of(&self, ns: &str, def: &IndexDef) -> Result<Vec<(u128, Props, bool)>> {
         let mut out = Vec::new();
+        if def.hyperedges {
+            let table = self
+                .tx
+                .open_table(crate::hyperedge::HYPEREDGES)
+                .map_err(storage)?;
+            let records: Vec<HyperEdge> = crate::store::scan_records(&table, ns)?;
+            for edge in records {
+                if def.covers(std::slice::from_ref(&edge.label)) {
+                    let live = !edge.is_retracted();
+                    out.push((edge.id.as_u128(), edge.props, live));
+                }
+            }
+            return Ok(out);
+        }
         if def.edges {
             let table = self.tx.open_table(EDGES).map_err(storage)?;
             for item in table.range((ns, 0u128)..).map_err(storage)? {
@@ -1435,12 +1639,12 @@ pub(crate) fn missing_key<'a>(def: &'a IndexDef, props: &Props) -> Option<&'a st
         .find(|key| props.get(*key).and_then(component).is_none())
 }
 
-/// A node's or an edge's id as text.
+/// A node's, an edge's or a hyperedge's id as text.
 pub(crate) fn record_name(def: &IndexDef, id: u128) -> String {
-    if def.edges {
-        EdgeId::from_u128(id).to_string()
-    } else {
-        NodeId::from_u128(id).to_string()
+    match def.kind() {
+        RecordKind::Edge => EdgeId::from_u128(id).to_string(),
+        RecordKind::HyperEdge => HyperEdgeId::from_u128(id).to_string(),
+        RecordKind::Node => NodeId::from_u128(id).to_string(),
     }
 }
 

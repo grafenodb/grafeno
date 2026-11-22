@@ -264,6 +264,11 @@ fn on(edges: bool) -> Value {
     Value::Str(if edges { "edges" } else { "nodes" }.into())
 }
 
+/// `nodes`, `edges` or `hyperedges`: what an index holds.
+fn on_kind(def: &IndexDef) -> Value {
+    Value::Str(format!("{}s", def.kind().name()))
+}
+
 fn constraint_row(constraint: &grafeno::Constraint) -> Vec<Value> {
     let mut row = constraint_cells(constraint);
     row.push(on(constraint.on_edges()));
@@ -282,7 +287,7 @@ fn key_row(def: &IndexDef) -> Vec<Value> {
         } else {
             Value::Null
         },
-        on(def.edges),
+        on_kind(def),
     ]
 }
 
@@ -352,7 +357,7 @@ fn index_row(def: &IndexDef, entries: u64) -> Vec<Value> {
         Value::Bool(def.unique),
         Value::Int(entries as i64),
         Value::Bool(def.fuzzy),
-        on(def.edges),
+        on_kind(def),
         Value::Bool(def.required),
         Value::Str(
             if def.fuzzy {
@@ -1501,7 +1506,8 @@ impl<'a> Runner<'a> {
                         shared.clone()
                     };
                     let ctx = self.ctx(&edges);
-                    let mut rows = crate::hyper::match_rows(&ctx, pattern, &hyper, &row)?;
+                    let mut rows =
+                        crate::hyper::match_rows(&ctx, pattern, &hyper, filter.as_ref(), &row)?;
                     if let Some(filter) = filter {
                         rows = keep(&ctx, rows, filter)?;
                     }
@@ -3439,7 +3445,7 @@ fn explain(
     if let Some(schema) = &statement.schema {
         let details = match schema {
             Schema::Create { def, .. } => format!(
-                "{} on {}, filled from the {} with the label{}{}",
+                "{} on {}, filled from the {}s with the label{}{}",
                 if def.required {
                     "key constraint"
                 } else if def.unique {
@@ -3454,7 +3460,7 @@ fn explain(
                     "index"
                 },
                 def.describe(),
-                if def.edges { "edges" } else { "nodes" },
+                def.kind().name(),
                 if def.labels().len() > 1 { "s" } else { "" },
                 if def.unique {
                     ", refused if they break it"
@@ -3768,7 +3774,16 @@ fn describe(
             filter,
             ..
         } => {
-            let anchor = crate::hyper::Anchor::of(pattern, &|var| bound.contains(var));
+            let conditions = filter
+                .as_ref()
+                .map(crate::plan::conjuncts)
+                .unwrap_or_default();
+            let anchor = crate::hyper::Anchor::of(
+                pattern,
+                &|var| bound.contains(var),
+                &conditions,
+                &info.indexes,
+            );
             let mut text = anchor.describe(pattern);
             if valid_at.is_some() {
                 text.push_str("; valid at a time");

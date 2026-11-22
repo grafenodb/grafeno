@@ -438,11 +438,9 @@ fn source_for<'q>(
             best = Some(candidate);
         }
     };
-    for def in info
-        .indexes
-        .iter()
-        .filter(|def| def.by_value() && !def.edges && def.covers(&node.labels))
-    {
+    for def in info.indexes.iter().filter(|def| {
+        def.by_value() && def.kind() == grafeno::RecordKind::Node && def.covers(&node.labels)
+    }) {
         let var = node.var.as_deref();
         if let Some((prefix, key, seek)) =
             seek_for_keys(&node.props, var, &def.keys(), is_bound, conditions)
@@ -529,7 +527,7 @@ fn edge_sources<'q>(
 /// A way to read an index on `keys`: values equal for a prefix of them,
 /// then a seek on the next one (the prefix's last when nothing else).
 #[allow(clippy::type_complexity)]
-fn seek_for_keys<'q>(
+pub(crate) fn seek_for_keys<'q>(
     props: &'q [(Key, Expr)],
     var: Option<&str>,
     keys: &[&str],

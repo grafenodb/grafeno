@@ -2,8 +2,9 @@
 //!
 //! Each row starts from the cheapest anchor its bindings allow: the
 //! hyperedge variable already bound, an `@id`, the incidence lists of the
-//! members whose nodes are bound (intersected), a label's hyperedges, or
-//! every hyperedge of the namespace. A candidate must have one of the
+//! members whose nodes are bound (intersected), an index on hyperedges of
+//! its label whose first properties the pattern or `WHERE` fix, a label's
+//! hyperedges, or every hyperedge of the namespace. A candidate must have one of the
 //! labels, the properties, the `VALID AT` and `KNOWN AT` time and be visible;
 //! then each member is given a participant of its own: its node fits the
 //! member's node pattern (or is the node its variable holds) and plays its
@@ -14,10 +15,10 @@
 use std::collections::{BTreeSet, HashSet};
 use std::sync::Arc;
 
-use grafeno::{HyperEdge, HyperEdgeFilter, HyperEdgeId, Node, NodeId};
+use grafeno::{HyperEdge, HyperEdgeFilter, HyperEdgeId, IndexDef, IndexRange, Node, NodeId};
 
 use crate::QueryError;
-use crate::ast::{HyperPattern, Key};
+use crate::ast::{Expr, HyperPattern, Key};
 use crate::eval::{Context, Row, Scope, eval};
 use crate::exec::{node_fits, props_fit, uuid_from_text};
 use crate::value::Value;
@@ -37,14 +38,72 @@ pub(crate) enum Anchor {
     Id,
     /// The incidence lists of these bound members' nodes.
     Nodes(Vec<String>),
+    /// This index on hyperedges, by the values the pattern or `WHERE` give.
+    Index(String),
     /// The label index, for each label.
     Labels,
     /// Every hyperedge of the namespace.
     All,
 }
 
+/// An index chosen for a hyperedge pattern: the index, the values for its
+/// first properties, and the seek on the next one.
+pub(crate) type IndexSeek<'q> = (&'q IndexDef, Vec<(String, &'q Expr)>, crate::plan::Seek<'q>);
+
+/// The best index on hyperedges for `pattern`: by value, on every one of
+/// its labels, with the longest run of fixed properties (a unique index
+/// wins a tie); its name and the seek on it.
+pub(crate) fn index_seek<'q>(
+    pattern: &'q HyperPattern,
+    bound: &dyn Fn(&str) -> bool,
+    conditions: &[&'q Expr],
+    indexes: &'q [IndexDef],
+) -> Option<IndexSeek<'q>> {
+    if pattern.labels.is_empty() {
+        return None;
+    }
+    let mut best: Option<IndexSeek> = None;
+    for def in indexes.iter().filter(|def| {
+        def.hyperedges
+            && def.by_value()
+            && pattern
+                .labels
+                .iter()
+                .all(|label| def.labels().contains(&label.as_str()))
+    }) {
+        let Some((prefix, _key, seek)) = crate::plan::seek_for_keys(
+            &pattern.props,
+            pattern.var.as_deref(),
+            &def.keys(),
+            bound,
+            conditions,
+        ) else {
+            continue;
+        };
+        let fixed = |prefix: &[(String, &Expr)], seek: &crate::plan::Seek| {
+            prefix.len() * 2 + usize::from(matches!(seek, crate::plan::Seek::Equal(_))) * 2 + 1
+        };
+        let better = match &best {
+            None => true,
+            Some((other, other_prefix, other_seek)) => {
+                let (mine, theirs) = (fixed(&prefix, &seek), fixed(other_prefix, other_seek));
+                mine > theirs || (mine == theirs && def.unique && !other.unique)
+            }
+        };
+        if better {
+            best = Some((def, prefix, seek));
+        }
+    }
+    best
+}
+
 impl Anchor {
-    pub(crate) fn of(pattern: &HyperPattern, bound: &dyn Fn(&str) -> bool) -> Anchor {
+    pub(crate) fn of(
+        pattern: &HyperPattern,
+        bound: &dyn Fn(&str) -> bool,
+        conditions: &[&Expr],
+        indexes: &[IndexDef],
+    ) -> Anchor {
         if pattern.var.as_deref().is_some_and(bound) {
             return Anchor::Bound;
         }
@@ -67,6 +126,9 @@ impl Anchor {
         if !nodes.is_empty() {
             return Anchor::Nodes(nodes);
         }
+        if let Some((def, _, _)) = index_seek(pattern, bound, conditions, indexes) {
+            return Anchor::Index(def.name.clone());
+        }
         if !pattern.labels.is_empty() {
             return Anchor::Labels;
         }
@@ -88,6 +150,9 @@ impl Anchor {
                 "hyperedges{labels} of {} (incidence index)",
                 nodes.join(", ")
             ),
+            Anchor::Index(name) => {
+                format!("hyperedges {var}{labels} by index {name} (property index)")
+            }
             Anchor::Labels => format!("hyperedges {var}{labels} (label index)"),
             Anchor::All => format!("every hyperedge {var} (scan)"),
         };
@@ -133,6 +198,43 @@ impl Context<'_> {
         Ok(ids)
     }
 
+    /// The hyperedges index `def` holds for `prefix` and `range`, those the
+    /// caller may see (retracted ones too: the pattern checks them).
+    fn hyperedge_index_seek(
+        &self,
+        def: &IndexDef,
+        prefix: &[serde_json::Value],
+        range: &IndexRange,
+    ) -> Result<Vec<HyperEdgeId>, QueryError> {
+        if self.blind() {
+            return Ok(Vec::new());
+        }
+        // An index on a property the caller may not read finds nothing.
+        if let Some(view) = self.per_record()
+            && def.keys().iter().any(|key| {
+                def.labels()
+                    .iter()
+                    .any(|label| view.property_hidden(self.ns, &[(*label).to_owned()], key))
+            })
+        {
+            return Ok(Vec::new());
+        }
+        let ids = match self.write {
+            Some(tx) => {
+                tx.index_seek_hyperedges(self.ns, &def.name, prefix, Some(range), usize::MAX)?
+            }
+            None => self.read.index_seek_hyperedges(
+                self.ns,
+                &def.name,
+                prefix,
+                Some(range),
+                usize::MAX,
+            )?,
+        };
+        self.budget.read(ids.len().max(1))?;
+        Ok(ids)
+    }
+
     fn hyperedge_page(
         &self,
         label: Option<&str>,
@@ -169,6 +271,7 @@ fn bound_node(row: &Row, var: &str) -> Result<Option<Option<NodeId>>, QueryError
 fn candidates(
     ctx: &Context,
     pattern: &HyperPattern,
+    conditions: &[&Expr],
     row: &Row,
 ) -> Result<Vec<HyperEdgeId>, QueryError> {
     let bound = |var: &str| row.contains_key(var);
@@ -177,90 +280,142 @@ fn candidates(
     } else {
         pattern.labels.iter().map(|l| Some(l.as_str())).collect()
     };
-    Ok(match Anchor::of(pattern, &bound) {
-        Anchor::Bound => {
-            let var = pattern.var.as_deref().unwrap_or_default();
-            match row.get(var) {
-                Some(Value::HyperEdge(edge)) => vec![edge.id],
-                Some(Value::Null) => Vec::new(),
-                Some(other) => {
-                    return Err(QueryError::runtime(format!(
-                        "`{var}` is a {}, not a hyperedge",
-                        other.type_name()
-                    )));
-                }
-                None => Vec::new(),
-            }
-        }
-        Anchor::Id => {
-            let expr = pattern
-                .props
-                .iter()
-                .find(|(key, _)| *key == Key::Meta("id".into()))
-                .map(|(_, expr)| expr)
-                .expect("an anchor by id has an @id");
-            match eval(ctx, expr, Scope::Row(row))? {
-                Value::Str(text) => uuid_from_text(&text)
-                    .map(|id| vec![HyperEdgeId::from(id.uuid())])
-                    .unwrap_or_default(),
-                Value::Null => Vec::new(),
-                other => {
-                    return Err(QueryError::runtime(format!(
-                        "@id is a string, not a {}",
-                        other.type_name()
-                    )));
+    Ok(
+        match Anchor::of(pattern, &bound, conditions, &ctx.info.indexes) {
+            Anchor::Index(_) => {
+                let (def, prefix, seek) =
+                    index_seek(pattern, &bound, conditions, &ctx.info.indexes)
+                        .expect("the anchor found it");
+                match index_candidates(ctx, def, &prefix, seek, row)? {
+                    Some(ids) => ids,
+                    // Values an index cannot hold (a list, a time): by label.
+                    None => label_candidates(ctx, &labels)?,
                 }
             }
-        }
-        Anchor::Nodes(vars) => {
-            let mut common: Option<BTreeSet<HyperEdgeId>> = None;
-            for var in &vars {
-                let Some(Some(node)) = bound_node(row, var)? else {
-                    // A member bound to null matches nothing.
-                    return Ok(Vec::new());
-                };
-                let mut ids = BTreeSet::new();
-                for label in &labels {
-                    ids.extend(ctx.hyperedge_ids_of(node, *label)?);
-                }
-                common = Some(match common {
-                    None => ids,
-                    Some(before) => before.intersection(&ids).copied().collect(),
-                });
-                if common.as_ref().is_some_and(BTreeSet::is_empty) {
-                    break;
+            Anchor::Bound => {
+                let var = pattern.var.as_deref().unwrap_or_default();
+                match row.get(var) {
+                    Some(Value::HyperEdge(edge)) => vec![edge.id],
+                    Some(Value::Null) => Vec::new(),
+                    Some(other) => {
+                        return Err(QueryError::runtime(format!(
+                            "`{var}` is a {}, not a hyperedge",
+                            other.type_name()
+                        )));
+                    }
+                    None => Vec::new(),
                 }
             }
-            common.unwrap_or_default().into_iter().collect()
-        }
-        Anchor::Labels | Anchor::All => {
-            let mut ids = BTreeSet::new();
-            for label in &labels {
-                let mut after = None;
-                loop {
-                    let page = ctx.hyperedge_page(*label, after)?;
-                    let full = page.len() == PAGE;
-                    after = page.last().copied();
-                    ids.extend(page);
-                    if !full {
-                        break;
+            Anchor::Id => {
+                let expr = pattern
+                    .props
+                    .iter()
+                    .find(|(key, _)| *key == Key::Meta("id".into()))
+                    .map(|(_, expr)| expr)
+                    .expect("an anchor by id has an @id");
+                match eval(ctx, expr, Scope::Row(row))? {
+                    Value::Str(text) => uuid_from_text(&text)
+                        .map(|id| vec![HyperEdgeId::from(id.uuid())])
+                        .unwrap_or_default(),
+                    Value::Null => Vec::new(),
+                    other => {
+                        return Err(QueryError::runtime(format!(
+                            "@id is a string, not a {}",
+                            other.type_name()
+                        )));
                     }
                 }
             }
-            ids.into_iter().collect()
-        }
-    })
+            Anchor::Nodes(vars) => {
+                let mut common: Option<BTreeSet<HyperEdgeId>> = None;
+                for var in &vars {
+                    let Some(Some(node)) = bound_node(row, var)? else {
+                        // A member bound to null matches nothing.
+                        return Ok(Vec::new());
+                    };
+                    let mut ids = BTreeSet::new();
+                    for label in &labels {
+                        ids.extend(ctx.hyperedge_ids_of(node, *label)?);
+                    }
+                    common = Some(match common {
+                        None => ids,
+                        Some(before) => before.intersection(&ids).copied().collect(),
+                    });
+                    if common.as_ref().is_some_and(BTreeSet::is_empty) {
+                        break;
+                    }
+                }
+                common.unwrap_or_default().into_iter().collect()
+            }
+            Anchor::Labels | Anchor::All => label_candidates(ctx, &labels)?,
+        },
+    )
 }
 
-/// Rows extending `row` with each match of `pattern`.
+/// Every hyperedge id of these labels (`None`: of the namespace).
+fn label_candidates(
+    ctx: &Context,
+    labels: &[Option<&str>],
+) -> Result<Vec<HyperEdgeId>, QueryError> {
+    let mut ids = BTreeSet::new();
+    for label in labels {
+        let mut after = None;
+        loop {
+            let page = ctx.hyperedge_page(*label, after)?;
+            let full = page.len() == PAGE;
+            after = page.last().copied();
+            ids.extend(page);
+            if !full {
+                break;
+            }
+        }
+    }
+    Ok(ids.into_iter().collect())
+}
+
+/// The hyperedges index `def` finds for this row, in id order; `None`
+/// when its values cannot be looked up. A superset: what it finds is
+/// checked against the pattern and `WHERE` afterwards.
+fn index_candidates(
+    ctx: &Context,
+    def: &IndexDef,
+    prefix: &[(String, &Expr)],
+    seek: crate::plan::Seek,
+    row: &Row,
+) -> Result<Option<Vec<HyperEdgeId>>, QueryError> {
+    let Some(ranges) = crate::plan::seek_ranges(ctx, seek, row)? else {
+        return Ok(None);
+    };
+    let mut values = Vec::with_capacity(prefix.len());
+    for (_, expr) in prefix {
+        match eval(ctx, expr, Scope::Row(row))? {
+            // `= null` is never true.
+            Value::Null => return Ok(Some(Vec::new())),
+            value => match crate::plan::indexable(&value) {
+                Some(json) => values.push(json),
+                None => return Ok(None),
+            },
+        }
+    }
+    let mut ids = BTreeSet::new();
+    for range in &ranges {
+        ids.extend(ctx.hyperedge_index_seek(def, &values, range)?);
+    }
+    Ok(Some(ids.into_iter().collect()))
+}
+
+/// Rows extending `row` with each match of `pattern`. `filter` (the
+/// clause's `WHERE`) only picks where to start; the caller applies it.
 pub(crate) fn match_rows(
     ctx: &Context,
     pattern: &HyperPattern,
     time: &HyperEdgeFilter,
+    filter: Option<&Expr>,
     row: &Row,
 ) -> Result<Vec<Row>, QueryError> {
+    let conditions = filter.map(crate::plan::conjuncts).unwrap_or_default();
     let mut out = Vec::new();
-    for id in candidates(ctx, pattern, row)? {
+    for id in candidates(ctx, pattern, &conditions, row)? {
         let Some(edge) = ctx.hyperedge(id)? else {
             continue;
         };

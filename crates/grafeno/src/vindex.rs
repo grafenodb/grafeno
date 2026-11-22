@@ -202,7 +202,7 @@ impl WriteTx {
         new: Option<(&[String], &Props)>,
         old: Option<(&[String], &Props)>,
     ) -> Result<()> {
-        for def in defs.iter().filter(|def| !def.edges) {
+        for def in defs.iter().filter(|def| !def.edges && !def.hyperedges) {
             let Some(spec) = &def.vector else {
                 continue;
             };

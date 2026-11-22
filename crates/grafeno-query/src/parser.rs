@@ -802,10 +802,24 @@ impl Parser<'_> {
             }));
         }
         self.expect_keyword("FOR")?;
+        // On hyperedges: FOR HYPEREDGE h:label …
+        let hyper = self.eat_keyword("HYPEREDGE");
         // On edges: FOR ()-[r:label]-() …
-        let (var, labels, edges) = if self.peek() == &Token::LParen
-            && self.peek_at(1) == &Token::RParen
-        {
+        let (var, labels, edges) = if hyper {
+            let var = self.ident("a variable for the hyperedge")?;
+            self.expect(Token::Colon, "`:label`")?;
+            let mut labels = vec![self.ident("a hyperedge label")?];
+            while self.eat(&Token::Pipe) {
+                self.eat(&Token::Colon);
+                labels.push(self.ident("a hyperedge label")?);
+            }
+            if fuzzy || fulltext || vector {
+                return Err(self.error(
+                    "an index on hyperedges is by value: CREATE INDEX FOR HYPEREDGE h:label ON (h.key)",
+                ));
+            }
+            (var, labels, false)
+        } else if self.peek() == &Token::LParen && self.peek_at(1) == &Token::RParen {
             let pattern = self.pattern()?;
             let [(rel, end)] = pattern.steps.as_slice() else {
                 return Err(self.error("an edge rule is on one edge: FOR ()-[r:label]-()"));
@@ -1027,10 +1041,9 @@ impl Parser<'_> {
             if fuzzy && (keys.len() > 1 || labels.len() > 1 || edges) {
                 return Err(self.error("a fuzzy index is on one property of one node label"));
             }
-            return Ok(Some(Schema::Create {
-                def: index(labels, keys, edges),
-                if_not_exists,
-            }));
+            let mut def = index(labels, keys, edges);
+            def.hyperedges = hyper;
+            return Ok(Some(Schema::Create { def, if_not_exists }));
         }
         self.expect_keyword("REQUIRE")?;
         let keys = properties(self, false)?;
@@ -1040,7 +1053,13 @@ impl Parser<'_> {
             let mut def = index(labels, keys, edges);
             def.unique = true;
             def.required = key;
+            def.hyperedges = hyper;
             return Ok(Some(Schema::Create { def, if_not_exists }));
+        }
+        if hyper {
+            return Err(self.error(
+                "a constraint on hyperedges is IS UNIQUE or IS KEY: REQUIRE h.key IS UNIQUE",
+            ));
         }
         let one = |parser: &Self, rule: &str| -> Result<(String, String), QueryError> {
             match (labels.as_slice(), keys.as_slice()) {
