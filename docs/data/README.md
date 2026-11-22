@@ -60,6 +60,9 @@ build unless the file says otherwise; on E1, runs vary by about ±20%.
 | `recall_quality.csv` | BM25, BM25 stemmed, HNSW, hybrid and hybrid with the graph on 70 agent questions of four kinds | `crates/grafeno-memory/examples/recall_quality.rs` | E1-mem | 2026-11-20 | grouped bars per kind: first, in 3, in 10 |
 | `long_term.csv` | Old decisions among 3 000 and 15 000 conversations, six ways of recalling | `crates/grafeno-memory/examples/long_term.rs` | E1-mem | 2026-11-20 | grouped bars, in the context, per size |
 | `many_writers.csv` | Agents writing memories at once on 1, 2 and 4 files (writers) | `crates/grafeno/examples/many_writers.rs` | E1-disk | 2026-11-20 | memories/s against agents, a line per number of writers |
+| `hyperedge_index.csv` | `MATCH HYPEREDGE` by a property on 100 000 hyperedges, without and with an index, beside event nodes | `crates/grafeno-query/examples/hyperedge_index_bench.rs` | E1-mem | 2026-11-21 | paired bars, log scale |
+| `hyperedge_recall.csv` | Recall strategies with and without hyperedges on 92 questions of six kinds, English and Spanish | `crates/grafeno-memory/examples/hyperedge_recall_eval.rs` | E1-mem | 2026-11-21 | grouped bars per kind: complete, answered in role, tokens |
+| `hyperedge_recall_latency.csv` | Latency of those strategies, 15 runs per question | `hyperedge_recall_eval.rs` | E1-mem | 2026-11-21 | bars, p50 / p95 / p99 |
 
 `python docs/charts/build.py` draws the charts of
 [performance](../performance.md) from these files (light and dark SVG in

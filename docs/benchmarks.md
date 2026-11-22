@@ -1314,3 +1314,103 @@ short. "Contains" with two nodes stays under 40 µs at p50 because the
 intersection leaves few records to read. If those reads matter, the next
 step is a binary encoding of participants or ids-only reads, measured
 against these numbers.
+
+## Hyperedges by a property (`crates/grafeno-query/examples/hyperedge_index_bench.rs`)
+
+100 000 hyperedges labeled `execution`, three participants each among
+1 000 agents, with a unique `execution_id`, one of 100 `project_id`s and
+one of three statuses; beside them the same 100 000 events as `Execution`
+nodes. Each query runs 50 times without indexes and 300 times with them,
+a different value each time; reads come from `PROFILE`. Release build,
+in memory, 2026-11-21, one run ([data](data/hyperedge_index.csv)).
+
+| Query | Without index p50 / p95 / p99 | Reads | With index p50 / p95 / p99 | Reads | Rows |
+| --- | --- | --- | --- | --- | --- |
+| Hyperedge by `execution_id` | 1 247 / 1 420 / 1 432 ms | 500 000 | 52 / 85 / 142 µs | 5 | 1 |
+| Hyperedge by `project_id` and `status` (~0.3%) | 1 163 / 1 279 / 1 359 ms | 500 000 | 4.3 / 6.2 / 8.2 ms | 1 670 | 334 |
+| Event node by `execution_id` | 45 / 48 / 49 ms | 200 000 | 64 / 294 / 468 µs | 2 | 1 |
+| Event node by `project_id` and `status` | 46 / 54 / 58 ms | 200 000 | 2.5 / 3.6 / 4.0 ms | 668 | 334 |
+
+Building both hyperedge indexes over the 100 000 took 1.0 s. Writing
+10 000 hyperedges ran at 26 557 a second without the two indexes and
+16 731 with them. Without an index a lookup reads every hyperedge of the
+label, decoding each JSON record (five reads a hyperedge in the profile),
+which is 27 times slower than the same scan over nodes; with one it reads
+what it returns. A composite index fetches each matching record: 334 rows
+cost 4.3 ms, against 2.5 ms for nodes.
+
+The first run of this benchmark found a bug: with an index on hyperedges,
+the planner's statistics counted it but did not hold it, so they looked
+stale and were rebuilt on every query (about 70 ms each, for every
+indexed query of the namespace). Fixed, with a test, before these numbers.
+
+## Hyperedges in recall: an experiment (`crates/grafeno-memory/examples/hyperedge_recall_eval.rs`)
+
+Whether recall should return hyperedges. One synthetic team memory (12
+agents, 24 tasks, 48 evidence documents, 200 unrelated notes) holds the
+same events twice: as hyperedges with roles, and as `Event` nodes with one
+edge per role. 46 questions per language (English and Spanish, with the
+namespace's language set): who proposed and reviewed a decision (8),
+which agents ran a job (8), who attended a session (8), what backs a
+decision and what contradicts it (6), which version held at a date (6),
+and single facts that need no event (10). The same recall settings (10
+results, 50 candidates, one hop) and a budget of 400 tokens, three
+quarters for recalled lines and the rest for facts among them. No
+embeddings (no strategy has a model), so recall is deterministic: runs
+differ only in latency. Release build, 2026-11-21
+([data](data/hyperedge_recall.csv), [latency](data/hyperedge_recall_latency.csv)).
+
+- **A**: today's recall on the hyperedge memory, which does not see them.
+- **B**: A, then every hyperedge of each recalled node (five a node).
+- **C**: A, then only hyperedges sharing two recalled nodes or a word
+  with the question, and of at most 16 participants.
+- **D**: today's recall on the event-node memory.
+- **D2**: D with B's expansion: each recalled node packed with its
+  outgoing facts inline (an event node with its participants and roles).
+
+"Complete": every node the answer needs, and the event, in the context.
+"In role": the node asked for appears in the role asked ("who proposed").
+"Stray": participants named that the answer does not need. English;
+Spanish is within a few points (one session question fewer complete for
+B, as its five hyperedges a node ran out first).
+
+| Kind | A complete / in role | B | C | D | D2 | Tokens A / B / C / D / D2 | Stray B / C / D2 |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Decisions | 0% / 0% | 100% / 100% | 100% / 100% | 0% / 12% | 100% / 100% | 287 / 284 / 284 / 336 / 330 | 25.6 / 7.2 / 11.0 |
+| Multi-agent runs | 0% / 0% | 100% / 100% | 100% / 100% | 0% / 0% | 100% / 100% | 166 / 283 / 281 / 329 / 338 | 26.8 / 8.2 / 11.2 |
+| Sessions | 0% / 0% | 100% / 100% | 100% / 100% | 0% / 0% | 100% / 100% | 166 / 269 / 281 / 296 / 321 | 25.1 / 7.2 / 13.4 |
+| Contradictions | 0% / 0% | 100% / 100% | 100% / 100% | 100% / 100% | 100% / 100% | 122 / 272 / 272 / 357 / 342 | 9.2 / 9.2 / 11.2 |
+| At a date | 0% / 0% | 100% / 100% | 100% / 100% | 17% / 17% | 100% / 100% | 161 / 285 / 285 / 352 / 365 | 10.0 / 10.0 / 14.2 |
+| Single facts | 100% | 100% | 100% | 100% | 100% | 246 / 274 / 275 / 246 / 246 | 12.4 / 6.5 / 0 |
+
+MRR of the first useful line on collective questions: about 0.3 for B and
+C (the event comes after the task or report that led to it), 1.0 for D
+and D2 on most kinds (the event node's own text matches the question).
+Latency p50 / p95 / p99: A 53 / 115 / 141 µs, B 160 / 562 / 655, C 160 /
+570 / 622, D 286 / 425 / 522, D2 326 / 445 / 664.
+
+What it says:
+
+- Expanding events is what answers collective questions: today's recall
+  finds the task or the event but rarely everyone in it (A, D).
+- The same expansion over event nodes (D2) answers as completely as over
+  hyperedges (B, C), ranks the event first, and names fewer strays than B,
+  for about 15% more tokens and still well under a millisecond. Hyperedges
+  bring no gain in recall that event nodes do not.
+- Single facts lose nothing with any strategy; B and C add 30 tokens of
+  hyperedges to each.
+- Safety: expansion goes through the snapshot's view (a hyperedge with a
+  hidden participant is not found), leaves retracted ones out, and bounds
+  a hyperedge of 151 participants to one line of 129 tokens. Text in a
+  hyperedge's properties enters the context verbatim, as node text does:
+  instructions written there reach the model as data the caller must
+  treat as such.
+
+So recall and context stay as they are: by the criteria set before
+measuring, an equivalent result with less complexity (event nodes, already
+supported) rules out the default integration. The candidate the data does
+point to is independent of hyperedges: packing a recalled node's outgoing
+facts inline, measured on real memories first. Limits: one synthetic
+memory from one generator, no embeddings, and "in role" is checked from
+the structure, not by a model reading the answer.
+

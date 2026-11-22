@@ -1,0 +1,5 @@
+query,without_index_p50_us,without_index_p95_us,without_index_p99_us,without_index_reads,with_index_p50_us,with_index_p95_us,with_index_p99_us,with_index_reads,rows
+"hyperedge by execution_id",1247202,1420313,1431685,500000,52,85,142,5,1
+"hyperedge by project_id and status",1162615,1279018,1359162,500000,4322,6228,8223,1670,334
+"event node by execution_id",45452,47914,49172,200000,64,294,468,2,1
+"event node by project_id and status",45873,54342,58497,200000,2513,3644,3991,668,334

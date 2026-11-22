@@ -708,6 +708,9 @@ properties and times.
 
 ### Not yet
 
+Indexes and unique or key constraints on hyperedges are under
+[Indexes and performance](#indexes-and-performance) and [Constraints on properties](#constraints-on-properties).
+
 Hyperedges are not part of ordinary patterns (`(a)-[…]-(b)`),
 `EXISTS { … }`, `COUNT { … }` or graph algorithms, and a statement with
 `MATCH HYPEREDGE` is not split across cluster members. In a cluster,
@@ -952,6 +955,12 @@ CREATE CONSTRAINT FOR (n:Person|Company) REQUIRE n.name IS UNIQUE;    // across 
   each a boolean, a number or a string.
 - On edges (`FOR ()-[r:label]-()`) the same rules hold for each current
   fact with the label; a retracted fact holds none.
+- On hyperedges (`FOR HYPEREDGE h:label REQUIRE h.key IS UNIQUE`, or
+  `(h.a, h.b) IS KEY`) the unique and key rules hold the same way: a
+  retracted hyperedge holds no value, an invalidated one still does (it
+  was true; `MERGE HYPEREDGE` on the key then finds it is history and
+  the write that would repeat the value fails). `IS NOT NULL`, types and
+  `IS FUNCTIONAL` are not offered on hyperedges yet.
 - Declaring a rule checks the data already there: the first records that
   break it are named, and nothing is declared.
 - Writes are checked as they go, except in a query, where a statement's
@@ -960,7 +969,8 @@ CREATE CONSTRAINT FOR (n:Person|Company) REQUIRE n.name IS UNIQUE;    // across 
   is checked at each write. Replicated entries are not checked again
   (the member that made them did).
 - `SHOW CONSTRAINTS` lists every kind (`kind`: `unique`, `key`,
-  `not_null`, `type`, `edge`, `functional`; `on`: `nodes` or `edges`);
+  `not_null`, `type`, `edge`, `functional`; `on`: `nodes`, `edges` or
+  `hyperedges`);
   unique and key constraints are indexes too, and `SHOW INDEXES` lists
   them.
 
@@ -1058,6 +1068,13 @@ DROP CONSTRAINT Person_email_unique IF EXISTS;
 - An index on edges serves a pattern whose edge has the property,
   `(p)-[r:rated {stars: 5}]->(f)` or `WHERE r.at >= 10`: the match starts
   at the ends of the edges it finds, on the side of the pattern's start.
+- An index on hyperedges (`CREATE INDEX FOR HYPEREDGE h:execution ON
+  (h.execution_id)`, several properties as for nodes) serves `MATCH
+  HYPEREDGE` with that label, by `{key: v}` in the pattern or the same
+  conditions in its `WHERE`, when no participant is bound (a bound
+  participant's incidence list comes first). It holds retracted
+  hyperedges too, and the pattern's time and `WHERE` still decide what
+  matches. `EXPLAIN` says `by index …`.
 - The planner uses an index for `n.key = v`, `{key: v}` in the pattern,
   `n.key IN [...]`, `n.key STARTS WITH 'x'` and ranges (`>`, `>=`, `<`,
   `<=`, and both ends together), when the value can be computed before the

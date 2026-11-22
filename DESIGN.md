@@ -86,7 +86,7 @@ short-lived agents.
 | `names`        | `(ns, normalized name, node_id)` | `()`                    |
 | `memory`       | `(ns, node_id)`               | `(importance, accesses, last_access)` |
 | `indexes`      | `(ns, index name)`            | index definition (JSON)    |
-| `index_entries` | `(ns, index, sortable value, node_id)` | `()`: also a full-text index's terms (term, field, length, frequency, positions in the key) |
+| `index_entries` | `(ns, index, sortable value, node_id)` | `()`: also a full-text index's terms (term, field, length, frequency, positions in the key); the id is an edge's or a hyperedge's for indexes on them |
 | `fulltext_stats` | `(ns, index)`               | documents and terms per field of a full-text index (JSON), for BM25 |
 | `hyperedges`   | `(ns, hyperedge_id)`          | `HyperEdge` record: a fact relating two or more nodes in roles (layout 19) |
 | `hyperedge_incidence` | `(ns, node_id, label, hyperedge_id)` | `()`, once per distinct node that takes part |

@@ -1,0 +1,11 @@
+language,strategy,p50_us,p95_us,p99_us
+English,A,53,115,141
+English,B,160,562,655
+English,C,160,570,622
+English,D,286,425,522
+English,D2,326,445,664
+Spanish,A,48,97,131
+Spanish,B,143,541,592
+Spanish,C,149,574,701
+Spanish,D,302,472,582
+Spanish,D2,351,546,727

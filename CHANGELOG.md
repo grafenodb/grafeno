@@ -18,8 +18,8 @@ in a role, stored as records of their own with an incidence index, in the
 Rust API of the `grafeno` crate (docs/hyperedges.md), in GQ, and in the
 replication log, so clusters and replicas hold them, and in HTTP routes
 and MCP tools of their own; the change log and event subscriptions
-follow them, and JSON lines exports carry them. Recall does not know them
-yet.
+follow them, and JSON lines exports carry them. Recall does not know them:
+an experiment found event nodes answer as well (docs/benchmarks.md).
 
 - **Added**: `POST /v1/{ns}/batch` takes `create_hyperedge` (with a `ref`
   of its own, and participants that may be `$name`s), `update_hyperedge`
@@ -58,6 +58,20 @@ yet.
   those properties and exactly those (node, role) pairs in any order, or a
   new one, looked up and written in the statement's write transaction, so
   concurrent merges make one.
+- **Added**: property indexes and unique or key constraints on
+  hyperedges: `CREATE INDEX FOR HYPEREDGE h:label ON (h.key, …)`, `CREATE
+  CONSTRAINT FOR HYPEREDGE h:label REQUIRE h.key IS UNIQUE | IS KEY`,
+  `IndexDef::on_hyperedges` (`hyperedges: true`), `IndexDef::kind` and
+  `RecordKind`, and `index_seek_hyperedges` on `ReadTx` and `WriteTx`.
+  Every hyperedge write keeps them; `check`, `rebuild_indexes`, exports
+  and replication cover them; `MATCH HYPEREDGE` starts from one when its
+  pattern or `WHERE` fix the first properties. A replication entry that
+  declares one has format 8 and an export that holds one version 3.
+- **Added**: two reproducible measurements, `hyperedge_index_bench`
+  (lookups by property on 100 000 hyperedges, with and without an index)
+  and `hyperedge_recall_eval` (recall strategies with and without
+  hyperedges, against event nodes, on 92 questions in English and
+  Spanish), with their numbers in docs/benchmarks.md and docs/data.
 - **Changed**: GQ `DETACH DELETE` takes a node out of its hyperedges
   (deleting those left with one node); `DELETE` of a node in a hyperedge
   fails. Query values have a new variant, `Value::HyperEdge`.

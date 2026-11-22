@@ -247,18 +247,23 @@ dropping data silently where it can:
 
 ## Next stages
 
-1. **GQ, further.** Done: `MATCH HYPEREDGE`, the writes and `MERGE
-   HYPEREDGE` (docs/query-language.md). Next, if needed: hyperedges inside
-   ordinary patterns and `EXISTS { … }`, statistics for the planner, and
-   splitting across cluster members.
+1. **GQ, further.** Done: `MATCH HYPEREDGE`, the writes, `MERGE
+   HYPEREDGE` and property indexes. Next, if needed: hyperedges inside
+   ordinary patterns and `EXISTS { … }`, statistics for the planner (the
+   index on hyperedges is used whenever it fits, without estimates), not
+   null and type rules, and splitting across cluster members.
 2. **CSV and GraphML**, if a tool needs them there.
 3. **The client SDK** (`@grafenodb/client`): methods for the routes.
-4. **Memory.** A hyperedge could be a unit of episodic memory: recall could
-   return a whole event (who did what, about which task, on what evidence)
-   when one of its participants matches, and context could render it as one
-   line. That changes what recall returns and what it costs, so it starts
-   with a measurement on the agent questions the memory tests already use,
-   not with a change to BM25, the vector index or fusion.
+4. **Memory.** Measured, and not done: recall and context do not return
+   hyperedges. On 92 questions about decisions, runs, sessions,
+   contradictions and dates, expanding the recalled nodes' hyperedges
+   answered every collective question, but the same expansion over event
+   nodes (already supported) did as well, ranked the event first and named
+   fewer participants the answer did not need
+   ([benchmarks](benchmarks.md#hyperedges-in-recall-an-experiment-cratesgrafeno-memoryexampleshyperedge_recall_evalrs)).
+   What helped was packing an event with its participants and roles,
+   which does not need hyperedges; that is the thing to measure next, on
+   real memories.
 5. **More kinds.** Weights per participant, directed hyperedges (roles that
    order) and hyperedges among hyperedges.
 
@@ -344,6 +349,69 @@ node it had. An event subscription `ON HYPEREDGES` (in Rust,
 `EventTarget::HyperEdges`; over HTTP, `"hyperedges"`) gets those changes
 with the properties before and after; `ON PROPERTIES` covers their
 properties too.
+
+## Hyperedges in other GQ patterns
+
+Hyperedges stay out of ordinary patterns (`(a)-[…]-(b)`), `EXISTS { … }`,
+`COUNT { … }`, paths and graph algorithms. What those would be asked for
+GQ already says:
+
+| Question | Today |
+| --- | --- |
+| How many hyperedges per row (`COUNT { … }`) | `CALL { WITH a MATCH HYPEREDGE h:decision [(a) AS proposer] RETURN count(h) AS n }` |
+| Whether a row has one (`EXISTS { … }`), or none | the same, with `WHERE n > 0`; or `OPTIONAL MATCH HYPEREDGE h [(a)] WITH a, count(h) AS n WHERE n = 0` |
+| Nodes and hyperedges together | `MATCH (a:Agent)-[:member_of]->(t:Team) MATCH HYPEREDGE h:decision [(a) AS proposer]`: the bound node anchors the hyperedge through its incidence list |
+| Who shared an event with whom | `MATCH HYPEREDGE h:session [(a), (b)] WHERE a <> b RETURN a, b`, one row per pair |
+
+These run on the incidence and label indexes, without cartesian products
+beyond the pairs asked for (`grafeno-query/tests/hyperedges.rs`,
+`counting_and_testing_hyperedges_per_row`). What would need new semantics
+is postponed until a use case shows it is needed:
+
+- **Traversing a hyperedge inside a path** (`(a)-[h:decision]-(b)` or
+  variable-length steps through hyperedges): which participant pairs a
+  step joins, whether roles order it, and how a path holds a hyperedge are
+  open choices, and each would change what existing patterns mean if made
+  implicit. A hyperedge is not a set of binary edges here.
+- **`EXISTS { MATCH HYPEREDGE … }` and `COUNT { MATCH HYPEREDGE … }`**: a
+  shorter way to write the subqueries above, with no new meaning.
+- **Graph algorithms** (paths, centrality, communities) over hyperedges:
+  they need a projection (clique, star through an event node, or a
+  bipartite graph), each with different results; a caller can build any
+  of them with GQ today.
+- **Statistics for the planner** and splitting `MATCH HYPEREDGE` across
+  cluster members.
+
+## Property indexes and constraints
+
+An index may be on hyperedges: `CREATE INDEX FOR HYPEREDGE h:execution ON
+(h.execution_id)` in GQ, `IndexDef::on_hyperedges` in Rust
+(`hyperedges: true`). It uses the property indexes nodes and edges have:
+the same table, the same encoding (booleans, numbers and strings; one
+property or several, read by a prefix), filled when declared and kept by
+every write of a hyperedge in its transaction (create, properties,
+participants, invalidate, retract, delete, a node deleted with
+`cascade`), by merges, imports, `rebuild_indexes` and replicated entries.
+`check` compares it with the records. `ReadTx::index_seek_hyperedges`
+reads it through the caller's view. Nothing is indexed unless declared:
+pick the properties queries look up.
+
+`MATCH HYPEREDGE` starts from such an index when the pattern or its
+`WHERE` fix its first properties and no participant is bound; see
+docs/query-language.md.
+
+Unique and key constraints work on hyperedges too (`REQUIRE h.key IS
+UNIQUE`, `REQUIRE (h.a, h.b) IS KEY`). Uniqueness counts every hyperedge
+that is not retracted, invalidated ones included: an invalidated
+hyperedge was true, so its key stays taken, while a retracted one never
+was. A key also needs every current hyperedge of the label to have the
+properties. Not null, type and functional rules, fuzzy, full-text and
+vector indexes are not offered on hyperedges.
+
+The definition is stored with the others, so the layout stays 19; a
+replication entry declaring one has format 8 and an export holding one has
+version 3, so that 0.4 refuses them instead of taking it for an index on
+nodes.
 
 ## Replication and clusters
 
