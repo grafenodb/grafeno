@@ -420,16 +420,24 @@ fn index_candidates(
 
 /// Rows extending `row` with each match of `pattern`. `filter` (the
 /// clause's `WHERE`) only picks where to start; the caller applies it.
+/// With `slice` (part, parts), only that share of the candidates, in id
+/// order: a part of a query split across cluster members.
 pub(crate) fn match_rows(
     ctx: &Context,
     pattern: &HyperPattern,
     time: &HyperEdgeFilter,
     filter: Option<&Expr>,
     row: &Row,
+    slice: Option<(usize, usize)>,
 ) -> Result<Vec<Row>, QueryError> {
     let conditions = filter.map(crate::plan::conjuncts).unwrap_or_default();
+    let mut ids = candidates(ctx, pattern, &conditions, row)?;
+    if let Some((part, parts)) = slice {
+        let (from, to) = (ids.len() * part / parts, ids.len() * (part + 1) / parts);
+        ids = ids[from..to].to_vec();
+    }
     let mut out = Vec::new();
-    for id in candidates(ctx, pattern, &conditions, row)? {
+    for id in ids {
         let Some(edge) = ctx.hyperedge(id)? else {
             continue;
         };

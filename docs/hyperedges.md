@@ -242,8 +242,7 @@ silently where it can:
   functional rules and property history do (see below).
 - **GQ** reads and writes them with clauses of their own (`MATCH`,
   `CREATE` and `MERGE HYPEREDGE`); ordinary patterns, paths and graph
-  algorithms do not see them, and a statement with them is not split
-  across cluster members. Counting or testing them per row is written
+  algorithms do not see them. Counting or testing them per row is written
   with a subquery (see below).
 - **Recall and context** do not return hyperedges, by measurement: event
   nodes answer as well (see "Next stages"). `find_group` and GQ read them.
@@ -460,6 +459,11 @@ with an edge's adjacency, and runs none of the checks the leader made.
 Dropping a namespace and rebuilding its indexes are logged as that work,
 and members redo it with the hyperedges in it. A namespace moving to
 another cluster group takes its hyperedges with it, after its nodes.
+
+A read query that starts with `MATCH HYPEREDGE` is split across cluster
+members as one that starts with `MATCH` is: each part takes its share of
+the candidate hyperedges, in id order, and the coordinator merges the
+parts into one server's result.
 
 Entries that carry a hyperedge have format 8; the others keep the oldest
 format that holds them. A member of an earlier version refuses an entry

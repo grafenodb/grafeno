@@ -3,9 +3,11 @@
 //! Every member holds all the data, so a read query whose first `MATCH`
 //! starts from many nodes can be cut into parts: part `k` of `n` takes the
 //! `k`th share of that start's candidates, in the order one server visits
-//! them, and runs the clauses up to the final `RETURN` on them. Clauses
-//! that work row by row (`MATCH`, `OPTIONAL MATCH`, `UNWIND`, a plain
-//! `WITH`) give, part after part, exactly the rows one server would. The
+//! them, and runs the clauses up to the final `RETURN` on them. A first
+//! `MATCH HYPEREDGE` is cut the same way, its candidate hyperedges in id
+//! order. Clauses that work row by row (`MATCH`, `OPTIONAL MATCH`,
+//! `MATCH HYPEREDGE`, `UNWIND`, a plain `WITH`) give, part after part,
+//! exactly the rows one server would. The
 //! `RETURN` is where the parts meet:
 //!
 //! - with aggregates, each part folds its rows into groups and returns
@@ -122,9 +124,14 @@ fn splittable<'s>(statement: &'s Statement, text: &str) -> Option<&'s Projection
     }
     let clauses = &statement.parts[0].clauses;
     let (
-        Some(Clause::Match {
-            optional: false, ..
-        }),
+        Some(
+            Clause::Match {
+                optional: false, ..
+            }
+            | Clause::MatchHyper {
+                optional: false, ..
+            },
+        ),
         Some(Clause::Return(projection)),
     ) = (clauses.first(), clauses.last())
     else {
@@ -133,7 +140,7 @@ fn splittable<'s>(statement: &'s Statement, text: &str) -> Option<&'s Projection
     let row_by_row = clauses[1..clauses.len() - 1]
         .iter()
         .all(|clause| match clause {
-            Clause::Match { .. } | Clause::Unwind { .. } => true,
+            Clause::Match { .. } | Clause::MatchHyper { .. } | Clause::Unwind { .. } => true,
             Clause::With(with) => {
                 !with.distinct
                     && with.order.is_empty()

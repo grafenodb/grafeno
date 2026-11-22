@@ -1493,6 +1493,13 @@ impl<'a> Runner<'a> {
                     self.times(valid_at.as_ref(), known_at.as_ref(), &Row::new())?
                 };
                 self.time = shared.0.clone();
+                // A part of a split query cuts the candidates of its first
+                // match: this one, when it starts the query (one row).
+                let slice = if flow.vars.is_empty() {
+                    self.slice.as_ref().and_then(crate::eval::Slice::take)
+                } else {
+                    None
+                };
                 let mut out = Vec::new();
                 for row in flow.rows {
                     if cap.is_some_and(|cap| out.len() >= cap) {
@@ -1504,8 +1511,14 @@ impl<'a> Runner<'a> {
                         shared.clone()
                     };
                     let ctx = self.ctx(&edges);
-                    let mut rows =
-                        crate::hyper::match_rows(&ctx, pattern, &hyper, filter.as_ref(), &row)?;
+                    let mut rows = crate::hyper::match_rows(
+                        &ctx,
+                        pattern,
+                        &hyper,
+                        filter.as_ref(),
+                        &row,
+                        slice,
+                    )?;
                     if let Some(filter) = filter {
                         rows = keep(&ctx, rows, filter)?;
                     }

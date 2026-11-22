@@ -712,8 +712,9 @@ Indexes and unique or key constraints on hyperedges are under
 [Indexes and performance](#indexes-and-performance) and [Constraints on properties](#constraints-on-properties).
 
 Hyperedges are not part of ordinary patterns (`(a)-[…]-(b)`),
-`EXISTS { … }`, `COUNT { … }` or graph algorithms, and a statement with
-`MATCH HYPEREDGE` is not split across cluster members. In a cluster,
+`EXISTS { … }`, `COUNT { … }` or graph algorithms. A read query that
+starts with `MATCH HYPEREDGE` is split across cluster members as one
+starting with `MATCH` is. In a cluster,
 writing them needs every member to run a version that knows them.
 
 ## Pseudo-properties

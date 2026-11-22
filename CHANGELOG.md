@@ -30,6 +30,9 @@ an experiment found event nodes answer as well (docs/benchmarks.md).
   only memories overtaken by their words. A `supersedes` fact that no
   longer holds marks nothing. `knowledge::replaced_by` gives what
   replaces a memory at a time.
+- **Added**: a read query that starts with `MATCH HYPEREDGE` is split
+  across cluster members, each part taking its share of the candidate
+  hyperedges in id order.
 - **Changed**: reading hyperedges is faster: a snapshot opens their
   tables once (a read by id 3.3 → 1.7 µs), and matching a pattern reads
   only the participants' nodes it needs (a label scan 9.5 → 3.7 µs a

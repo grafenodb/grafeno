@@ -1130,3 +1130,44 @@ fn profile_reads(db: &Grafeno, query: &str) -> u64 {
         .filter_map(|step| step.reads)
         .sum()
 }
+
+#[test]
+fn match_hyperedge_splits_across_members() {
+    let db = executions();
+    // A first MATCH HYPEREDGE splits; each part's share of the
+    // hyperedges, put end to end, gives one server's rows.
+    for query in [
+        "MATCH HYPEREDGE h:execution RETURN h.execution_id ORDER BY h.execution_id",
+        "MATCH HYPEREDGE h:execution [(a) AS runner] RETURN a.name, count(h)",
+        "MATCH HYPEREDGE h:execution WHERE h.status = 'open' RETURN h.project, count(*) ORDER BY h.project",
+        "MATCH HYPEREDGE h:execution MATCH (t:Task) RETURN count(*)",
+        "MATCH HYPEREDGE h RETURN h.@label, count(h) ORDER BY h.@label",
+    ] {
+        assert!(
+            common::check_split(&db, NS, query, &Params::new()),
+            "{query} did not split"
+        );
+    }
+    // With an index on the property, too.
+    run(&db, "CREATE INDEX FOR HYPEREDGE h:execution ON (h.project)");
+    assert!(common::check_split(
+        &db,
+        NS,
+        "MATCH HYPEREDGE h:execution WHERE h.project = 'P-2' RETURN h.execution_id ORDER BY h.execution_id",
+        &Params::new()
+    ));
+    // A MATCH HYPEREDGE after a MATCH is cut by the MATCH, not again.
+    assert!(common::check_split(
+        &db,
+        NS,
+        "MATCH (a:Agent) MATCH HYPEREDGE h [(a)] RETURN a.name, count(h) ORDER BY a.name",
+        &Params::new()
+    ));
+    // Writes do not split.
+    assert!(!common::check_split(
+        &db,
+        NS,
+        "MATCH HYPEREDGE h:execution SET h.seen = true",
+        &Params::new()
+    ));
+}
