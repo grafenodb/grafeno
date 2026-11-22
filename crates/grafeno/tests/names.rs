@@ -52,29 +52,62 @@ const DENIED: &[&str] = &[
 /// Uses of a denied word that name a platform, not a product to compare.
 const ALLOWED: &[&str] = &["oracle linux"];
 
-/// Folders and files left out: build output, dependencies, binaries, and
-/// this test itself.
+/// Folders left out when there is no git checkout to list the files:
+/// build output, dependencies, binaries.
 const SKIPPED_DIRS: &[&str] = &["target", "node_modules", ".git", "dist"];
 const TEXT: &[&str] = &[
     "md", "rs", "ts", "toml", "yml", "yaml", "sh", "py", "iss", "txt", "json", "service", "html",
     "css", "mjs", "js",
 ];
 
-fn files(dir: &Path, out: &mut Vec<PathBuf>) {
+/// Whether a file is one this test reads: text, not this test itself.
+fn checked(path: &Path) -> bool {
+    let name = path.file_name().unwrap().to_string_lossy();
+    if name == "names.rs" || name == "package-lock.json" {
+        return false;
+    }
+    path.extension()
+        .is_some_and(|ext| TEXT.contains(&ext.to_string_lossy().as_ref()))
+        || ["Dockerfile", "LICENSE-MIT", "install.sh"].contains(&name.as_ref())
+}
+
+/// Every file of the repository, as git knows them (committed or staged):
+/// what CI checks, without a developer's own untracked notes. Outside a
+/// git checkout (a source archive), every file under `root`.
+fn files(root: &Path) -> Vec<PathBuf> {
+    let listed = std::process::Command::new("git")
+        .args(["ls-files", "--cached", "-z"])
+        .current_dir(root)
+        .output()
+        .ok()
+        .filter(|output| output.status.success());
+    let mut out = Vec::new();
+    match listed {
+        Some(output) => {
+            for name in output.stdout.split(|byte| *byte == 0) {
+                if name.is_empty() {
+                    continue;
+                }
+                let path = root.join(String::from_utf8_lossy(name).as_ref());
+                if path.is_file() && checked(&path) {
+                    out.push(path);
+                }
+            }
+        }
+        None => walk(root, &mut out),
+    }
+    out
+}
+
+fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
     for entry in std::fs::read_dir(dir).unwrap() {
         let path = entry.unwrap().path();
         let name = path.file_name().unwrap().to_string_lossy().to_string();
         if path.is_dir() {
             if !SKIPPED_DIRS.contains(&name.as_str()) {
-                files(&path, out);
+                walk(&path, out);
             }
-        } else if name == "names.rs" || name == "package-lock.json" {
-            continue;
-        } else if path
-            .extension()
-            .is_some_and(|ext| TEXT.contains(&ext.to_string_lossy().as_ref()))
-            || ["Dockerfile", "LICENSE-MIT", "install.sh"].contains(&name.as_str())
-        {
+        } else if checked(&path) {
             out.push(path);
         }
     }
@@ -116,8 +149,7 @@ fn denied_in(text: &str) -> Vec<(usize, &'static str)> {
 #[test]
 fn documentation_and_sources_name_no_other_product() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let mut all = Vec::new();
-    files(&root, &mut all);
+    let all = files(&root);
     assert!(all.len() > 100, "found only {} files", all.len());
     let mut problems = Vec::new();
     for path in all {
