@@ -175,6 +175,14 @@ pub(crate) enum Clause {
     Create(Vec<Pattern>),
     /// `CREATE HYPEREDGE h:label {…} [(a) AS role, (b)]`, of bound nodes.
     CreateHyper(HyperPattern),
+    /// `MERGE HYPEREDGE h:label {…} [(a) AS role, (b)] ON CREATE SET …
+    /// ON MATCH SET …`: the hyperedges holding now with that label, those
+    /// properties and exactly those (node, role) pairs, or a new one.
+    MergeHyper {
+        pattern: HyperPattern,
+        on_create: Vec<SetItem>,
+        on_match: Vec<SetItem>,
+    },
     Merge {
         pattern: Pattern,
         on_create: Vec<SetItem>,
@@ -208,6 +216,7 @@ impl Clause {
             self,
             Clause::Create(_)
                 | Clause::CreateHyper(_)
+                | Clause::MergeHyper { .. }
                 | Clause::Merge { .. }
                 | Clause::Set(_)
                 | Clause::Remove(_)
@@ -230,6 +239,7 @@ impl Clause {
             Clause::Call(_) => "CALL",
             Clause::Create(_) => "CREATE",
             Clause::CreateHyper(_) => "CREATE HYPEREDGE",
+            Clause::MergeHyper { .. } => "MERGE HYPEREDGE",
             Clause::Merge { .. } => "MERGE",
             Clause::Set(_) => "SET",
             Clause::Remove(_) => "REMOVE",

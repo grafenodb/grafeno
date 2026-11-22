@@ -397,6 +397,17 @@ async fn namespaces_and_roles_apply() {
     )
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
+    // MERGE HYPEREDGE writes: a reader may not, a writer makes it once.
+    let merge = json!({ "query": "MATCH (x {name: 'one'}), (y {name: 'two'})
+        MERGE HYPEREDGE h:pair {key: 'k'} [(x), (y)] RETURN h.key" });
+    let (status, _) = call(&app, &reader, "POST", "/v1/a/query", Some(merge.clone())).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    for _ in 0..2 {
+        let (status, body) = call(&app, OWNER, "POST", "/v1/a/query", Some(merge.clone())).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+    }
+    let (_, pairs) = call(&app, OWNER, "GET", "/v1/a/hyperedges?label=pair", None).await;
+    assert_eq!(pairs["items"].as_array().unwrap().len(), 1, "{pairs}");
     let (_, about) = call(&app, OWNER, "GET", "/v1/about", None).await;
     assert!(about.to_string().contains("\"hyperedges\""), "{about}");
 }

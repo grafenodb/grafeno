@@ -247,10 +247,10 @@ dropping data silently where it can:
 
 ## Next stages
 
-1. **GQ, further.** Done: `MATCH HYPEREDGE` and the writes. Next, if
-   needed: hyperedges inside ordinary patterns and `EXISTS { … }`,
-   `MERGE HYPEREDGE`, statistics for the planner, and splitting across
-   cluster members.
+1. **GQ, further.** Done: `MATCH HYPEREDGE`, the writes and `MERGE
+   HYPEREDGE` (docs/query-language.md). Next, if needed: hyperedges inside
+   ordinary patterns and `EXISTS { … }`, statistics for the planner, and
+   splitting across cluster members.
 2. **CSV and GraphML**, if a tool needs them there.
 3. **The client SDK** (`@grafenodb/client`): methods for the routes.
 4. **Memory.** A hyperedge could be a unit of episodic memory: recall could

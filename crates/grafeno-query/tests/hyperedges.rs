@@ -1,6 +1,7 @@
 //! GQ on hyperedges: `MATCH HYPEREDGE` (anchors, roles, `EXACT`, `OPTIONAL`,
 //! time, properties, views), `CREATE HYPEREDGE`, `SET`, `REMOVE`, `DELETE`,
-//! `DETACH DELETE`, `RETRACT`, `participants()` and `EXPLAIN`.
+//! `DETACH DELETE`, `RETRACT`, `MERGE HYPEREDGE`, `participants()` and
+//! `EXPLAIN`.
 
 mod common;
 
@@ -495,4 +496,277 @@ fn subscriptions_follow_hyperedges() {
         events.changes[0].values.as_ref().unwrap().changed,
         vec!["status".to_owned()]
     );
+}
+
+const DECIDE: &str =
+    "MATCH (p:Agent {name: 'planner'}), (b:Agent {name: 'builder'}), (t:Task {name: 'T2'})
+     MERGE HYPEREDGE h:decision {key: 'D-1'} [(p) AS proposer, (b) AS implementer, (t) AS subject]
+     ON CREATE SET h.status = 'proposed'
+     ON MATCH SET h.seen = coalesce(h.seen, 0) + 1
+     RETURN h.status, h.seen";
+
+fn count_of(db: &Grafeno, label: &str) -> i64 {
+    let rows = rows(db, &format!("MATCH HYPEREDGE h:{label} RETURN count(h)"));
+    rows[0][0].as_i64().unwrap()
+}
+
+#[test]
+fn merge_creates_once_then_matches() {
+    let db = team();
+    let first = run(&db, DECIDE);
+    assert_eq!(first.stats.hyperedges_created, 1);
+    assert_eq!(first.to_json()["rows"], json!([["proposed", null]]));
+    let again = run(&db, DECIDE);
+    assert_eq!(again.stats.hyperedges_created, 0);
+    assert_eq!(again.to_json()["rows"], json!([["proposed", 1]]));
+
+    // The participants in another order, written another way: the same one.
+    let reordered = run(
+        &db,
+        "MATCH (t:Task {name: 'T2'}), (b:Agent {name: 'builder'}), (p:Agent {name: 'planner'})
+         MERGE HYPEREDGE h:decision {key: 'D-1'} [(t) AS subject, (b) AS implementer, (p) AS proposer]
+         ON MATCH SET h.seen = h.seen + 1
+         RETURN h.seen",
+    );
+    assert_eq!(reordered.stats.hyperedges_created, 0);
+    assert_eq!(reordered.to_json()["rows"], json!([[2]]));
+    // Two hyperedges of that label: team()'s and this one.
+    assert_eq!(count_of(&db, "decision"), 2);
+
+    // A node in two roles: the review of T2 (checker as author and
+    // reviewer), named in another order.
+    let review = run(
+        &db,
+        "MATCH (b:Agent {name: 'builder'}), (c:Agent {name: 'checker'}), (t:Task {name: 'T2'})
+         MERGE HYPEREDGE r:review [(t) AS subject, (c) AS reviewer, (b), (c) AS author]
+         RETURN count(r)",
+    );
+    assert_eq!(review.stats.hyperedges_created, 0);
+    assert_eq!(count_of(&db, "review"), 1);
+
+    // Within one statement, a later row finds what an earlier one made.
+    let twice = run(
+        &db,
+        "UNWIND [1, 2, 3] AS i
+         MATCH (p:Agent {name: 'planner'}), (c:Agent {name: 'checker'})
+         MERGE HYPEREDGE h:pairing {key: 'P'} [(p), (c)]
+         RETURN count(*)",
+    );
+    assert_eq!(twice.stats.hyperedges_created, 1);
+    assert_eq!(twice.to_json()["rows"], json!([[3]]));
+}
+
+#[test]
+fn merge_does_not_take_a_different_hyperedge_for_it() {
+    let db = team();
+    run(&db, DECIDE);
+    let created = |query: &str| run(&db, query).stats.hyperedges_created;
+    let bound = "MATCH (p:Agent {name: 'planner'}), (b:Agent {name: 'builder'}),
+                       (c:Agent {name: 'checker'}), (t:Task {name: 'T2'})";
+    // Another identity property: another event.
+    assert_eq!(
+        created(&format!(
+            "{bound} MERGE HYPEREDGE h:decision {{key: 'D-2'}} [(p) AS proposer, (b) AS implementer, (t) AS subject]"
+        )),
+        1
+    );
+    // Fewer participants, more, or another role: not the same either.
+    for members in [
+        "[(p) AS proposer, (b) AS implementer]",
+        "[(p) AS proposer, (b) AS implementer, (t) AS subject, (c) AS reviewer]",
+        "[(p) AS proposer, (b) AS reviewer, (t) AS subject]",
+        "[(p) AS proposer, (b), (t) AS subject]",
+    ] {
+        assert_eq!(
+            created(&format!(
+                "{bound} MERGE HYPEREDGE h:decision {{key: 'D-1'}} {members}"
+            )),
+            1,
+            "{members}"
+        );
+    }
+    // Another label.
+    assert_eq!(
+        created(&format!(
+            "{bound} MERGE HYPEREDGE h:choice {{key: 'D-1'}} [(p) AS proposer, (b) AS implementer, (t) AS subject]"
+        )),
+        1
+    );
+    // A property left out of the pattern does not matter.
+    let loose = run(
+        &db,
+        &format!(
+            "{bound} MERGE HYPEREDGE h:decision [(p) AS proposer, (b) AS implementer, (t) AS subject] RETURN h.key"
+        ),
+    );
+    // Without the identity property both decisions match, and each is a row.
+    assert_eq!(loose.stats.hyperedges_created, 0);
+    assert_eq!(loose.to_json()["rows"], json!([["D-1"], ["D-2"]]));
+}
+
+#[test]
+fn merge_counts_only_what_holds_now() {
+    let db = team();
+    run(&db, DECIDE);
+    run(&db, "MATCH HYPEREDGE h:decision {key: 'D-1'} RETRACT h");
+    let after_retract = run(&db, DECIDE);
+    assert_eq!(after_retract.stats.hyperedges_created, 1);
+    // An invalidated one does not count either.
+    db.write(|tx| {
+        let id = tx
+            .hyperedge_ids_with_label(NS, "decision", None, 100)?
+            .into_iter()
+            .rev()
+            .find(|id| {
+                tx.hyperedge(NS, *id)
+                    .unwrap()
+                    .is_some_and(|edge| !edge.is_retracted() && edge.props.contains_key("key"))
+            })
+            .expect("the merged one");
+        tx.invalidate_hyperedge(NS, id, Timestamp::now())
+    })
+    .unwrap();
+    let after_invalidate = run(&db, DECIDE);
+    assert_eq!(after_invalidate.stats.hyperedges_created, 1);
+}
+
+#[test]
+fn merge_updates_every_match_in_id_order() {
+    let db = team();
+    for _ in 0..2 {
+        run(
+            &db,
+            "MATCH (p:Agent {name: 'planner'}), (c:Agent {name: 'checker'})
+             CREATE HYPEREDGE :meeting {room: 'A'} [(p), (c)]",
+        );
+    }
+    let merged = run(
+        &db,
+        "MATCH (p:Agent {name: 'planner'}), (c:Agent {name: 'checker'})
+         MERGE HYPEREDGE h:meeting {room: 'A'} [(c), (p)]
+         ON MATCH SET h.checked = true
+         RETURN h.@id",
+    );
+    assert_eq!(merged.stats.hyperedges_created, 0);
+    let ids: Vec<String> = merged.to_json()["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| row[0].as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(ids.len(), 2);
+    assert!(ids[0] < ids[1], "{ids:?}");
+    assert_eq!(
+        rows(
+            &db,
+            "MATCH HYPEREDGE h:meeting WHERE h.checked RETURN count(h)"
+        ),
+        json!([[2]])
+    );
+}
+
+#[test]
+fn merge_syntax_and_errors() {
+    let db = team();
+    let bound = "MATCH (p:Agent {name: 'planner'}), (c:Agent {name: 'checker'})";
+    for (query, expected) in [
+        (
+            format!("{bound} MERGE HYPEREDGE h [(p), (c)]"),
+            "needs one label",
+        ),
+        (
+            format!("{bound} MERGE HYPEREDGE h:a|b [(p), (c)]"),
+            "needs one label",
+        ),
+        (
+            format!("{bound} MERGE HYPEREDGE h:x [(p), (c)] EXACT"),
+            "leave out EXACT",
+        ),
+        (
+            format!("{bound} MERGE HYPEREDGE h:x [(p:Agent), (c)]"),
+            "already bound",
+        ),
+        (
+            format!("{bound} MERGE HYPEREDGE h:x {{@id: 'x'}} [(p), (c)]"),
+            "not pseudo-properties",
+        ),
+        (
+            format!("{bound} MERGE HYPEREDGE h:x {{k: null}} [(p), (c)]"),
+            "null `k`",
+        ),
+        (
+            "MATCH (p:Agent {name: 'planner'}) MERGE HYPEREDGE h:x [(p), (q)]".to_owned(),
+            "`q` is not bound",
+        ),
+        (
+            format!("{bound} MERGE HYPEREDGE h:x [(p), (p)]"),
+            "takes part twice",
+        ),
+        (
+            format!("{bound} MATCH HYPEREDGE h:decision MERGE HYPEREDGE h:x [(p), (c)]"),
+            "already bound",
+        ),
+    ] {
+        let message = fails(&db, &query);
+        assert!(message.contains(expected), "{query}\n→ {message}");
+    }
+    let plan = run(
+        &db,
+        &format!("EXPLAIN {bound} MERGE HYPEREDGE h:x [(p), (c)]"),
+    );
+    assert!(
+        plan.to_json()
+            .to_string()
+            .contains("match or create a hyperedge :x"),
+        "{}",
+        plan.to_json()
+    );
+}
+
+#[test]
+fn concurrent_merges_make_one_hyperedge() {
+    let db = Arc::new(team());
+    let threads: Vec<_> = (0..8)
+        .map(|_| {
+            let db = db.clone();
+            std::thread::spawn(move || {
+                for _ in 0..5 {
+                    execute(&db, NS, DECIDE, &Params::new()).unwrap();
+                }
+            })
+        })
+        .collect();
+    for thread in threads {
+        thread.join().unwrap();
+    }
+    assert_eq!(
+        rows(
+            &db,
+            "MATCH HYPEREDGE h:decision {key: 'D-1'} RETURN count(h), h.seen"
+        ),
+        json!([[1, 39]])
+    );
+}
+
+#[test]
+fn merges_reach_replicas_once() {
+    let leader = Grafeno::in_memory().unwrap();
+    leader.enable_replication_log().unwrap();
+    let start = leader.begin_read().unwrap().log_position().unwrap().last;
+    run(
+        &leader,
+        "CREATE (:Agent {name: 'planner'}), (:Agent {name: 'builder'}), (:Task {name: 'T2'})",
+    );
+    run(&leader, DECIDE);
+    run(&leader, DECIDE);
+    let entries = leader
+        .begin_read()
+        .unwrap()
+        .log_entries(start, usize::MAX)
+        .unwrap();
+    let member = Grafeno::in_memory().unwrap();
+    member.apply_entries(&entries).unwrap();
+    let query = "MATCH HYPEREDGE h:decision RETURN count(h), h.status, h.seen";
+    assert_eq!(rows(&member, query), json!([[1, "proposed", 1]]));
+    assert_eq!(rows(&member, query), rows(&leader, query));
 }

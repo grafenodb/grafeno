@@ -1528,6 +1528,46 @@ impl<'a> Runner<'a> {
                 }
                 flow.bind(pattern.variables());
             }
+            Clause::MergeHyper {
+                pattern,
+                on_create,
+                on_match,
+            } => {
+                let mut out = Vec::new();
+                for row in flow.rows {
+                    let new = self.new_hyperedge(&row, pattern, "MERGE")?;
+                    // Read through this write transaction: what an earlier
+                    // row created counts, and no other writer comes between
+                    // the lookup and the write.
+                    let found = {
+                        let edges = EdgeFilter::any().valid_at(Timestamp::now());
+                        let ctx = self.ctx(&edges);
+                        crate::hyper::merge_matches(&ctx, &new, pattern, &row)?
+                    };
+                    if found.is_empty() {
+                        let mut row = row;
+                        self.insert_hyperedge(&mut row, pattern, new)?;
+                        for item in on_create {
+                            self.set(&mut row, item)?;
+                        }
+                        out.push(row);
+                    } else {
+                        for edge in found {
+                            let mut row = row.clone();
+                            if let Some(var) = &pattern.var {
+                                row.insert(var.clone(), Value::HyperEdge(Arc::new(edge)));
+                            }
+                            for item in on_match {
+                                self.set(&mut row, item)?;
+                            }
+                            out.push(row);
+                        }
+                    }
+                    self.budget.rows(out.len())?;
+                }
+                flow.rows = out;
+                flow.bind(pattern.variables());
+            }
             Clause::Unwind { list, var } => {
                 let edges = self.time.clone();
                 let ctx = self.ctx(&edges);
@@ -2653,18 +2693,20 @@ fn target_of(row: &Row, var: &str) -> Result<Option<Target>, QueryError> {
 }
 
 impl Runner<'_> {
-    /// `CREATE HYPEREDGE`: its members are nodes the row binds.
-    fn create_hyperedge(
+    /// The hyperedge `CREATE HYPEREDGE` or `MERGE HYPEREDGE` (`verb`) names:
+    /// its members are nodes the row binds. A MERGE matches on its
+    /// properties, so none of them may be null.
+    fn new_hyperedge(
         &mut self,
-        row: &mut Row,
+        row: &Row,
         pattern: &HyperPattern,
-    ) -> Result<(), QueryError> {
-        let ns = self.ns;
+        verb: &str,
+    ) -> Result<grafeno::NewHyperEdge, QueryError> {
         if let Some(var) = &pattern.var
             && row.contains_key(var)
         {
             return Err(QueryError::runtime(format!(
-                "`{var}` is already bound: CREATE HYPEREDGE makes a new one"
+                "`{var}` is already bound: {verb} HYPEREDGE binds a hyperedge of its own"
             )));
         }
         let mut new = grafeno::NewHyperEdge::new(pattern.labels[0].clone());
@@ -2680,7 +2722,7 @@ impl Runner<'_> {
                 }
                 None => {
                     return Err(QueryError::runtime(format!(
-                        "`{var}` is not bound: CREATE HYPEREDGE takes nodes matched or created before it"
+                        "`{var}` is not bound: {verb} HYPEREDGE takes nodes matched or created before it"
                     )));
                 }
             };
@@ -2692,10 +2734,37 @@ impl Runner<'_> {
         let mut props = Vec::new();
         for (key, expr) in &pattern.props {
             if let Key::Prop(name) = key {
-                props.push((name.clone(), self.eval(row, expr)?));
+                let value = self.eval(row, expr)?;
+                if verb == "MERGE" && value == Value::Null {
+                    return Err(QueryError::runtime(format!(
+                        "MERGE HYPEREDGE cannot match on a null `{name}`"
+                    )));
+                }
+                props.push((name.clone(), value));
             }
         }
         new.props = to_props(props)?;
+        Ok(new)
+    }
+
+    /// `CREATE HYPEREDGE`: its members are nodes the row binds.
+    fn create_hyperedge(
+        &mut self,
+        row: &mut Row,
+        pattern: &HyperPattern,
+    ) -> Result<(), QueryError> {
+        let new = self.new_hyperedge(row, pattern, "CREATE")?;
+        self.insert_hyperedge(row, pattern, new)
+    }
+
+    /// Writes `new` and binds it to the pattern's variable.
+    fn insert_hyperedge(
+        &mut self,
+        row: &mut Row,
+        pattern: &HyperPattern,
+        new: grafeno::NewHyperEdge,
+    ) -> Result<(), QueryError> {
+        let ns = self.ns;
         self.stats.properties_set += new.props.len() as u64;
         let id = self.tx().create_hyperedge(ns, new)?;
         self.stats.hyperedges_created += 1;
@@ -3514,7 +3583,9 @@ fn clause_variables(clause: &Clause) -> Vec<String> {
         Clause::Merge { pattern, .. } => {
             pattern.variables().into_iter().map(str::to_owned).collect()
         }
-        Clause::MatchHyper { pattern, .. } | Clause::CreateHyper(pattern) => {
+        Clause::MatchHyper { pattern, .. }
+        | Clause::CreateHyper(pattern)
+        | Clause::MergeHyper { pattern, .. } => {
             pattern.variables().into_iter().map(str::to_owned).collect()
         }
         Clause::Unwind { var, .. } => vec![var.clone()],
@@ -3714,6 +3785,17 @@ fn describe(
             "a hyperedge :{} of {} bound node(s)",
             pattern.labels.join(""),
             pattern.members.len()
+        ),
+        Clause::MergeHyper {
+            pattern,
+            on_create,
+            on_match,
+        } => format!(
+            "match or create a hyperedge :{} of exactly {} bound node(s) (incidence index); {} ON CREATE, {} ON MATCH item(s)",
+            pattern.labels.join(""),
+            pattern.members.len(),
+            on_create.len(),
+            on_match.len()
         ),
         Clause::Unwind { var, .. } => format!("one row per item, as {var}"),
         Clause::With(projection) | Clause::Return(projection) => projection_text(projection),

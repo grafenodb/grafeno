@@ -53,6 +53,11 @@ yet.
   pseudo-properties of a hyperedge. Write statistics count hyperedges.
   The engine also reads hyperedge ids by node, label and page
   (`hyperedge_ids_of`, `hyperedge_ids_with_label`, `hyperedge_ids`).
+- **Added**: GQ `MERGE HYPEREDGE h:label {…} [(a) AS role, (b)] [ON CREATE
+  SET …] [ON MATCH SET …]`: the hyperedges holding now with that label,
+  those properties and exactly those (node, role) pairs in any order, or a
+  new one, looked up and written in the statement's write transaction, so
+  concurrent merges make one.
 - **Changed**: GQ `DETACH DELETE` takes a node out of its hyperedges
   (deleting those left with one node); `DELETE` of a node in a hyperedge
   fails. Query values have a new variant, `Value::HyperEdge`.

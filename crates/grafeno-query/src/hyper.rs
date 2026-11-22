@@ -415,3 +415,52 @@ fn search<'n>(
         chosen.pop();
     }
 }
+
+/// The hyperedges `MERGE HYPEREDGE` takes as the one it names, in id
+/// order: visible to the caller, holding now (neither invalidated nor
+/// retracted), with its label, exactly its (node, role) pairs in any order,
+/// and the properties of its pattern (others may differ).
+pub(crate) fn merge_matches(
+    ctx: &Context,
+    new: &grafeno::NewHyperEdge,
+    pattern: &HyperPattern,
+    row: &Row,
+) -> Result<Vec<HyperEdge>, QueryError> {
+    let mut wanted = new.participants.clone();
+    wanted.sort();
+    let mut nodes: Vec<NodeId> = wanted.iter().map(|p| p.node).collect();
+    nodes.dedup();
+    // Every participant's incidence list holds the match: intersect them.
+    let mut common: Option<BTreeSet<HyperEdgeId>> = None;
+    for node in nodes {
+        let ids: BTreeSet<HyperEdgeId> = ctx
+            .hyperedge_ids_of(node, Some(&new.label))?
+            .into_iter()
+            .collect();
+        common = Some(match common {
+            None => ids,
+            Some(before) => before.intersection(&ids).copied().collect(),
+        });
+        if common.as_ref().is_some_and(BTreeSet::is_empty) {
+            break;
+        }
+    }
+    let now = grafeno::Timestamp::now();
+    let holds = HyperEdgeFilter::any().valid_at(now).known_at(now);
+    let props: Vec<(Key, crate::ast::Expr)> = pattern.props.clone();
+    let mut out = Vec::new();
+    for id in common.unwrap_or_default() {
+        let Some(edge) = ctx.hyperedge(id)? else {
+            continue;
+        };
+        if edge.label != new.label || !holds.accepts(&edge) || edge.participants != wanted {
+            continue;
+        }
+        let edge = Arc::new(edge);
+        if !props_fit(ctx, &Value::HyperEdge(edge.clone()), &props, row)? {
+            continue;
+        }
+        out.push(Arc::unwrap_or_clone(edge));
+    }
+    Ok(out)
+}

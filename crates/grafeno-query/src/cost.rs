@@ -208,6 +208,20 @@ impl<'i> Model<'i> {
                     self.bound.insert(var.to_owned());
                 }
             }
+            Clause::MergeHyper {
+                pattern,
+                on_create,
+                on_match,
+            } => {
+                // One incidence list per participant, then the write or
+                // the updates.
+                let members = pattern.members.len() as f64;
+                let sets = (on_create.len() + on_match.len()) as f64;
+                self.add(self.rows * (1.0 + 2.0 * members + sets));
+                for var in pattern.variables() {
+                    self.bound.insert(var.to_owned());
+                }
+            }
             Clause::Subquery(query) => {
                 let mut inner = Model::new(self.info, self.value_of);
                 inner.bound = self.bound.clone();

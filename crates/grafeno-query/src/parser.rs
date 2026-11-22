@@ -1240,27 +1240,23 @@ impl Parser<'_> {
         }
         if self.at_keyword("CREATE") && self.hyperedge_at(1) {
             self.position += 2;
-            let pattern = self.hyper_pattern(false)?;
-            if pattern.labels.len() != 1 {
-                return Err(self.error(
-                    "CREATE HYPEREDGE needs one label: CREATE HYPEREDGE h:decision [(a), (b)]",
-                ));
-            }
-            if !pattern
-                .props
-                .iter()
-                .all(|(key, _)| matches!(key, Key::Prop(_)))
-            {
-                return Err(self.error("CREATE HYPEREDGE sets properties, not pseudo-properties"));
-            }
-            if pattern.members.iter().any(|m| {
-                m.node.var.is_none() || !m.node.labels.is_empty() || !m.node.props.is_empty()
-            }) {
-                return Err(self.error(
-                    "CREATE HYPEREDGE takes nodes already bound, by their variables alone: [(a) AS role, (b)]",
-                ));
-            }
+            let pattern = self.hyper_write_pattern("CREATE")?;
             return Ok(Clause::CreateHyper(pattern));
+        }
+        if self.at_keyword("MERGE") && self.hyperedge_at(1) {
+            self.position += 2;
+            let pattern = self.hyper_write_pattern("MERGE")?;
+            if self.at_keyword("EXACT") {
+                return Err(self.error(
+                    "MERGE HYPEREDGE always matches exactly the participants it names; leave out EXACT",
+                ));
+            }
+            let (on_create, on_match) = self.merge_actions()?;
+            return Ok(Clause::MergeHyper {
+                pattern,
+                on_create,
+                on_match,
+            });
         }
         if self.eat_keyword("CREATE") {
             let patterns = self.patterns()?;
@@ -1277,18 +1273,7 @@ impl Parser<'_> {
             if pattern.path.is_some() || pattern.shortest.is_some() {
                 return Err(self.error("path variables and shortestPath are for MATCH, not MERGE"));
             }
-            let (mut on_create, mut on_match) = (Vec::new(), Vec::new());
-            while self.eat_keyword("ON") {
-                let target = if self.eat_keyword("CREATE") {
-                    &mut on_create
-                } else if self.eat_keyword("MATCH") {
-                    &mut on_match
-                } else {
-                    return Err(self.unexpected("`CREATE` or `MATCH` after `ON`"));
-                };
-                self.expect_keyword("SET")?;
-                target.extend(self.set_items()?);
-            }
+            let (on_create, on_match) = self.merge_actions()?;
             return Ok(Clause::Merge {
                 pattern,
                 on_create,
@@ -1656,6 +1641,53 @@ impl Parser<'_> {
 
     /// After `HYPEREDGE`: `h:a|b {…} [(x) AS role, (y)]`, and `EXACT` when
     /// `matching`.
+    /// `ON CREATE SET …` and `ON MATCH SET …` after a MERGE, in any order.
+    fn merge_actions(&mut self) -> Result<(Vec<SetItem>, Vec<SetItem>), QueryError> {
+        let (mut on_create, mut on_match) = (Vec::new(), Vec::new());
+        while self.eat_keyword("ON") {
+            let target = if self.eat_keyword("CREATE") {
+                &mut on_create
+            } else if self.eat_keyword("MATCH") {
+                &mut on_match
+            } else {
+                return Err(self.unexpected("`CREATE` or `MATCH` after `ON`"));
+            };
+            self.expect_keyword("SET")?;
+            target.extend(self.set_items()?);
+        }
+        Ok((on_create, on_match))
+    }
+
+    /// The hyperedge of `CREATE HYPEREDGE` or `MERGE HYPEREDGE` (`verb`):
+    /// one label, plain properties, and bound nodes by their variables.
+    fn hyper_write_pattern(&mut self, verb: &str) -> Result<HyperPattern, QueryError> {
+        let pattern = self.hyper_pattern(false)?;
+        if pattern.labels.len() != 1 {
+            return Err(self.error(format!(
+                "{verb} HYPEREDGE needs one label: {verb} HYPEREDGE h:decision [(a), (b)]"
+            )));
+        }
+        if !pattern
+            .props
+            .iter()
+            .all(|(key, _)| matches!(key, Key::Prop(_)))
+        {
+            return Err(self.error(format!(
+                "{verb} HYPEREDGE takes properties, not pseudo-properties"
+            )));
+        }
+        if pattern
+            .members
+            .iter()
+            .any(|m| m.node.var.is_none() || !m.node.labels.is_empty() || !m.node.props.is_empty())
+        {
+            return Err(self.error(format!(
+                "{verb} HYPEREDGE takes nodes already bound, by their variables alone: [(a) AS role, (b)]"
+            )));
+        }
+        Ok(pattern)
+    }
+
     fn hyper_pattern(&mut self, matching: bool) -> Result<HyperPattern, QueryError> {
         const CLAUSE_WORDS: [&str; 6] = ["EXACT", "WHERE", "RETURN", "VALID", "KNOWN", "WITH"];
         let var = match self.peek().clone() {

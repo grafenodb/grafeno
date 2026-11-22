@@ -654,6 +654,45 @@ MATCH HYPEREDGE h:decision DELETE h;
 - Write statistics count `hyperedges_created`, `hyperedges_deleted` and
   `hyperedges_retracted`.
 
+### `MERGE HYPEREDGE`
+
+```text
+MATCH (a:Agent {name: 'planner'}), (b:Agent {name: 'builder'}), (t:Task {key: 'T-1'})
+MERGE HYPEREDGE h:decision {event_key: 'D-1'}
+      [(a) AS proposer, (b) AS implementer, (t) AS subject]
+ON CREATE SET h.status = 'proposed'
+ON MATCH SET h.last_seen = datetime()
+RETURN h;
+```
+
+It finds the hyperedges that are the one it names, or creates it:
+
+- **Identity**: the label (one), the properties written in the pattern
+  (equal, as in `MATCH`; others may differ), and exactly the (node, role)
+  pairs of its participants, in any order. A node named twice with two
+  roles is two pairs. A hyperedge with one participant more or less, or a
+  role changed, is another one: being among the same people is not being
+  the same event, so give events an identity property (`event_key`
+  above) when two of them can share participants.
+- **Time**: only hyperedges that hold now count, as for `MERGE` of an
+  edge: an invalidated or retracted one is history, and MERGE creates a
+  new one beside it.
+- **Several matches**: each is a row, in id order, and `ON MATCH SET`
+  changes each, as `MERGE` does with nodes. Nothing stops a `CREATE
+  HYPEREDGE` from making a second one with the same identity; MERGE itself
+  never does.
+- **Transactions**: the lookup reads through the statement's write
+  transaction, and writes are serialized, so no other write comes between
+  the lookup and the creation: concurrent MERGEs of the same hyperedge
+  make one. Within a statement, a later row finds what an earlier one made.
+- **Rules**: the participants are nodes already bound, by their variables
+  alone; properties of the pattern may not be `null`; `EXACT` is not
+  written (it always is exact); the hyperedge's variable must not be bound
+  yet.
+- **Views**: it sees what the caller sees. A hyperedge hidden from the
+  caller does not match, so MERGE tries to create one, which the caller's
+  rights then allow or refuse.
+
 ### Functions and pseudo-properties
 
 | | |
@@ -669,7 +708,7 @@ properties and times.
 
 ### Not yet
 
-Hyperedges are not part of ordinary patterns (`(a)-[…]-(b)`), `MERGE`,
+Hyperedges are not part of ordinary patterns (`(a)-[…]-(b)`),
 `EXISTS { … }`, `COUNT { … }` or graph algorithms, and a statement with
 `MATCH HYPEREDGE` is not split across cluster members. In a cluster,
 writing them needs every member to run a version that knows them.
