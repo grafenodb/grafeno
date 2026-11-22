@@ -9,17 +9,30 @@ the release workflow refuses a tag whose version has no section.
 What the engine speaks to clients is versioned apart from it: the HTTP
 API version (`GET /v1/about`, now 1) changes only when a change would
 break a client of the previous one, and the database files' layout
-version (now 19) is upgraded in place, with a copy kept first.
+version (now 19 for a file that holds hyperedges, 18 otherwise) is
+upgraded in place, with a copy kept first.
 
-## Unreleased
+## 0.5.0 (2026-11-22)
 
-Hyperedges, first stage: facts that relate two or more nodes at once, each
-in a role, stored as records of their own with an incidence index, in the
-Rust API of the `grafeno` crate (docs/hyperedges.md), in GQ, and in the
-replication log, so clusters and replicas hold them, and in HTTP routes
-and MCP tools of their own; the change log and event subscriptions
-follow them, and JSON lines exports carry them. Recall does not know them:
-an experiment found event nodes answer as well (docs/benchmarks.md).
+Hyperedges: facts that relate two or more nodes at once, each in a role,
+stored as records of their own with an incidence index
+(docs/hyperedges.md). GQ reads and writes them (`MATCH`, `CREATE` and
+`MERGE HYPEREDGE`), with property indexes, constraints and property
+history; HTTP routes, batches, MCP tools, the change log, event
+subscriptions, merges, JSON lines, CSV and GraphML carry them; the
+replication log takes them to clusters and replicas, and queries over
+them split across members. Recall and context do not return them: an
+experiment found event nodes answer as well (docs/benchmarks.md). A
+memory another supersedes now reads as replaced wherever it is read.
+
+Compatibility: a file stays layout 18, which 0.4 opens, until it holds
+its first hyperedge (or an index or rule on them), and is layout 19
+from then on, which 0.4 refuses. The HTTP API version stays 1: answers
+gain optional fields, left out when they do not apply. In a cluster,
+hyperedge writes wait until every member runs 0.5, and everything else
+goes on meanwhile (docs/cluster-runbooks.md). The Rust API adds types,
+methods and an `Error` variant, and the `Constraint` variants a
+`hyperedges` field.
 
 - **Fixed**: a memory a newer one `supersedes` read as current. A
   context (`context`, `palace_enter`, walks with a budget) now says
