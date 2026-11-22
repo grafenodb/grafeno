@@ -67,8 +67,8 @@ pub use constraints::{
     Action, Constraint, ConstraintEvent, HistoryEntry, OnConflict, PropertyType, Scope,
 };
 pub use db::{
-    Actor, DEFAULT_CACHE, Durability, FileIntegrity, Grafeno, OpenOptions, ReadTx, SCHEMA_VERSION,
-    WriteTx, upgrade_copies, upgrade_copy_path,
+    Actor, BASE_LAYOUT, DEFAULT_CACHE, Durability, FileIntegrity, Grafeno, OpenOptions, ReadTx,
+    SCHEMA_VERSION, WriteTx, upgrade_copies, upgrade_copy_path,
 };
 pub use dump::{DumpStats, EXPORT_FORMAT, EXPORT_VERSION, ImportOptions, Record};
 pub use fulltext::{

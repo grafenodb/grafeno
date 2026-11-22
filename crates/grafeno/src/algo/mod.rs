@@ -564,6 +564,9 @@ pub(crate) struct Shared {
     pub(crate) audit_retention: crate::audit::Retention,
     /// How many participants a hyperedge may have.
     pub(crate) max_participants: std::sync::atomic::AtomicUsize,
+    /// Whether the file's committed layout is 19 (it holds hyperedges, or
+    /// was told to): known once, so writes stop checking.
+    pub(crate) hyperedge_layout: std::sync::atomic::AtomicBool,
 }
 
 impl Default for Shared {
@@ -579,6 +582,7 @@ impl Default for Shared {
             max_participants: std::sync::atomic::AtomicUsize::new(
                 crate::hyperedge::DEFAULT_MAX_PARTICIPANTS,
             ),
+            hyperedge_layout: std::sync::atomic::AtomicBool::new(false),
         }
     }
 }

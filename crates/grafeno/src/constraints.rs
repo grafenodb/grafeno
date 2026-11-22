@@ -496,6 +496,9 @@ impl WriteTx {
                 )));
             }
         }
+        if constraint.kind() == RecordKind::HyperEdge {
+            self.hyperedge_layout()?;
+        }
         self.tx
             .open_table(CONSTRAINTS)
             .map_err(storage)?

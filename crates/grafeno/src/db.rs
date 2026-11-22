@@ -63,17 +63,25 @@ use crate::{Hit, text, vector};
 /// 18. Allows indexes on several properties, on edges and over several
 ///     labels (16.5) and full-text indexes (16.6), whose entries an older
 ///     Grafeno would read as values, and adds `fulltext_stats`.
-/// 19. Adds hyperedges (`hyperedges`, `hyperedge_incidence`,
-///     `hyperedge_labels`), empty until one is created. An older Grafeno
-///     would delete a node without its hyperedges and leave them naming it.
+/// 19. Hyperedges (`hyperedges`, `hyperedge_incidence`,
+///     `hyperedge_labels`). An older Grafeno would delete a node without
+///     its hyperedges and leave them naming it. The tables are created in
+///     every file, empty, but a file is marked 19 only by the transaction
+///     that writes its first hyperedge or declares an index or a rule on
+///     them; until then it stays 18 ([`BASE_LAYOUT`]), which Grafeno 0.4
+///     opens. It does not go back to 18 when they are deleted.
 pub const SCHEMA_VERSION: u64 = 19;
+
+/// The layout of a file that has never held hyperedges: new files and
+/// upgraded ones get this one, and Grafeno 0.4 reads it.
+pub const BASE_LAYOUT: u64 = 18;
 
 /// The tables replaced in version 3, by name (their types no longer matter).
 const OLD_ADJ_OUT: TableDefinition<AdjKey, u128> = TableDefinition::new("adj_out");
 const OLD_ADJ_IN: TableDefinition<AdjKey, u128> = TableDefinition::new("adj_in");
 const OLD_POSTINGS: TableDefinition<PostingKey, u32> = TableDefinition::new("postings");
 
-const SCHEMA_KEY: &str = "schema_version";
+pub(crate) const SCHEMA_KEY: &str = "schema_version";
 
 /// How much memory a database may use for caches. Everything else a
 /// process holds is per request: rows of a query, a projection being
@@ -250,7 +258,9 @@ impl Grafeno {
         let Some(version) = Self::file_layout(path)? else {
             return Ok(None);
         };
-        if version >= SCHEMA_VERSION {
+        // A file of layout 18 is not upgraded on opening (only by its first
+        // hyperedge, which 0.4 cannot read anyway).
+        if version >= BASE_LAYOUT {
             return Ok(None);
         }
         let copy = upgrade_copy_path(path, version);
@@ -266,7 +276,7 @@ impl Grafeno {
         if let Err(error) = result {
             let _ = std::fs::remove_file(&partial);
             return Err(Error::Storage(format!(
-                "{} has layout version {version} and this Grafeno writes {SCHEMA_VERSION}; \
+                "{} has layout version {version} and this Grafeno writes {BASE_LAYOUT}; \
                  it keeps a copy at {} before upgrading it, and could not ({error}). \
                  Free some disk space (the copy is as large as the file), or turn the copy off",
                 path.display(),
@@ -398,7 +408,7 @@ impl Grafeno {
             {
                 1
             }
-            None => SCHEMA_VERSION,
+            None => BASE_LAYOUT,
         };
         if version > SCHEMA_VERSION {
             return Err(Error::Invalid(format!(
@@ -424,9 +434,11 @@ impl Grafeno {
         if version < 15 {
             crate::access::upgrade_principals(&tx)?;
         }
+        // Upgraded to 18 at least; a file already at 19 stays there.
+        let layout = version.max(BASE_LAYOUT);
         tx.open_table(META)
             .map_err(storage)?
-            .insert(SCHEMA_KEY, SCHEMA_VERSION)
+            .insert(SCHEMA_KEY, layout)
             .map_err(storage)?;
         let replication = tx
             .open_table(META)
@@ -437,6 +449,9 @@ impl Grafeno {
         tx.commit().map_err(storage)?;
         let shared: Arc<Shared> = Arc::default();
         shared.replication.store(replication, Ordering::Relaxed);
+        shared
+            .hyperedge_layout
+            .store(layout >= SCHEMA_VERSION, Ordering::Relaxed);
         Ok(Self {
             db: Arc::new(db),
             eventual: AtomicBool::new(false),
@@ -540,6 +555,7 @@ impl Grafeno {
             constraint_cache: None,
             constraint_log: Vec::new(),
             deferred_rules: None,
+            marked_hyperedge_layout: false,
             subscription_cache: None,
             log_changes: self.shared.changes.retention().enabled,
             pending_changes: crate::changes::Pending::default(),
@@ -583,9 +599,10 @@ impl Grafeno {
             .get(SCHEMA_KEY)
             .map_err(storage)?
             .map_or(0, |guard| guard.value());
-        if version != SCHEMA_VERSION {
+        // 18 until a file holds hyperedges, 19 after: both this layout.
+        if !(BASE_LAYOUT..=SCHEMA_VERSION).contains(&version) {
             return Err(Error::Invalid(format!(
-                "the backup has layout version {version}, this Grafeno {SCHEMA_VERSION}"
+                "the backup has layout version {version}, this Grafeno {BASE_LAYOUT} or {SCHEMA_VERSION}"
             )));
         }
         let tx = self.db.begin_write().map_err(storage)?;
@@ -600,6 +617,10 @@ impl Grafeno {
         self.shared
             .replication
             .store(replication, Ordering::Relaxed);
+        // The data, and so the layout, are the backup's now.
+        self.shared
+            .hyperedge_layout
+            .store(version >= SCHEMA_VERSION, Ordering::Relaxed);
         Ok(entries)
     }
 
@@ -1468,6 +1489,9 @@ pub struct WriteTx {
     /// Records whose property rules (16.5) are checked at
     /// [`WriteTx::check_deferred`] instead of at each write, when on.
     pub(crate) deferred_rules: Option<Vec<(String, crate::index::RecordKind, u128)>>,
+    /// This transaction marked the file layout 19: it is not known to the
+    /// others until it commits.
+    pub(crate) marked_hyperedge_layout: bool,
     /// The event subscriptions of a namespace, read once (16.10).
     pub(crate) subscription_cache: Option<(String, Arc<Vec<crate::subscriptions::Subscription>>)>,
     /// Whether commits append to the change log.
@@ -2442,7 +2466,7 @@ mod tests {
                     .unwrap()
                     .unwrap()
                     .value(),
-                SCHEMA_VERSION
+                BASE_LAYOUT
             );
         }
         std::fs::remove_file(&path).unwrap();

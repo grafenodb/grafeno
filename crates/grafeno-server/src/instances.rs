@@ -674,21 +674,26 @@ pub fn doctor(instance: &Instance) -> Vec<Finding> {
             }
         }
         None if db.exists() => match Grafeno::file_layout(&db) {
-            Ok(Some(version)) if version == grafeno::SCHEMA_VERSION => found.push(finding(
-                Verdict::Ok,
-                format!(
-                    "database {} (layout {version}, {})",
-                    db.display(),
-                    bytes(size)
-                ),
-            )),
-            Ok(Some(version)) if version < grafeno::SCHEMA_VERSION => found.push(finding(
+            // 18 until the file holds hyperedges, 19 after: both current.
+            Ok(Some(version))
+                if (grafeno::BASE_LAYOUT..=grafeno::SCHEMA_VERSION).contains(&version) =>
+            {
+                found.push(finding(
+                    Verdict::Ok,
+                    format!(
+                        "database {} (layout {version}, {})",
+                        db.display(),
+                        bytes(size)
+                    ),
+                ))
+            }
+            Ok(Some(version)) if version < grafeno::BASE_LAYOUT => found.push(finding(
                 Verdict::Note,
                 format!(
                     "database {} has layout {version}: the next start upgrades it to {}, \
                      keeping a copy first",
                     db.display(),
-                    grafeno::SCHEMA_VERSION
+                    grafeno::BASE_LAYOUT
                 ),
             )),
             Ok(Some(version)) => found.push(finding(

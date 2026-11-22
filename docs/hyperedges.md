@@ -75,7 +75,8 @@ The engine keeps these on every write, and `ReadTx::check` verifies them:
 
 ## Storage
 
-Three redb tables, added by layout 19:
+Three redb tables, in every file; a file is marked layout 19 once it
+holds a hyperedge (see Compatibility):
 
 | Table | Key | Value |
 | --- | --- | --- |
@@ -215,15 +216,26 @@ their nodes exist. `MergeReport` counts `hyperedges_moved` and
 
 ## Compatibility
 
-- **Layout 19.** Opening a file of layout 18 or before creates the three
-  tables, empty, and records layout 19; nothing else is rewritten. As with
-  every layout change, the file as it was is copied first to
-  `<name>.layout-<old>.redb` beside it (unless `copy_before_upgrade` is off).
-  The upgrade test opens files written by every layout from 1 to 18.
+- **Layout 19, only once used.** Every file gets the three tables,
+  empty, but stays layout 18 (`BASE_LAYOUT`) until a transaction writes
+  its first hyperedge, or declares an index or a rule on hyperedges: that
+  transaction records layout 19 (on a replica, the entry that brings the
+  first one does; an import that holds one does). A file that never held
+  hyperedges is one Grafeno 0.4 opens, so trying this version and going
+  back needs no copy. Files of layout 17 or before are upgraded to 18 when
+  opened, with the copy kept first as for every layout change
+  (`<name>.layout-<old>.redb`, unless `copy_before_upgrade` is off); a
+  file of layout 18 is not copied, as opening it changes nothing 0.4
+  reads. The upgrade tests open files of every layout from 1 to 18, and
+  a file this version wrote without hyperedges was opened and checked by
+  Grafeno 0.4.0.
 - **Older versions.** Grafeno 0.4 and before refuse a file of layout 19
   ("newer than this Grafeno") instead of opening it: they would delete a
-  node without its hyperedges and leave them naming it. To go back, use the
-  copy kept before the upgrade (it lacks what was written after).
+  node without its hyperedges and leave them naming it. Deleting every
+  hyperedge does not take a file back to 18. To go back after using
+  them, export without them (JSON lines version 2 is written when none is
+  left) and import into a file 0.4 made, or use the copy kept before an
+  upgrade (it lacks what was written after).
 - **Nodes and edges** keep their meaning, tables and counters. A hyperedge
   is not counted as an edge, adds no adjacency entries and is not walked by
   traversals or algorithms.

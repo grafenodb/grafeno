@@ -609,6 +609,32 @@ impl WriteTx {
         self.delete_node(ns, id)
     }
 
+    /// Marks the file layout 19 (see [`crate::SCHEMA_VERSION`]) in this
+    /// transaction, before it writes anything only that layout holds: a
+    /// hyperedge, or an index or rule on them. Grafeno 0.4 then refuses the
+    /// file instead of misreading it.
+    pub(crate) fn hyperedge_layout(&mut self) -> Result<()> {
+        use std::sync::atomic::Ordering;
+        if self.marked_hyperedge_layout || self.shared.hyperedge_layout.load(Ordering::Relaxed) {
+            return Ok(());
+        }
+        let mut meta = self.tx.open_table(crate::store::META).map_err(storage)?;
+        let stored = meta
+            .get(crate::db::SCHEMA_KEY)
+            .map_err(storage)?
+            .map_or(crate::db::BASE_LAYOUT, |guard| guard.value());
+        if stored >= crate::SCHEMA_VERSION {
+            // Committed before: no need to look again.
+            self.shared.hyperedge_layout.store(true, Ordering::Relaxed);
+        } else {
+            // Only once this commits does a later transaction learn it.
+            meta.insert(crate::db::SCHEMA_KEY, crate::SCHEMA_VERSION)
+                .map_err(storage)?;
+            self.marked_hyperedge_layout = true;
+        }
+        Ok(())
+    }
+
     /// Writes the hyperedge record and brings its index entries from
     /// `previous` (`None`: a new hyperedge) to `edge`.
     pub(crate) fn put_hyperedge(
@@ -617,6 +643,7 @@ impl WriteTx {
         edge: &HyperEdge,
         previous: Option<&HyperEdge>,
     ) -> Result<()> {
+        self.hyperedge_layout()?;
         if let Some(old) = previous
             && old.label != edge.label
         {

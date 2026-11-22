@@ -1223,6 +1223,9 @@ impl WriteTx {
                 def.describe()
             )));
         }
+        if def.hyperedges {
+            self.hyperedge_layout()?;
+        }
         let records = self.records_of(ns, &def)?;
         if def.vector.is_some() {
             let count = self.fill_vector_index(ns, &def, &records)?;

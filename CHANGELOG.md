@@ -75,9 +75,12 @@ an experiment found event nodes answer as well (docs/benchmarks.md).
   `Exact`) and `hyperedges_page`, through the snapshot's view;
   `Grafeno::set_max_participants` (256 by default). `check` and
   `rebuild_indexes` cover the hyperedge indexes, and backups copy them.
-- **Changed**: the database layout is 19 (three new tables, empty until
-  used). Files of earlier layouts are upgraded when opened, with a copy
-  kept first; Grafeno 0.4 refuses a file of layout 19. `delete_node`
+- **Changed**: the database layout is 19 once a file holds hyperedges
+  (three new tables, created empty in every file). Until its first
+  hyperedge, or an index or rule on them, a file stays layout 18
+  (`BASE_LAYOUT`), which Grafeno 0.4 opens; files of earlier layouts are
+  upgraded to 18 when opened, with a copy kept first. Grafeno 0.4 refuses
+  a file of layout 19. `delete_node`
   refuses a node that takes part in a hyperedge (`Error::Conflict`), and so
   do the routes and GQ `DELETE`. `Error` has a new
   variant, `HyperEdgeNotFound`; `CheckReport` and `RebuildReport` have
