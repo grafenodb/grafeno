@@ -573,8 +573,9 @@ impl WriteTx {
         }
         match policy {
             OnHyperEdges::Restrict => Err(Error::Conflict(format!(
-                "node {node} takes part in hyperedges: delete them first, or delete the node \
-                 with delete_node_with and Cascade or Detach"
+                "node {node} takes part in hyperedges: delete them first, or take it out of \
+                 them as it goes (GQ DETACH DELETE; over HTTP ?hyperedges=detach, or cascade \
+                 to delete them; in Rust, delete_node_with)"
             ))),
             OnHyperEdges::Cascade => {
                 for id in ids {

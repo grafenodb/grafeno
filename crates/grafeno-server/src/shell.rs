@@ -1026,6 +1026,21 @@ fn print_result(output: &Value) {
         ("edges_created", "edge created", "edges created"),
         ("edges_deleted", "edge deleted", "edges deleted"),
         ("edges_retracted", "edge retracted", "edges retracted"),
+        (
+            "hyperedges_created",
+            "hyperedge created",
+            "hyperedges created",
+        ),
+        (
+            "hyperedges_deleted",
+            "hyperedge deleted",
+            "hyperedges deleted",
+        ),
+        (
+            "hyperedges_retracted",
+            "hyperedge retracted",
+            "hyperedges retracted",
+        ),
         ("properties_set", "property set", "properties set"),
         ("labels_added", "label added", "labels added"),
         ("labels_removed", "label removed", "labels removed"),
