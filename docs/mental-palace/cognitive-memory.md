@@ -159,7 +159,12 @@ missing:
   evidence recorded for its change. When two newer memories both replace
   one, the newest is followed and the other is listed under `branches`,
   for an agent to settle. Nothing is deleted: older versions stay, and
-  stay readable.
+  stay readable. Where a replaced version is read, it says so: a context
+  (from `context`, `palace_enter` or a walk) gives its heading `superseded
+  by …` (and `superseded_by` in JSON), `palace_enter` puts it after the
+  current memories, and `palace_reflect` lists it under `stale` as
+  "replaced by …" with the reason. While the `supersedes` fact holds:
+  invalidated, the older memory reads as current again.
 - **Two states compared.** `timeline` with `compare` (a date, and `at`,
   now by default) lists the node's facts that **ended**, that **began**,
   and that **changed**: the same relation from the same end, to another

@@ -512,6 +512,36 @@ pub struct Justification {
     pub archived: bool,
 }
 
+/// The memories that replace `id` at `at`: [`SUPERSEDES`] facts pointing
+/// at it that hold then, with their reasons (`None` when none was given),
+/// those the snapshot's view lets it see.
+pub fn replaced_by(
+    read: &grafeno::ReadTx,
+    ns: &str,
+    id: NodeId,
+    at: grafeno::Timestamp,
+) -> Result<Vec<(NodeId, Option<String>)>> {
+    use grafeno::{Direction, EdgeFilter};
+    Ok(read
+        .neighbors(
+            ns,
+            id,
+            Direction::In,
+            &EdgeFilter::any().label(SUPERSEDES).valid_at(at),
+        )?
+        .into_iter()
+        .map(|neighbor| {
+            let reason = neighbor
+                .edge
+                .props
+                .get(crate::history::REASON)
+                .and_then(Value::as_str)
+                .map(str::to_owned);
+            (neighbor.node, reason)
+        })
+        .collect())
+}
+
 /// What supports `node` and what puts it in doubt.
 pub fn justify(read: &grafeno::ReadTx, ns: &str, node: &Node) -> Result<Justification> {
     use grafeno::{Direction, EdgeFilter};

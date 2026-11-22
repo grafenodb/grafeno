@@ -21,6 +21,15 @@ and MCP tools of their own; the change log and event subscriptions
 follow them, and JSON lines exports carry them. Recall does not know them:
 an experiment found event nodes answer as well (docs/benchmarks.md).
 
+- **Fixed**: a memory a newer one `supersedes` read as current. A
+  context (`context`, `palace_enter`, walks with a budget) now says
+  `superseded by …` in its heading and lists `superseded_by` (a new
+  field of `ContextItem`, left out of JSON when empty); `palace_enter`
+  puts such memories after the current ones; `palace_reflect` lists them
+  under `stale` as "replaced by …", with the reason, instead of finding
+  only memories overtaken by their words. A `supersedes` fact that no
+  longer holds marks nothing. `knowledge::replaced_by` gives what
+  replaces a memory at a time.
 - **Added**: `POST /v1/{ns}/batch` takes `create_hyperedge` (with a `ref`
   of its own, and participants that may be `$name`s), `update_hyperedge`
   (properties and participants), `delete_hyperedge`,

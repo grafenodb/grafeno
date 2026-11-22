@@ -703,6 +703,44 @@ pub fn reflect(
             });
         }
     }
+    // Replaced on purpose: a `supersedes` fact points at it.
+    let mut replaced = HashSet::new();
+    for memory in &memories {
+        if memory.has_label(ARCHIVED) {
+            continue;
+        }
+        let by = crate::knowledge::replaced_by(read, ns, memory.id, options.now)?;
+        if by.is_empty() {
+            continue;
+        }
+        let mut names = Vec::new();
+        for (newer, reason) in &by {
+            let name = match read.node(ns, *newer)? {
+                Some(node) => describe(read, ns, &node)?,
+                None => newer.to_string(),
+            };
+            names.push(match reason {
+                Some(reason) => format!("{name} ({newer}): {reason}"),
+                None => format!("{name} ({newer})"),
+            });
+        }
+        // Already decided: not a step to take.
+        replaced.insert(memory.id);
+        let why = format!("replaced by {}", names.join("; "));
+        // Weak as well: one entry, with both reasons.
+        match stale
+            .iter_mut()
+            .find(|item| item.id == memory.id.to_string())
+        {
+            Some(item) => item.why = format!("{why}; {}", item.why),
+            None => stale.push(Item {
+                id: memory.id.to_string(),
+                kind: "memory",
+                text: describe(read, ns, memory)?,
+                why,
+            }),
+        }
+    }
     for pair in crate::superseded(
         read,
         ns,
@@ -712,7 +750,7 @@ pub fn reflect(
             ..Default::default()
         },
     )? {
-        if scope_ids.contains(&pair.older.id) {
+        if scope_ids.contains(&pair.older.id) && !replaced.contains(&pair.older.id) {
             obsolete.push(pair.older.id.to_string());
             stale.push(Item {
                 id: pair.older.id.to_string(),

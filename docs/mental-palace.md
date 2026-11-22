@@ -118,7 +118,7 @@ for, its name or its id will do.
 | `palace_anchor` | yes | Puts an existing memory at a locus of a room (the entrance by default), with an optional note; makes the locus when it is missing. With `remove`, takes the anchor away. Returns every place the memory is at. |
 | `palace_map` | no | With no arguments, every palace with its rooms, loci and counts. With `palace`, that palace. With `room`, that room and the memories at each locus. |
 | `palace_walk` | no | From a `topic` or a node (`from`): the rooms and loci that match, the memories anchored there, the anchored memories that match, the rooms their doors lead to, and what the graph's relations lead to from those, up to `hops` (2 by default, 3 at most). `order`: `distance` (default) or `relevance`; `relations` and `valid_at` narrow what is followed; `skip` gives the next part; `budget`: also the memories reached and the facts joining them as text within that many tokens. Each memory says how it was found (`found_by`) and what supports it (`justification`). |
-| `palace_enter` | no | A room's context for the start of a session: its loci, its memories (strongest first) and the facts that connect them as text within a token `budget`, and the latest checkpoint about the room. |
+| `palace_enter` | no | A room's context for the start of a session: its loci, its memories (strongest first; those a newer memory `supersedes` after the rest, their heading saying `superseded by …`) and the facts that connect them as text within a token `budget`, and the latest checkpoint about the room. |
 | `palace_route` | no | From a node, the given relations followed in order (each forwards or `backward`, once or as far as it goes with `repeat`), towards a goal (`to`) if given: every route found, with its nodes and the facts taken (see [below](#the-palace-as-a-view)). |
 | `palace_review` | no | Proposals to arrange a palace better, each with its reason and the call that carries it out; nothing applied (see [below](#review-removal-and-undoing)). |
 | `palace_reflect` | no | What is known about a topic, a room or a node, and what is not: known, uncertain, conflicts, stale, gaps, what to check next (see [below](#reflection)). |
@@ -416,7 +416,7 @@ answers:
 | `uncertain` | What was inferred with no source, and what has a certainty under 0.5. |
 | `unsupported` | What was said to be stated or observed with no source and nothing supporting it: a claim whose evidence was never recorded. |
 | `conflicts` | Clashes recorded under constraints that involve them, or recorded by an agent with `contradicts`, the unsettled ones first. Each is a `change` (the constraint ended or shortened the older fact: the state changed) or a `contradiction` (a flagged clash, or a `contradicts`: both stand and wait for someone). |
-| `stale` | Facts no longer true, memories archived or marked obsolete, memories long unused, and older memories a newer one may overtake. |
+| `stale` | Facts no longer true, memories archived or marked obsolete, memories a newer one `supersedes` ("replaced by …", with the reason), memories long unused, and older memories a newer one may overtake (by their words). |
 | `gaps` | Open questions, things mentioned and never described, places in a room with nothing at them, steps left in the room's or node's checkpoint, and what a kind's expected shape asks for and a memory lacks. |
 | `next` | What to check, each step with the call that does it and the records it is about. |
 | `limits` | How much it looked at, whether there were more matches, and what it cannot see. |

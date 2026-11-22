@@ -1327,7 +1327,22 @@ pub fn enter(read: &ReadTx, ns: &str, room: NodeId, options: &EnterOptions) -> R
             memories.push((memory, score));
         }
     }
-    memories.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.id.cmp(&b.0.id)));
+    // What something newer replaced comes after what is current: an agent
+    // reads the current memory first (the replaced one says what replaced
+    // it).
+    let mut replaced = HashSet::new();
+    for (memory, _) in &memories {
+        if !crate::knowledge::replaced_by(read, ns, memory.id, now)?.is_empty() {
+            replaced.insert(memory.id);
+        }
+    }
+    memories.sort_by(|a, b| {
+        replaced
+            .contains(&a.0.id)
+            .cmp(&replaced.contains(&b.0.id))
+            .then(b.1.total_cmp(&a.1))
+            .then(a.0.id.cmp(&b.0.id))
+    });
     let context = context_of(read, ns, memories, &options.context)?;
     let checkpoint = resume(
         read,

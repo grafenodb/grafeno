@@ -3902,8 +3902,9 @@ fn tools() -> Value {
             "name": "palace_enter",
             "title": "Enter a room",
             "description": "Rebuild the context of a room at the start of a session: its loci, \
-                its memories (the strongest first) and the facts that connect them, as text \
-                within a token budget, and the latest checkpoint saved about the room.",
+                its memories (the strongest first, those a newer memory supersedes after the \
+                rest and marked so) and the facts that connect them, as text within a token \
+                budget, and the latest checkpoint saved about the room.",
             "inputSchema": {
                 "type": "object",
                 "properties": {

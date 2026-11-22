@@ -137,6 +137,10 @@ pub struct ContextItem {
     pub sources: Vec<NodeId>,
     /// The text was cut to fit the budget.
     pub truncated: bool,
+    /// What replaces it now (`supersedes` facts pointing at it): its
+    /// heading says so, so that it is not read as current.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub superseded_by: Vec<NodeId>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -321,11 +325,23 @@ fn add_items(
 
         // Its labels, and how it is known when someone said.
         let known = crate::knowledge::of_node(node).note();
-        let tags = if known.is_empty() {
+        let mut tags = if known.is_empty() {
             node.labels.join(", ")
         } else {
             format!("{}; {known}", node.labels.join(", "))
         };
+        // Replaced by something newer: said where it is read.
+        let replaced = crate::knowledge::replaced_by(read, ns, node.id, grafeno::Timestamp::now())?;
+        let superseded_by: Vec<NodeId> = replaced.iter().map(|(by, _)| *by).collect();
+        if !replaced.is_empty() {
+            let mut names = Vec::new();
+            for (by, _) in &replaced {
+                if let Some(newer) = read.node(ns, *by)? {
+                    names.push(readable_name(&newer, &item_body(read, ns, &newer)?));
+                }
+            }
+            tags.push_str(&format!("; superseded by {}", names.join(", ")));
+        }
         let mut block = render_item(number, &heading, &tags, &text);
         let mut cost = count(&block);
         let mut truncated = false;
@@ -366,6 +382,7 @@ fn add_items(
             score: *score,
             sources: node.sources.clone(),
             truncated,
+            superseded_by,
         });
         if let Some(mine) = mine {
             packed.push((node.id, mine));
