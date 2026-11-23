@@ -1,0 +1,71 @@
+# The Microsoft Store package (MSIX) of the engine: built, checked, and
+# installed and run through its whole life on a disposable Windows runner
+# (packaging/windows/msix). It publishes nothing: the unsigned package, for
+# Partner Center, is this run's artifact, uploaded there by hand
+# (packaging/windows/msix/README.md). The release workflow, the setup,
+# winget and the Linux packages are not touched.
+name: MSIX
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+    branches: [main]
+    paths:
+      - packaging/windows/msix/**
+      - crates/grafeno-server/src/packaged.rs
+      - .github/workflows/msix.yml
+  pull_request:
+    paths:
+      - packaging/windows/msix/**
+      - crates/grafeno-server/src/packaged.rs
+      - .github/workflows/msix.yml
+
+permissions:
+  contents: read
+
+jobs:
+  msix:
+    name: Build, check and install the MSIX
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master
+        with:
+          toolchain: 1.99.1
+      - name: Build grafeno.exe
+        run: cargo build --release --locked -p grafeno-server
+      - name: Tools (from the Windows SDK on the runner)
+        shell: pwsh
+        run: |
+          Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\makeappx.exe", "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\signtool.exe" |
+            Sort-Object FullName | ForEach-Object { $_.FullName }
+          [Environment]::OSVersion.VersionString
+      - name: Build the package (unsigned, for Partner Center)
+        shell: pwsh
+        run: |
+          $version = (Select-String -Path Cargo.toml -Pattern '^version\s*=\s*"([0-9.]+)"').Matches[0].Groups[1].Value
+          if ($env:GITHUB_REF_TYPE -eq 'tag' -and "v$version" -ne $env:GITHUB_REF_NAME) { throw "tag $env:GITHUB_REF_NAME but Cargo.toml says $version" }
+          "VERSION=$version.0" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+          ./packaging/windows/msix/build.ps1
+      - name: Check the package
+        shell: pwsh
+        run: ./packaging/windows/msix/validate.ps1
+      - name: A newer package, to test an update
+        shell: pwsh
+        run: |
+          $parts = $env:VERSION -split '\.'
+          $newer = "$($parts[0]).$($parts[1]).$([int]$parts[2] + 1).0"
+          ./packaging/windows/msix/build.ps1 -Version $newer -Out dist\msix-update
+          "UPDATE=dist\msix-update\GrafenoDB_${newer}_x64.msix" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+      - name: Install it, run it, update, uninstall, reinstall
+        shell: pwsh
+        run: ./packaging/windows/msix/test-install.ps1 -Package "dist\msix\GrafenoDB_$($env:VERSION)_x64.msix" -Update $env:UPDATE
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: grafeno-msix-${{ env.VERSION }}
+          path: |
+            dist/msix/GrafenoDB_*.msix
+            dist/msix/GrafenoDB_*.msix.sha256
+          if-no-files-found: error

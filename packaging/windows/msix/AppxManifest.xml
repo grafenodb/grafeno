@@ -1,0 +1,88 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The MSIX package of the Grafeno engine for the Microsoft Store (README.md
+  beside this file). build.ps1 puts the version in place of @VERSION@.
+
+  Two applications share grafeno.exe:
+  - "GrafenoDB", the Start menu entry: it opens a console that serves the
+    user's own database (grafeno serve).
+  - "GrafenoCli", without a Start menu entry: the `grafeno` command in
+    PowerShell and CMD (an execution alias), with the arguments typed.
+  No service, no elevation: Grafeno runs as the user's process.
+-->
+<Package
+  xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+  xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+  xmlns:uap5="http://schemas.microsoft.com/appx/manifest/uap/windows10/5"
+  xmlns:uap10="http://schemas.microsoft.com/appx/manifest/uap/windows10/10"
+  xmlns:desktop4="http://schemas.microsoft.com/appx/manifest/desktop/windows10/4"
+  xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
+  IgnorableNamespaces="uap uap5 uap10 desktop4 rescap">
+
+  <Identity
+    Name="GrafenoDB.GrafenoDB"
+    Publisher="CN=9C88685D-AD17-4F9E-8FAE-1760744D79C1"
+    Version="@VERSION@"
+    ProcessorArchitecture="x64" />
+
+  <Properties>
+    <DisplayName>GrafenoDB</DisplayName>
+    <PublisherDisplayName>GrafenoDB</PublisherDisplayName>
+    <Logo>Assets\StoreLogo.png</Logo>
+    <Description>Graph database engine for agent memory and knowledge: a property graph with facts in time, full-text and vector search, the GQ query language, an HTTP API, an MCP server and a command line.</Description>
+  </Properties>
+
+  <Dependencies>
+    <!-- 19041 (Windows 10 2004): uap10:Parameters; AppData writes of a
+         packaged program go to its private folder since 1903. -->
+    <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.19041.0" MaxVersionTested="10.0.26100.0" />
+  </Dependencies>
+
+  <Resources>
+    <Resource Language="en-us" />
+  </Resources>
+
+  <Applications>
+    <Application
+      Id="GrafenoDB"
+      Executable="grafeno.exe"
+      EntryPoint="Windows.FullTrustApplication"
+      desktop4:SupportsMultipleInstances="true"
+      uap10:Parameters="serve">
+      <uap:VisualElements
+        DisplayName="GrafenoDB"
+        Description="Serve your Grafeno database on http://127.0.0.1:7810 (Ctrl+C stops it)."
+        BackgroundColor="transparent"
+        Square150x150Logo="Assets\Square150x150Logo.png"
+        Square44x44Logo="Assets\Square44x44Logo.png">
+        <uap:DefaultTile Wide310x150Logo="Assets\Wide310x150Logo.png" Square310x310Logo="Assets\Square310x310Logo.png" />
+      </uap:VisualElements>
+    </Application>
+
+    <Application
+      Id="GrafenoCli"
+      Executable="grafeno.exe"
+      EntryPoint="Windows.FullTrustApplication"
+      desktop4:SupportsMultipleInstances="true">
+      <uap:VisualElements
+        DisplayName="grafeno (command line)"
+        Description="The grafeno command for PowerShell and CMD."
+        BackgroundColor="transparent"
+        Square150x150Logo="Assets\Square150x150Logo.png"
+        Square44x44Logo="Assets\Square44x44Logo.png"
+        AppListEntry="none" />
+      <Extensions>
+        <uap5:Extension Category="windows.appExecutionAlias">
+          <uap5:AppExecutionAlias desktop4:Subsystem="console">
+            <uap5:ExecutionAlias Alias="grafeno.exe" />
+          </uap5:AppExecutionAlias>
+        </uap5:Extension>
+      </Extensions>
+    </Application>
+  </Applications>
+
+  <Capabilities>
+    <!-- A desktop program (full trust), as every packaged Win32 program. -->
+    <rescap:Capability Name="runFullTrust" />
+  </Capabilities>
+</Package>

@@ -475,8 +475,12 @@ impl Config {
     }
 }
 
-/// Where installers put the configuration on this system.
+/// Where installers put the configuration on this system: from the
+/// Microsoft Store package, the user's own folder (`crate::packaged`).
 pub fn default_path() -> PathBuf {
+    if let Some(home) = crate::packaged::home() {
+        return home.join("grafeno.toml");
+    }
     if cfg!(windows) {
         let data = std::env::var_os("ProgramData").unwrap_or_else(|| "C:\\ProgramData".into());
         PathBuf::from(data).join("Grafeno").join("grafeno.toml")

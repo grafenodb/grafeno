@@ -21,6 +21,7 @@ pub mod instances;
 pub mod keys;
 pub mod mcp;
 pub mod metrics;
+pub mod packaged;
 pub mod roles;
 pub mod service;
 pub mod shell;

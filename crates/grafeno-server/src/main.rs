@@ -893,6 +893,30 @@ fn main() -> ExitCode {
     }
 }
 
+/// From the Microsoft Store package, `grafeno serve` with no settings,
+/// database or `--memory` serves the user's own settings, created (with a
+/// fresh token) the first time. `None` otherwise: nothing changes for the
+/// other installations.
+fn packaged_settings(database_given: bool) -> Option<PathBuf> {
+    let home = grafeno_server::packaged::home()?;
+    if database_given {
+        return None;
+    }
+    let path = home.join("grafeno.toml");
+    if !path.exists() {
+        let db = home.join("data").join("grafeno.redb");
+        let addr = config::DEFAULT_ADDR.parse().expect("valid default address");
+        match config::init(&path, &db, addr, false) {
+            Ok(_) => eprintln!(
+                "Created {} with a new token (grafeno config token prints it).",
+                path.display()
+            ),
+            Err(error) => eprintln!("grafeno: cannot create {}: {error}", path.display()),
+        }
+    }
+    Some(path)
+}
+
 fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     match cli.command {
         Command::Serve {
@@ -905,7 +929,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             cors_origins,
             stop_with_stdin,
         } => {
-            let path = config;
+            let path = config.or_else(|| packaged_settings(db.is_some() || memory));
             let config = path.as_ref().map(|path| Config::load(path)).transpose()?;
             // A token read from the settings file is changed there.
             let token_file = path.filter(|_| {
@@ -962,6 +986,12 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
         },
+        Command::Service(ServiceCommand::Install { .. } | ServiceCommand::Uninstall)
+        | Command::Setup(_)
+            if grafeno_server::packaged::is_packaged() =>
+        {
+            return Err(grafeno_server::packaged::NO_SERVICE.into());
+        }
         Command::Service(command) => service_command(command)?,
         Command::Setup(args) => setup_command(args)?,
         Command::Instances { command } => {
@@ -1078,6 +1108,12 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             json,
             stop_on_error,
         } => {
+            let config = config.or_else(|| {
+                (url.is_none() && db.is_none() && !memory)
+                    .then(|| grafeno_server::packaged::home().map(|home| home.join("grafeno.toml")))
+                    .flatten()
+                    .filter(|path| path.exists())
+            });
             let (url, token) = match config {
                 Some(path) => {
                     let config = Config::load(&path)?;

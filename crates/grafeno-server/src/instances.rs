@@ -615,6 +615,18 @@ pub fn doctor(instance: &Instance) -> Vec<Finding> {
             "no token: only accounts and keys (or nobody, without accounts) can call the API",
         ));
     }
+    if let Some(disk) = crate::packaged::home_on_disk() {
+        found.push(finding(
+            Verdict::Note,
+            format!(
+                "Microsoft Store package: Grafeno runs as your process (grafeno serve), not a                  service; {} is kept in {} and is removed with the package",
+                crate::packaged::home()
+                    .map(|home| home.display().to_string())
+                    .unwrap_or_default(),
+                disk.display()
+            ),
+        ));
+    }
 
     let addr = config
         .addr
@@ -1139,6 +1151,9 @@ mod system {
         _addr: SocketAddr,
         start: bool,
     ) -> Result<String, String> {
+        if crate::packaged::is_packaged() {
+            return Err(crate::packaged::NO_SERVICE.to_owned());
+        }
         crate::service::windows::install(&instance.config, start, None)
             .map_err(|error| format!("cannot install the service: {error}"))?;
         Ok(format!(
@@ -1157,6 +1172,11 @@ mod system {
     }
 
     pub fn service_state(_instance: &Instance) -> Option<ServiceState> {
+        // The package runs no service; one the setup installed is another
+        // installation's.
+        if crate::packaged::is_packaged() {
+            return None;
+        }
         crate::service::windows::state()
     }
 
