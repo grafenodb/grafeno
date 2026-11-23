@@ -4,6 +4,8 @@
 #   systemd for the instances, upgrades and rollbacks;
 # - the .deb on the Ubuntu runner itself, with its AppArmor profile
 #   enforced;
+# - the container image (packaging/docker), run on amd64 and, emulated,
+#   arm64;
 # - the Windows setup on a Windows runner (unattended, a virtual account,
 #   an administrator, the Event Log), upgraded, then uninstalled keeping
 #   and then removing the data.
@@ -49,6 +51,28 @@ jobs:
           path: dist/linux/*
       - name: Install them in clean containers
         run: packaging/linux/test-install.sh --repo --systemd --arm64
+
+  image:
+    name: The container image (amd64 run, arm64 run under emulation)
+    needs: linux
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: linux-packages
+          path: dist/linux
+      - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - name: Build it and run it through first start, token, data, restart and backup
+        run: |
+          version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
+          docker buildx build -f packaging/docker/Dockerfile --platform linux/amd64 --build-arg VERSION="$version" --load -t grafeno:test .
+          sh packaging/docker/test-image.sh grafeno:test "$version"
+          docker buildx build -f packaging/docker/Dockerfile --platform linux/arm64 --build-arg VERSION="$version" --load -t grafeno:test-arm64 .
+          test "$(docker run --rm --platform linux/arm64 grafeno:test-arm64 --version)" = "grafeno $version"
+          docker image ls grafeno
 
   apparmor:
     name: The .deb under AppArmor (Ubuntu runner)

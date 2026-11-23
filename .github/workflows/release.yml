@@ -10,6 +10,8 @@
 #   grafeno-<version>-winget.zip, the winget manifests to submit.
 # It also adds the packages to the signed APT and DNF repositories on the
 # gh-pages branch (GitHub Pages).
+# And it publishes the container image ghcr.io/<owner>/grafeno
+# (packaging/docker), tested first.
 #
 # Secrets, each optional (what needs one is skipped without it):
 #   MINISIGN_SECRET_KEY        a minisign secret key made with `minisign -G -W`
@@ -110,6 +112,49 @@ jobs:
             dist/*.exe
             dist/*.zip
             dist/*.sha256
+
+  # The container image, from the Linux job's static binaries: tested on a
+  # dispatch and on a tag; pushed to ghcr.io/<owner>/grafeno on a tag only
+  # (<version>, <major>.<minor>, latest), for linux/amd64 and linux/arm64,
+  # with provenance and an SBOM.
+  image:
+    needs: [linux, windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: linux
+          path: dist/linux
+      - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - name: Build and test it
+        run: |
+          version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+          docker buildx build -f packaging/docker/Dockerfile --platform linux/amd64 \
+            --build-arg VERSION="$version" --build-arg REVISION="$GITHUB_SHA" --load -t grafeno:test .
+          sh packaging/docker/test-image.sh grafeno:test "$version"
+          docker buildx build -f packaging/docker/Dockerfile --platform linux/arm64 \
+            --build-arg VERSION="$version" --build-arg REVISION="$GITHUB_SHA" --load -t grafeno:test-arm64 .
+          test "$(docker run --rm --platform linux/arm64 grafeno:test-arm64 --version)" = "grafeno $version"
+      - name: Push it to the GitHub Container Registry
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          image="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/grafeno"
+          minor="${VERSION%.*}"
+          printf '%s' "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          docker buildx build -f packaging/docker/Dockerfile --platform linux/amd64,linux/arm64 \
+            --build-arg VERSION="$VERSION" --build-arg REVISION="$GITHUB_SHA" \
+            --provenance=mode=max --sbom=true \
+            -t "$image:$VERSION" -t "$image:$minor" -t "$image:latest" --push .
+          docker buildx imagetools inspect "$image:$VERSION"
+          docker logout ghcr.io
 
   publish:
     needs: [linux, windows]

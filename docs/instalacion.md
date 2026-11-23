@@ -308,6 +308,39 @@ grafeno service install --account "NT SERVICE\Grafeno"
 (La cuenta virtual necesita entonces permiso de modificación sobre
 `C:\ProgramData\Grafeno` y la carpeta de datos, que el instalador concede.)
 
+### Imagen de contenedor
+
+Cada release publica el motor como imagen de contenedor para linux/amd64 y
+linux/arm64, con su procedencia y SBOM:
+`ghcr.io/grafenodb/grafeno:<versión>` (también `:<mayor>.<menor>` y
+`:latest`). Contiene el binario estático de la release, se ejecuta con un
+usuario sin privilegios (uid 10001), guarda todo en el volumen `/data` y
+escucha en el 7810 (`packaging/docker`).
+
+```sh
+docker run -d --name grafeno -p 127.0.0.1:7810:7810 -v grafeno-data:/data ghcr.io/grafenodb/grafeno:0.5.1
+docker exec grafeno grafeno config token --path /data/grafeno.toml
+```
+
+El primer inicio crea `/data/grafeno.toml` con un token nuevo (que nunca
+aparece en los registros) y la base de datos `/data/grafeno.redb`; el
+segundo comando muestra el token. El servidor escucha en todas las
+interfaces del contenedor, así que siempre tiene token: publica el puerto
+en 127.0.0.1, como arriba, salvo que otras máquinas deban alcanzarlo.
+Otras formas de iniciarlo:
+
+- `-e GRAFENO_TOKEN=<token>`: ese token, con la base de datos en `/data` y
+  sin archivo de configuración.
+- `-e GRAFENO_CONFIG=/etc/grafeno/grafeno.toml` con ese archivo montado:
+  tu propia configuración (el ejemplo de clúster de `packaging/compose` lo
+  hace así).
+
+Cualquier otro comando ejecuta `grafeno` dentro: `docker exec -it grafeno
+grafeno shell --config /data/grafeno.toml`, `docker exec grafeno grafeno
+backup --config /data/grafeno.toml /data/backup.redb` (cópiala fuera con
+`docker cp`). `docker stop` lo detiene limpiamente; el volumen conserva los
+datos entre reinicios y nuevas versiones de la imagen.
+
 ### Microsoft Store
 
 GrafenoDB también está empaquetado para Microsoft Store
@@ -757,6 +790,7 @@ funciona (por la versión de la API de `GET /v1/about`, hoy 1).
 | Archivos | Comando | Necesita |
 | -------- | ------- | -------- |
 | Linux `.tar.gz`, `.deb`, `.rpm`, x86_64 y aarch64 | `docker build -f packaging/linux/Dockerfile --output dist/linux .` | Docker |
+| Imagen de contenedor, amd64 y arm64 (a partir de esos archivos) | `docker buildx build -f packaging/docker/Dockerfile --platform linux/amd64,linux/arm64 -t grafeno .` | Docker (buildx) |
 | Los repositorios APT y DNF | `GRAFENO_GPG_KEY=<key id> packaging/repo/build-repo.sh dist/linux site https://grafenodb.github.io/grafeno` | GnuPG, rpm, createrepo_c, apt-utils |
 | Instalador `.exe` de Windows | `cargo build --release -p grafeno-server`, luego `iscc /DAppVersion=0.5.1 packaging\windows\grafeno.iss` | Rust (MSVC), Inno Setup 6 |
 | Manifiestos de winget | `python packaging/windows/winget/make-manifests.py 0.5.1 dist\grafeno-0.5.1-windows-x64-setup.exe <url> dist\winget` | Python |
