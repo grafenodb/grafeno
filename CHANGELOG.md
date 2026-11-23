@@ -12,15 +12,34 @@ break a client of the previous one, and the database files' layout
 version (now 19 for a file that holds hyperedges, 18 otherwise) is
 upgraded in place, with a copy kept first.
 
-## 0.5.1 (2026-11-22)
+## 0.5.1 (2026-11-23)
 
-Withdrawn the same day: its Windows setup is not code-signed and was
-new, so Windows Smart App Control blocked it, while 0.5.0's runs. Its
-release is kept as a draft; 0.5.0 is the latest release again, and
-these fixes come in the next version, signed.
+A first 0.5.1, tagged on 2026-11-22 from an earlier commit, was withdrawn
+the same day before anyone was meant to use it; this one replaces it and
+adds the Microsoft Store package. Nothing changes in the files, the HTTP
+API (still 1) or the replication formats: 0.5.0 and 0.5.1 run side by
+side in a cluster. The Windows setup and `grafeno.exe` on GitHub are not
+code-signed: on a computer with Smart App Control, Windows may block a
+new version until it knows it.
 
-Fixes. Nothing changes in the files, the HTTP API (still 1) or the
-replication formats: 0.5.0 and 0.5.1 run side by side in a cluster.
+- **Added**: an MSIX package for the Microsoft Store
+  (packaging/windows/msix; docs/install.md, "Microsoft Store"), pending
+  Microsoft's certification. From the package Grafeno runs as the user's
+  own process, not a service, with no administrator rights: the Start
+  menu entry (or `grafeno` alone) serves the user's database on
+  127.0.0.1:7810, and the `grafeno` command works in PowerShell and CMD.
+  Settings and data are in `%USERPROFILE%\GrafenoDB`, kept through
+  updates and when the package is uninstalled. The setup, winget, the zip
+  and the Linux packages do not change.
+- **Added**: `grafeno migrate` copies the database of the setup's
+  installation (its service) into those settings: a plan by default,
+  `--apply` to do it, through a consistent backup checked as it is
+  restored; the service and its files are left as they were, nothing is
+  replaced and no token is printed.
+- **Changed**: `grafeno serve` checks its port first and, when it is
+  taken, says by what (the setup's service, another Grafeno, another
+  program) and that the data is not affected; a database file already
+  open in another process is refused in the same terms.
 
 - **Fixed**: upgrading on Windows stopped at "DeleteFile failed; code 5"
   when another program ran `grafeno.exe` (an MCP connection, a shell).
