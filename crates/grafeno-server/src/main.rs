@@ -186,6 +186,33 @@ enum Command {
     Cluster(ClusterCommand),
     /// Write a consistent copy of the whole database to a new file, from a
     /// file directly or from a running server, which keeps serving.
+    /// Copy the database of Grafeno installed with the setup (its Windows
+    /// service, C:\ProgramData\Grafeno) into your own settings, as the
+    /// Microsoft Store package uses them. Shows the plan; --apply does it.
+    /// The service and its files are never stopped, changed or removed.
+    Migrate {
+        /// The setup's settings file. Default:
+        /// C:\ProgramData\Grafeno\grafeno.toml.
+        #[arg(long)]
+        from: Option<PathBuf>,
+        /// The settings to create. Default: the package's
+        /// (%USERPROFILE%\GrafenoDB\grafeno.toml).
+        #[arg(long)]
+        to: Option<PathBuf>,
+        /// The service's owner token, when its settings cannot be read (as
+        /// administrator, the setup's `grafeno config token` prints it).
+        #[arg(long, env = "GRAFENO_TOKEN", hide_env_values = true)]
+        token: Option<String>,
+        /// The new server's port (default: 7810, or the next free one).
+        #[arg(long)]
+        port: Option<u16>,
+        /// Do it. Without it nothing is changed (a dry run).
+        #[arg(long, conflicts_with = "dry_run")]
+        apply: bool,
+        /// Only show the plan (the default).
+        #[arg(long)]
+        dry_run: bool,
+    },
     Backup {
         /// The new file (it must not exist).
         output: PathBuf,
@@ -897,24 +924,121 @@ fn main() -> ExitCode {
 /// database or `--memory` serves the user's own settings, created (with a
 /// fresh token) the first time. `None` otherwise: nothing changes for the
 /// other installations.
-fn packaged_settings(database_given: bool) -> Option<PathBuf> {
-    let home = grafeno_server::packaged::home()?;
+fn packaged_settings(
+    database_given: bool,
+    addr: Option<std::net::SocketAddr>,
+) -> Result<Option<PathBuf>, String> {
+    let Some(home) = grafeno_server::packaged::home() else {
+        return Ok(None);
+    };
     if database_given {
-        return None;
+        return Ok(None);
     }
     let path = home.join("grafeno.toml");
+    // The first package kept them in its private folder: copied out once.
+    if let Some(legacy) = grafeno_server::packaged::legacy_home()
+        && let grafeno_server::packaged::Moved::Copied { from, to } =
+            grafeno_server::packaged::move_legacy(&legacy, &home)
+                .map_err(|error| format!("cannot move your settings out of the package: {error}"))?
+    {
+        eprintln!(
+            "Copied your settings and database from {} to {}, where they stay when \
+                 GrafenoDB is uninstalled (the old copy was left in place).",
+            from.display(),
+            to.display()
+        );
+    }
     if !path.exists() {
         let db = home.join("data").join("grafeno.redb");
-        let addr = config::DEFAULT_ADDR.parse().expect("valid default address");
+        let addr =
+            addr.unwrap_or_else(|| config::DEFAULT_ADDR.parse().expect("valid default address"));
+        // A port taken (by the setup's service, say) stops it before any
+        // settings are written.
+        if let Some(conflict) = port_conflict(addr) {
+            return Err(conflict);
+        }
         match config::init(&path, &db, addr, false) {
             Ok(_) => eprintln!(
                 "Created {} with a new token (grafeno config token prints it).",
                 path.display()
             ),
-            Err(error) => eprintln!("grafeno: cannot create {}: {error}", path.display()),
+            Err(error) => return Err(format!("cannot create {}: {error}", path.display())),
         }
     }
-    Some(path)
+    Ok(Some(path))
+}
+
+/// What a packaged `grafeno serve` says before it serves.
+fn packaged_banner(settings: &grafeno_server::service::ServerSettings, path: &std::path::Path) {
+    let local = settings.addr.ip().is_loopback();
+    eprintln!(
+        "GrafenoDB {}: a graph database engine for agent memory and knowledge.\n\
+         Serving on http://{}{}.\n  \
+         Database  {}\n  \
+         Settings  {} (the token: grafeno config token)\n  \
+         These stay when GrafenoDB is uninstalled. Back up with: grafeno backup <new file>\n  \
+         Console   grafeno shell    Check: grafeno doctor    Agents: grafeno mcp --url http://{} --token <token>\n\
+         Stop it with Ctrl+C, or by closing this window.",
+        env!("CARGO_PKG_VERSION"),
+        settings.addr,
+        if local {
+            " (only this computer can connect)"
+        } else {
+            ""
+        },
+        settings
+            .db
+            .as_ref()
+            .map(|db| db.display().to_string())
+            .unwrap_or_else(|| "in memory (lost on exit)".into()),
+        path.display(),
+        settings.addr,
+    );
+}
+
+/// Why `addr` cannot be served, in words that point at the cause: another
+/// Grafeno (the setup's service, or another console) or another program.
+/// The data is not involved.
+fn port_conflict(addr: std::net::SocketAddr) -> Option<String> {
+    if std::net::TcpListener::bind(addr).is_ok() {
+        return None;
+    }
+    let host = if addr.ip().is_unspecified() {
+        format!("127.0.0.1:{}", addr.port())
+    } else {
+        addr.to_string()
+    };
+    let grafeno = ureq::Agent::config_builder()
+        .timeout_global(Some(std::time::Duration::from_secs(2)))
+        .build()
+        .new_agent()
+        .get(format!("http://{host}/v1/about"))
+        .call()
+        .ok()
+        .and_then(|mut response| response.body_mut().read_json::<serde_json::Value>().ok())
+        .filter(|about| about["product"] == "grafeno");
+    #[cfg(windows)]
+    let service = grafeno_server::service::windows::state().filter(|state| state.active);
+    #[cfg(not(windows))]
+    let service: Option<grafeno_server::instances::ServiceState> = None;
+    let who = match (&grafeno, &service) {
+        (Some(_), Some(_)) => {
+            "the Grafeno service installed with the setup is running and serves it \
+             (stop it as administrator with Stop-Service Grafeno, or leave it and use another port)"
+                .to_owned()
+        }
+        (Some(about), None) => format!(
+            "another Grafeno {} server answers there (another console, or another installation)",
+            about["version"].as_str().unwrap_or("")
+        ),
+        (None, _) => "another program uses it".to_owned(),
+    };
+    Some(format!(
+        "port {} is in use: {who}. Your data is not affected. Serve on another port with \
+         --addr 127.0.0.1:{}, or change addr in the settings",
+        addr.port(),
+        addr.port().saturating_add(1)
+    ))
 }
 
 fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
@@ -929,10 +1053,14 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             cors_origins,
             stop_with_stdin,
         } => {
-            let path = config.or_else(|| packaged_settings(db.is_some() || memory));
+            let packaged = config.is_none() && grafeno_server::packaged::is_packaged();
+            let path = match config {
+                Some(path) => Some(path),
+                None => packaged_settings(db.is_some() || memory, addr)?,
+            };
             let config = path.as_ref().map(|path| Config::load(path)).transpose()?;
             // A token read from the settings file is changed there.
-            let token_file = path.filter(|_| {
+            let token_file = path.clone().filter(|_| {
                 token.is_none()
                     && config
                         .as_ref()
@@ -949,6 +1077,12 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             };
             let mut settings = ServerSettings::resolve(config, overrides);
             settings.token_file = token_file;
+            if let Some(conflict) = port_conflict(settings.addr) {
+                return Err(conflict.into());
+            }
+            if packaged && let Some(path) = &path {
+                packaged_banner(&settings, path);
+            }
             if stop_with_stdin {
                 service::run_until_signal_or_stdin(settings)?;
             } else {
@@ -1157,7 +1291,70 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 return Err("some statements failed".into());
             }
         }
-        Command::Backup { output, target } => {
+        Command::Migrate {
+            from,
+            to,
+            token,
+            port,
+            apply,
+            dry_run: _,
+        } => {
+            use grafeno_server::migrate::{self, Migration};
+            let to = to.or_else(grafeno_server::packaged::settings).ok_or(
+                "--to is needed outside the Microsoft Store package: the settings file to create",
+            )?;
+            let migration = Migration {
+                from: from.unwrap_or_else(migrate::setup_settings),
+                to,
+                token,
+                port,
+            };
+            let survey = migrate::survey(&migration);
+            println!(
+                "{}",
+                if apply {
+                    "Migration:"
+                } else {
+                    "Plan (nothing is changed; --apply does it):"
+                }
+            );
+            for line in &survey.plan {
+                println!("  - {line}");
+            }
+            if let Some(blocked) = &survey.blocked {
+                return Err(format!("cannot migrate: {blocked}").into());
+            }
+            if apply {
+                let db = migrate::apply(&migration, &survey)?;
+                println!(
+                    "Copied into {} with new settings {}. Start it with grafeno serve; the token: \
+                     grafeno config token. The setup's installation is as it was: stop or \
+                     uninstall it yourself when you no longer need it.",
+                    db.display(),
+                    migration.to.display()
+                );
+            }
+        }
+        Command::Backup { output, mut target } => {
+            // From the Microsoft Store package, the user's own database.
+            if target.config.is_none()
+                && target.db == std::path::Path::new("grafeno.redb")
+                && let Some(settings) = grafeno_server::packaged::settings().filter(|s| s.exists())
+            {
+                let loaded = Config::load(&settings)?;
+                let answers = ureq::Agent::config_builder()
+                    .timeout_global(Some(std::time::Duration::from_secs(2)))
+                    .build()
+                    .new_agent()
+                    .get(format!("{}/health", loaded.local_url()))
+                    .call()
+                    .is_ok();
+                if answers {
+                    target.config = Some(settings);
+                } else if let Some(db) = loaded.db {
+                    target.db = db;
+                }
+            }
             if output.exists() {
                 return Err(format!("{} exists already", output.display()).into());
             }

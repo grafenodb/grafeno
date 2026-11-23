@@ -615,15 +615,13 @@ pub fn doctor(instance: &Instance) -> Vec<Finding> {
             "no token: only accounts and keys (or nobody, without accounts) can call the API",
         ));
     }
-    if let Some(disk) = crate::packaged::home_on_disk() {
+    if let Some(home) = crate::packaged::home() {
         found.push(finding(
             Verdict::Note,
             format!(
-                "Microsoft Store package: Grafeno runs as your process (grafeno serve), not a                  service; {} is kept in {} and is removed with the package",
-                crate::packaged::home()
-                    .map(|home| home.display().to_string())
-                    .unwrap_or_default(),
-                disk.display()
+                "Microsoft Store package: Grafeno runs as your process (grafeno serve), not a \
+                 service; its files are in {}, which stays when GrafenoDB is uninstalled",
+                home.display()
             ),
         ));
     }
