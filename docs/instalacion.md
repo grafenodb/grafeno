@@ -308,6 +308,37 @@ grafeno service install --account "NT SERVICE\Grafeno"
 (La cuenta virtual necesita entonces permiso de modificación sobre
 `C:\ProgramData\Grafeno` y la carpeta de datos, que el instalador concede.)
 
+### Microsoft Store
+
+GrafenoDB también está empaquetado para Microsoft Store
+([ficha](https://apps.microsoft.com/detail/9PH0179H0JL5)): se instala para
+tu cuenta, sin permisos de administrador, y la Store lo mantiene al día.
+Ejecuta Grafeno como un programa tuyo, no como servicio:
+
+- **Iniciarlo**: GrafenoDB en el menú Inicio abre una consola que sirve tu
+  base de datos en `http://127.0.0.1:7810` (Ctrl+C o cerrarla lo detiene);
+  o, en PowerShell o CMD, `grafeno serve`. La primera vez crea tu
+  configuración con un token nuevo: `grafeno config token` lo muestra.
+- **Usarlo**: el comando `grafeno` funciona en PowerShell y CMD como con el
+  instalador: `grafeno shell` (se conecta a tu servidor), `grafeno doctor`,
+  `grafeno mcp --url http://127.0.0.1:7810 --token <token>` y lo demás.
+- **Tus archivos**: la configuración en `%LOCALAPPDATA%\Grafeno\grafeno.toml`
+  y la base de datos en `%LOCALAPPDATA%\Grafeno\data`, tal como los ve
+  `grafeno`. Windows los guarda en la carpeta propia del paquete,
+  `%LOCALAPPDATA%\Packages\GrafenoDB.GrafenoDB_rwmas8f7748ap\LocalCache\Local\Grafeno`
+  (`grafeno doctor` la muestra): las actualizaciones los conservan,
+  **desinstalar los elimina**. Haz antes una copia (`grafeno backup
+  <archivo>`), o guarda la base de datos en otro sitio desde el principio:
+  `grafeno config init --db D:\Datos\grafeno.redb --force` (una carpeta
+  tuya se queda cuando Grafeno se va).
+
+A diferencia del instalador, la versión de la Store no tiene servicio (no
+arranca con Windows, y `grafeno setup` y `grafeno service` lo indican), un
+servidor por cuenta por defecto, y nada en `C:\ProgramData` ni en el PATH
+del sistema. Se pueden tener las dos en un mismo equipo; guardan
+configuración y datos separados, y solo una puede escuchar en un puerto a
+la vez.
+
 ### Dónde queda cada cosa
 
 | Qué | Linux (paquetes) | Windows (instalador) |

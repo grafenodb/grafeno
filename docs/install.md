@@ -299,6 +299,35 @@ grafeno service install --account "NT SERVICE\Grafeno"
 (The virtual account then needs Modify on `C:\ProgramData\Grafeno` and the
 data folder, which the setup grants.)
 
+### Microsoft Store
+
+GrafenoDB is also packaged for the Microsoft Store
+([listing](https://apps.microsoft.com/detail/9PH0179H0JL5)): it installs
+for your account, without administrator rights, and the Store keeps it up
+to date. It runs Grafeno as your own program, not as a service:
+
+- **Start it**: GrafenoDB in the Start menu opens a console serving your
+  database on `http://127.0.0.1:7810` (Ctrl+C or closing it stops it); or,
+  in PowerShell or CMD, `grafeno serve`. The first time, it creates your
+  settings with a fresh token: `grafeno config token` prints it.
+- **Use it**: the `grafeno` command works in PowerShell and CMD as with the
+  setup: `grafeno shell` (connects to your server), `grafeno doctor`,
+  `grafeno mcp --url http://127.0.0.1:7810 --token <token>`, and the rest.
+- **Your files**: settings in `%LOCALAPPDATA%\Grafeno\grafeno.toml` and the
+  database in `%LOCALAPPDATA%\Grafeno\data`, as `grafeno` sees them.
+  Windows keeps them in the package's own folder,
+  `%LOCALAPPDATA%\Packages\GrafenoDB.GrafenoDB_rwmas8f7748ap\LocalCache\Local\Grafeno`
+  (`grafeno doctor` shows it): updates keep them, **uninstalling removes
+  them**. Back up first (`grafeno backup <file>`), or keep the database
+  elsewhere from the start: `grafeno config init --db D:\Data\grafeno.redb
+  --force` (a folder of yours stays when Grafeno goes).
+
+Unlike the setup, the Store version has no service (it does not start with
+Windows, and `grafeno setup` and `grafeno service` say so), one server per
+account by default, and nothing in `C:\ProgramData` or the system PATH.
+Both can be installed on one computer; they keep separate settings and
+data, and only one can listen on a port at a time.
+
 ### Where everything is
 
 | What | Linux (packages) | Windows (setup) |

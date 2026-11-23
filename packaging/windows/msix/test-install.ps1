@@ -138,6 +138,16 @@ try {
     Stop-Serve $serve
     Check 'no grafeno process left' (-not (Get-Process grafeno -ErrorAction SilentlyContinue))
 
+    # The Start menu entry: it opens a console that serves.
+    Start-Process explorer.exe "shell:AppsFolder\$family!GrafenoDB"
+    $up = $false
+    foreach ($i in 1..100) {
+        try { Invoke-RestMethod "$url/health" | Out-Null; $up = $true; break } catch { Start-Sleep -Milliseconds 300 }
+    }
+    Check 'the Start menu entry serves' $up
+    Get-Process grafeno -ErrorAction SilentlyContinue | Stop-Process -Force
+    foreach ($i in 1..50) { if (-not (Get-Process grafeno -ErrorAction SilentlyContinue)) { break }; Start-Sleep -Milliseconds 200 }
+
     # A database put outside the package's folders, on purpose.
     New-Item -ItemType Directory -Force $outside | Out-Null
     $r = Grafeno @('shell', '--db', "$outside\kept.redb", '-c', "CREATE (:Kept {name: 'outside'})")
