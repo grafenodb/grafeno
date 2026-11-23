@@ -1,0 +1,53 @@
+# Takes a withdrawn release's packages out of the APT and DNF repositories
+# (the gh-pages branch) and signs the repositories again without them.
+# Run it by hand with the version: what was installed stays installed, and
+# `apt`/`dnf` offer the newest version left.
+name: Withdraw packages
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version whose packages leave the repositories (such as 0.5.1)"
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  withdraw:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+      VERSION: ${{ inputs.version }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Take the packages out and sign the repositories again
+        run: |
+          case "$VERSION" in
+            [0-9]*.[0-9]*.[0-9]*) ;;
+            *) echo "not a version: $VERSION"; exit 1 ;;
+          esac
+          if [ -z "$GPG_PRIVATE_KEY" ]; then echo "GPG_PRIVATE_KEY is not set"; exit 1; fi
+          sudo apt-get install -y -qq createrepo-c rpm apt-utils gnupg
+          printf '%s\n' "$GPG_PRIVATE_KEY" | gpg --batch --import
+          export GRAFENO_GPG_KEY="$(gpg --list-secret-keys --with-colons | awk -F: '/^fpr/ {print $10; exit}')"
+          site="$RUNNER_TEMP/site"
+          git clone --branch gh-pages --depth 1 "https://x-access-token:${{ github.token }}@github.com/$GITHUB_REPOSITORY" "$site"
+          before="$(find "$site/rpm" "$site/deb/pool" -name "*$VERSION-*" | wc -l)"
+          if [ "$before" -eq 0 ]; then echo "no packages of $VERSION in the repositories"; exit 1; fi
+          mkdir -p "$RUNNER_TEMP/empty"
+          owner="${GITHUB_REPOSITORY%%/*}"
+          name="${GITHUB_REPOSITORY#*/}"
+          GRAFENO_WITHDRAW="$VERSION" packaging/repo/build-repo.sh "$RUNNER_TEMP/empty" "$site" "https://${owner,,}.github.io/$name"
+          zgrep -q "$VERSION-" "$site"/rpm/repodata/*primary.xml.gz && { echo "the DNF index still names $VERSION"; exit 1; } || true
+          grep -q "Version: $VERSION-" "$site/deb/dists/stable/main/binary-amd64/Packages" && { echo "the APT index still names $VERSION"; exit 1; } || true
+          echo "Left in the APT index:"; grep '^Version:' "$site/deb/dists/stable/main/binary-amd64/Packages" | sort -u
+          cd "$site"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Packages of v$VERSION withdrawn"
+          git push origin gh-pages

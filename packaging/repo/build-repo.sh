@@ -17,6 +17,10 @@
 #   rpm/<arch>/*.rpm, rpm/repodata/  signed packages; repomd.xml.asc
 #   deb/pool/main/*.deb, deb/dists/stable/  Release, InRelease, Release.gpg
 #
+# With GRAFENO_WITHDRAW=<version>, that version's packages are taken out
+# of SITE first (a release withdrawn), and DIST may be empty: the
+# repositories are indexed and signed again without them.
+#
 # Needs: gpg, rpm (rpmsign), createrepo_c, apt-ftparchive (apt-utils).
 set -eu
 
@@ -27,6 +31,9 @@ KEY="${GRAFENO_GPG_KEY:?set GRAFENO_GPG_KEY to the id of the signing key}"
 URL="${URL%/}"
 
 mkdir -p "$SITE/rpm/x86_64" "$SITE/rpm/aarch64" "$SITE/deb/pool/main"
+if [ -n "${GRAFENO_WITHDRAW:-}" ]; then
+    rm -fv "$SITE"/rpm/*/grafeno-"$GRAFENO_WITHDRAW"-*.rpm "$SITE"/deb/pool/main/grafeno_"$GRAFENO_WITHDRAW"-*.deb
+fi
 gpg --batch --yes --armor --export "$KEY" > "$SITE/grafeno.asc"
 
 # DNF: each package signed, then the repository's metadata, signed too.
@@ -36,6 +43,7 @@ cat > "$HOME/.rpmmacros" <<MACROS
 %__gpg_sign_cmd %{__gpg} gpg --batch --no-verbose --no-armor --pinentry-mode loopback --passphrase-file /dev/null -u "%{_gpg_name}" -sbo %{__signature_filename} --digest-algo sha256 %{__plaintext_filename}
 MACROS
 for rpm in "$DIST"/grafeno-*.rpm; do
+    [ -e "$rpm" ] || continue
     name="$(basename "$rpm")"
     case "$name" in grafeno-linux-*) continue ;; esac
     arch="$(rpm -qp --qf '%{ARCH}' "$rpm" 2>/dev/null)"
@@ -56,6 +64,7 @@ REPO
 
 # APT: a flat pool, the indexes of each architecture, a signed Release.
 for deb in "$DIST"/grafeno_*.deb; do
+    [ -e "$deb" ] || continue
     cp "$deb" "$SITE/deb/pool/main/"
 done
 cd "$SITE/deb"
