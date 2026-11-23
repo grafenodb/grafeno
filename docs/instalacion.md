@@ -72,7 +72,7 @@ release, y contra su firma minisign cuando se conoce una clave
 (`GRAFENO_MINISIGN_KEY`, con `minisign` instalado); si no coinciden, se
 detiene. En sistemas con SELinux etiqueta el binario que instala para que
 systemd pueda ejecutarlo. Opciones, como flags o variables de entorno (para
-instalaciones desatendidas): `--version 0.5.1` (`GRAFENO_VERSION`), `--binary`
+instalaciones desatendidas): `--version 0.5.0` (`GRAFENO_VERSION`), `--binary`
 (`GRAFENO_METHOD=binary`), `--no-repo` (`GRAFENO_REPO=0`), `--prefix DIR`
 (`GRAFENO_PREFIX`), `--service`, `--no-start`; `GRAFENO_BASE_URL` y
 `GRAFENO_REPO_URL` lo apuntan a espejos.
@@ -96,7 +96,7 @@ sudo apt update && sudo apt install grafeno
 O un paquete descargado:
 
 ```bash
-sudo apt install ./grafeno_0.5.1-1_amd64.deb
+sudo apt install ./grafeno_0.5.0-1_amd64.deb
 ```
 
 ### Fedora, RHEL y derivados
@@ -117,7 +117,7 @@ descargado no está firmado (la copia del repositorio sí): instálalo con
 `--nogpgcheck` después de comprobar su SHA-256:
 
 ```bash
-sudo dnf install --nogpgcheck ./grafeno-0.5.1-1.x86_64.rpm
+sudo dnf install --nogpgcheck ./grafeno-0.5.0-1.x86_64.rpm
 ```
 
 #### Qué hacen los paquetes
@@ -265,7 +265,7 @@ En modo desatendido (scripts, aprovisionamiento), las mismas respuestas son
 parámetros:
 
 ```powershell
-.\grafeno-0.5.1-windows-x64-setup.exe /VERYSILENT /SUPPRESSMSGBOXES /DIR="C:\Grafeno" /DATADIR="D:\GrafenoData" /PORT=7810 /NETWORK=0 /ACCOUNT=virtual /ADMIN=admin /ADMINPASSWORD="..." /TASKS="service,path"
+.\grafeno-0.5.0-windows-x64-setup.exe /VERYSILENT /SUPPRESSMSGBOXES /DIR="C:\Grafeno" /DATADIR="D:\GrafenoData" /PORT=7810 /NETWORK=0 /ACCOUNT=virtual /ADMIN=admin /ADMINPASSWORD="..." /TASKS="service,path"
 ```
 
 `/NETWORK=1` escucha en todas las interfaces y abre el puerto en el

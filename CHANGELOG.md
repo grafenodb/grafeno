@@ -14,6 +14,11 @@ upgraded in place, with a copy kept first.
 
 ## 0.5.1 (2026-11-22)
 
+Withdrawn the same day: its Windows setup is not code-signed and was
+new, so Windows Smart App Control blocked it, while 0.5.0's runs. Its
+release is kept as a draft; 0.5.0 is the latest release again, and
+these fixes come in the next version, signed.
+
 Fixes. Nothing changes in the files, the HTTP API (still 1) or the
 replication formats: 0.5.0 and 0.5.1 run side by side in a cluster.
 
