@@ -911,7 +911,13 @@ fn serve_beside_mcp(
 }
 
 fn main() -> ExitCode {
-    match run(Cli::parse()) {
+    let mut args: Vec<std::ffi::OsString> = std::env::args_os().collect();
+    // From the Microsoft Store package, no arguments (its Start menu entry)
+    // serves the user's database; `grafeno --help` still lists the rest.
+    if args.len() == 1 && grafeno_server::packaged::is_packaged() {
+        args.push("serve".into());
+    }
+    match run(Cli::parse_from(args)) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("grafeno: {error}");
@@ -977,7 +983,8 @@ fn packaged_banner(settings: &grafeno_server::service::ServerSettings, path: &st
          Database  {}\n  \
          Settings  {} (the token: grafeno config token)\n  \
          These stay when GrafenoDB is uninstalled. Back up with: grafeno backup <new file>\n  \
-         Console   grafeno shell    Check: grafeno doctor    Agents: grafeno mcp --url http://{} --token <token>\n\
+         Console   grafeno shell    Check: grafeno doctor    All commands: grafeno --help\n  \
+         Agents    grafeno mcp --url http://{} --token <token>\n\
          Stop it with Ctrl+C, or by closing this window.",
         env!("CARGO_PKG_VERSION"),
         settings.addr,
@@ -1083,10 +1090,25 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             if packaged && let Some(path) = &path {
                 packaged_banner(&settings, path);
             }
-            if stop_with_stdin {
-                service::run_until_signal_or_stdin(settings)?;
+            let db = settings.db.clone();
+            let served = if stop_with_stdin {
+                service::run_until_signal_or_stdin(settings)
             } else {
-                service::run_until_signal(settings)?;
+                service::run_until_signal(settings)
+            };
+            if let Err(error) = served {
+                // Another process holds the file: say so, not "corrupt".
+                if let Some(db) = db.filter(|_| error.to_string().contains("already open")) {
+                    return Err(format!(
+                        "{} is open in another process (another grafeno serve, mcp or shell, or \
+                         the setup's service): only one process can open a database file. Your \
+                         data is not affected: stop the other one, or connect to it (grafeno \
+                         shell --url http://127.0.0.1:7810)",
+                        db.display()
+                    )
+                    .into());
+                }
+                return Err(error);
             }
         }
         Command::Config(command) => match command {

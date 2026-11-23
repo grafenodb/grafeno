@@ -313,31 +313,47 @@ grafeno service install --account "NT SERVICE\Grafeno"
 GrafenoDB también está empaquetado para Microsoft Store
 ([ficha](https://apps.microsoft.com/detail/9PH0179H0JL5)): se instala para
 tu cuenta, sin permisos de administrador, y la Store lo mantiene al día.
-Ejecuta Grafeno como un programa tuyo, no como servicio:
+Ejecuta Grafeno como un programa tuyo, no como servicio.
 
-- **Iniciarlo**: GrafenoDB en el menú Inicio abre una consola que sirve tu
-  base de datos en `http://127.0.0.1:7810` (Ctrl+C o cerrarla lo detiene);
-  o, en PowerShell o CMD, `grafeno serve`. La primera vez crea tu
-  configuración con un token nuevo: `grafeno config token` lo muestra.
-- **Usarlo**: el comando `grafeno` funciona en PowerShell y CMD como con el
-  instalador: `grafeno shell` (se conecta a tu servidor), `grafeno doctor`,
-  `grafeno mcp --url http://127.0.0.1:7810 --token <token>` y lo demás.
-- **Tus archivos**: la configuración en `%LOCALAPPDATA%\Grafeno\grafeno.toml`
-  y la base de datos en `%LOCALAPPDATA%\Grafeno\data`, tal como los ve
-  `grafeno`. Windows los guarda en la carpeta propia del paquete,
-  `%LOCALAPPDATA%\Packages\GrafenoDB.GrafenoDB_rwmas8f7748ap\LocalCache\Local\Grafeno`
-  (`grafeno doctor` la muestra): las actualizaciones los conservan,
-  **desinstalar los elimina**. Haz antes una copia (`grafeno backup
-  <archivo>`), o guarda la base de datos en otro sitio desde el principio:
-  `grafeno config init --db D:\Datos\grafeno.redb --force` (una carpeta
-  tuya se queda cuando Grafeno se va).
+- **Iniciar y detener**: GrafenoDB en el menú Inicio abre una consola que
+  sirve tu base de datos en `http://127.0.0.1:7810`, solo para este
+  equipo, y dice dónde están los datos y cómo usarlo; Ctrl+C o cerrar la
+  ventana lo detiene. En PowerShell o CMD, `grafeno serve` (o `grafeno` a
+  secas) hace lo mismo. El primer inicio crea tu configuración con un
+  token nuevo: `grafeno config token` lo muestra.
+- **La línea de comandos**: `grafeno` funciona en PowerShell y CMD como
+  con el instalador: `grafeno shell` (se conecta a tu servidor), `grafeno
+  doctor`, `grafeno mcp --url http://127.0.0.1:7810 --token <token>`,
+  `grafeno --help` para lo demás. No se añade al PATH del sistema: Windows
+  lo encuentra a través del paquete.
+- **Tus datos**: la configuración en `%USERPROFILE%\GrafenoDB\grafeno.toml`
+  y la base de datos en `%USERPROFILE%\GrafenoDB\data\grafeno.redb`, que
+  solo tu cuenta puede leer. Las actualizaciones los conservan, y
+  **desinstalar GrafenoDB también los conserva**: borra esa carpeta para
+  eliminarlos.
+- **Copia y restauración**: `grafeno backup <archivo nuevo>` (el servidor
+  puede seguir en marcha). Para restaurar, detén el servidor, aparta
+  `%USERPROFILE%\GrafenoDB\data\grafeno.redb`, ejecuta `grafeno restore
+  <copia> %USERPROFILE%\GrafenoDB\data\grafeno.redb` (verifica la copia y
+  nunca reemplaza un archivo) y vuelve a iniciarlo.
+- **Desde la instalación con el instalador**: `grafeno migrate` muestra lo
+  que copiaría sin cambiar nada; `grafeno migrate --apply` copia la base
+  de datos del servicio (una copia coherente, verificada al restaurarla) a
+  tu configuración, en el siguiente puerto libre mientras el servicio
+  ocupe el 7810. El servicio y sus archivos quedan como estaban; leer su
+  configuración requiere un administrador, o su token con `--token`.
+- **Las dos instaladas**: el servicio del instalador y la versión de la
+  Store guardan configuración y datos separados, y solo una puede escuchar
+  en un puerto. Si el puerto está ocupado, `grafeno serve` dice por qué
+  (el servicio del instalador, otro Grafeno, otro programa) y que los
+  datos no están afectados; sirve en otro puerto con `--addr
+  127.0.0.1:7811`.
 
 A diferencia del instalador, la versión de la Store no tiene servicio (no
-arranca con Windows, y `grafeno setup` y `grafeno service` lo indican), un
-servidor por cuenta por defecto, y nada en `C:\ProgramData` ni en el PATH
-del sistema. Se pueden tener las dos en un mismo equipo; guardan
-configuración y datos separados, y solo una puede escuchar en un puerto a
-la vez.
+arranca con Windows; `grafeno setup` y `grafeno service` lo indican) y no
+escribe nada en `C:\ProgramData`, el PATH del sistema ni el firewall. Si
+no arranca: `grafeno doctor` revisa la configuración, las carpetas y el
+puerto.
 
 ### Dónde queda cada cosa
 

@@ -304,29 +304,45 @@ data folder, which the setup grants.)
 GrafenoDB is also packaged for the Microsoft Store
 ([listing](https://apps.microsoft.com/detail/9PH0179H0JL5)): it installs
 for your account, without administrator rights, and the Store keeps it up
-to date. It runs Grafeno as your own program, not as a service:
+to date. It runs Grafeno as your own program, not as a service.
 
-- **Start it**: GrafenoDB in the Start menu opens a console serving your
-  database on `http://127.0.0.1:7810` (Ctrl+C or closing it stops it); or,
-  in PowerShell or CMD, `grafeno serve`. The first time, it creates your
-  settings with a fresh token: `grafeno config token` prints it.
-- **Use it**: the `grafeno` command works in PowerShell and CMD as with the
+- **Start and stop**: GrafenoDB in the Start menu opens a console serving
+  your database on `http://127.0.0.1:7810`, only to this computer, and
+  says where the data is and how to use it; Ctrl+C or closing the window
+  stops it. In PowerShell or CMD, `grafeno serve` (or `grafeno` alone)
+  does the same. The first start creates your settings with a fresh
+  token: `grafeno config token` prints it.
+- **The command line**: `grafeno` works in PowerShell and CMD as with the
   setup: `grafeno shell` (connects to your server), `grafeno doctor`,
-  `grafeno mcp --url http://127.0.0.1:7810 --token <token>`, and the rest.
-- **Your files**: settings in `%LOCALAPPDATA%\Grafeno\grafeno.toml` and the
-  database in `%LOCALAPPDATA%\Grafeno\data`, as `grafeno` sees them.
-  Windows keeps them in the package's own folder,
-  `%LOCALAPPDATA%\Packages\GrafenoDB.GrafenoDB_rwmas8f7748ap\LocalCache\Local\Grafeno`
-  (`grafeno doctor` shows it): updates keep them, **uninstalling removes
-  them**. Back up first (`grafeno backup <file>`), or keep the database
-  elsewhere from the start: `grafeno config init --db D:\Data\grafeno.redb
-  --force` (a folder of yours stays when Grafeno goes).
+  `grafeno mcp --url http://127.0.0.1:7810 --token <token>`, `grafeno
+  --help` for the rest. It is not added to the system PATH: Windows finds
+  it through the package.
+- **Your data**: settings in `%USERPROFILE%\GrafenoDB\grafeno.toml`, the
+  database in `%USERPROFILE%\GrafenoDB\data\grafeno.redb`, readable only by
+  your account. Updates keep them, and **uninstalling GrafenoDB keeps
+  them too**: delete that folder to remove them.
+- **Backup and restore**: `grafeno backup <new file>` (the server may keep
+  running). To restore, stop the server, move
+  `%USERPROFILE%\GrafenoDB\data\grafeno.redb` aside, run `grafeno restore
+  <backup> %USERPROFILE%\GrafenoDB\data\grafeno.redb` (it checks the backup
+  and never replaces a file), and start it again.
+- **From the setup's installation**: `grafeno migrate` shows what it would
+  copy and changes nothing; `grafeno migrate --apply` copies the service's
+  database (a consistent backup, checked as it is restored) into your
+  settings, on the next free port while the service holds 7810. The
+  service and its files are left as they were; reading its settings needs
+  an administrator, or its token with `--token`.
+- **Both installed**: the setup's service and the Store version keep
+  separate settings and data, and only one can listen on a port. When the
+  port is taken, `grafeno serve` says by what (the setup's service,
+  another Grafeno, another program) and that the data is not affected;
+  serve on another port with `--addr 127.0.0.1:7811`.
 
-Unlike the setup, the Store version has no service (it does not start with
-Windows, and `grafeno setup` and `grafeno service` say so), one server per
-account by default, and nothing in `C:\ProgramData` or the system PATH.
-Both can be installed on one computer; they keep separate settings and
-data, and only one can listen on a port at a time.
+Unlike the setup, the Store version has no service (it does not start
+with Windows; `grafeno setup` and `grafeno service` say so), and writes
+nothing in `C:\ProgramData`, the system PATH or the firewall. If it does
+not start: `grafeno doctor` checks the settings, the folders and the
+port.
 
 ### Where everything is
 

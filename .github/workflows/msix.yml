@@ -74,7 +74,6 @@ jobs:
         run: ./packaging/windows/msix/test-install.ps1 -Package "dist\msix\GrafenoDB_$($env:VERSION)_x64.msix" -Update $env:UPDATE -Setup $env:SETUP -Engine target\release\grafeno.exe
       - name: Windows App Certification Kit
         id: wack
-        continue-on-error: true
         shell: pwsh
         run: ./packaging/windows/msix/wack.ps1 -Package "dist\msix\GrafenoDB_$($env:VERSION)_x64.msix" -Report dist\msix\wack-report.xml
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

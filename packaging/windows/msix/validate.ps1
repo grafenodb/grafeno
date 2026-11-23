@@ -58,6 +58,9 @@ try {
     $text = Get-Content -Raw (Join-Path $work 'AppxManifest.xml')
     Check 'no packaged service' (-not ($text -match 'windows\.service|packagedServices|localSystemServices'))
 
+    # One application (the Store accepts no more), with the command-line alias.
+    $applications = @($manifest.SelectNodes('/m:Package/m:Applications/m:Application', $ns))
+    Check 'one application' ($applications.Count -eq 1) "($($applications.Count))"
     # The command-line alias and the Start menu entry.
     $alias = $manifest.SelectSingleNode('//uap5:ExecutionAlias', $ns)
     Check 'execution alias grafeno.exe' ($alias -and $alias.Alias -ceq 'grafeno.exe')

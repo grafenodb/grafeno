@@ -12,88 +12,163 @@ Linux packages, which do not change.
 | Package family name (derived by Windows) | `GrafenoDB.GrafenoDB_rwmas8f7748ap` |
 | Store ID | `9PH0179H0JL5` ([listing](https://apps.microsoft.com/detail/9PH0179H0JL5)) |
 
-## What the package is, and why
+Files here: `AppxManifest.xml`, `Assets/` (rendered from
+`../grafeno-mark.svg` by `make-assets.ps1`), `build.ps1`, `validate.ps1`,
+`test-install.ps1`, `wack.ps1`, and `store/` (listing, privacy policy
+draft, runFullTrust reason).
+
+## Design
 
 ### What the setup does, and what a package cannot
 
-The setup (Inno Setup, run as administrator) installs `grafeno.exe` in
-Program Files, writes `C:\ProgramData\Grafeno\grafeno.toml` (with a fresh
-token) and the database under it, restricts both folders with `icacls`,
-creates the first administrator, registers the `Grafeno` Windows service
-(a virtual account or LocalSystem, started with Windows), opens the
-firewall when asked, and adds the folder to the system PATH. Upgrades stop
-and remove the service first; uninstalling removes the program, the
-service, the firewall rule and the PATH entry, and keeps the settings and
-the data unless asked. On Windows there is one instance (`grafeno setup`
-refuses others). The program starts child processes only for `icacls`,
-`whoami` and the service tools.
+The setup (run as administrator) installs `grafeno.exe` in Program Files,
+writes `C:\ProgramData\Grafeno\grafeno.toml` (with a fresh token) and the
+database under it, restricts both folders to SYSTEM, the administrators
+and the service, registers the `Grafeno` Windows service (started with
+Windows), opens the firewall when asked, and adds the folder to the system
+PATH. Uninstalling keeps the settings and data unless asked.
 
-Microsoft's documentation sets what an MSIX package for the Store can do:
+Microsoft's documentation sets what a Store package can do:
 
-- A packaged Windows service (`desktop6:Service`) needs the restricted
-  capabilities `packagedServices` (and `localSystemServices` for
-  LocalSystem); Microsoft says "the use of this capability won't be
-  approved" in most Store submissions, and installing one needs an
-  administrator.
+- A packaged service (`desktop6:Service`) needs the restricted capabilities
+  `packagedServices` (and `localSystemServices` for LocalSystem), which
+  "in most cases" are not approved for the Store, and installing one needs
+  an administrator.
 - "Apps that require elevation for any part of their functionality won't
   be accepted into the Store."
-- A packaged program cannot write in its install folder or to HKLM, and
-  what it writes under `%LOCALAPPDATA%` and `%APPDATA%` goes (since Windows
-  10 1903) to a per-user, per-package private folder, kept through
-  updates and removed with the package. Writes elsewhere in the user's
+- A packaged program cannot write in its install folder or to HKLM. What
+  it writes under `%LOCALAPPDATA%` and `%APPDATA%` goes (Windows 10 1903
+  and later) to a per-user, per-package private folder, kept through
+  updates and **removed with the package**. Other folders of the user's
   profile are not redirected.
 - A console program gets a command through an execution alias
-  (`uap5:AppExecutionAlias`, `desktop4:Subsystem="console"`, Windows 10
-  1709 and later): `grafeno` in PowerShell and CMD, without touching PATH.
+  (`uap5:AppExecutionAlias`, `desktop4:Subsystem="console"`).
 
-### The choice: Grafeno as the user's process
+### Grafeno as the user's process
 
-Three ways were weighed:
+Weighed: a packaged service (not viable for the Store, above); a manager
+app controlling an engine installed apart (it would not put the engine in
+the Store, and adds an interface); **the engine as the user's own process**
+(chosen): the same `grafeno.exe` with every command, no service, no
+elevation, no capability but `runFullTrust`.
 
-- **A packaged service**: not viable for the Store (the capabilities above,
-  an administrator to install). Not done.
-- **A manager app controlling an engine installed apart**: it would not
-  put the engine in the Store, and would add an interface to maintain. Not
-  done.
-- **The engine as the user's own process** (chosen): the same
-  `grafeno.exe`, with every command; no service, no elevation, no
-  capability but `runFullTrust` (every packaged desktop program has it).
+The manifest declares one application (the Store accepts no more; the
+Windows App Certification Kit fails a package with two): **GrafenoDB**, in
+the Start menu and as the `grafeno` alias. Started with no arguments from
+the package (as the Start menu does), `grafeno` serves the user's
+database; with arguments it is the usual command line. The minimum is
+Windows 10 2004 (build 19041), the oldest version the package is meant to
+be tested on. Grafeno listens on `127.0.0.1:7810`, so the firewall does
+not ask.
 
-What changes in the program, only when it runs from a package (it has a
-package identity, `crates/grafeno-server/src/packaged.rs`):
+### Where the data lives: `%USERPROFILE%\GrafenoDB`
 
-- The settings are `%LOCALAPPDATA%\Grafeno\grafeno.toml` and the database
-  `%LOCALAPPDATA%\Grafeno\data\grafeno.redb`, instead of
-  `C:\ProgramData\Grafeno`. On disk they are in
-  `%LOCALAPPDATA%\Packages\GrafenoDB.GrafenoDB_rwmas8f7748ap\LocalCache\Local\Grafeno`.
-- `grafeno serve` with no `--config`, `--db` or `--memory` serves those
-  settings, and creates them (with a fresh token) the first time.
-- `grafeno shell` with no connection options connects to that server.
-- `grafeno setup` and `grafeno service install/uninstall` are refused, with
-  what to do instead.
-- `grafeno doctor` checks the user's settings and says where the files are
-  on disk; it does not look for a service.
+Two ways were weighed for a database that must not be lost by surprise:
 
-Nothing changes for a program that is not packaged.
+- **The package's private folder** (`%LOCALAPPDATA%\Grafeno`, redirected):
+  kept through updates, but uninstalling deletes the database with no
+  question asked. The first package did this.
+- **A folder of the user's profile outside AppData** (chosen):
+  `%USERPROFILE%\GrafenoDB`, which Windows does not redirect. It needs no
+  administrator, belongs to the user (other standard users cannot read
+  it), does not collide with the setup's `C:\ProgramData\Grafeno`, is not
+  under Documents (often synced, which does not suit an open database
+  file), and **stays when the package is uninstalled**, as the setup's
+  data does. The install test checks all of this on a real installation.
 
-### The package
+Only when `grafeno.exe` runs from a package (it has a package identity,
+`crates/grafeno-server/src/packaged.rs`):
 
-`AppxManifest.xml` declares two applications on the same `grafeno.exe`:
+- Settings: `%USERPROFILE%\GrafenoDB\grafeno.toml`; database:
+  `%USERPROFILE%\GrafenoDB\data\grafeno.redb`.
+- `grafeno` alone, or `grafeno serve` with no `--config`, `--db` or
+  `--memory`, serves them,
+  and creates them (with a fresh token) the first time. Before serving it
+  prints what GrafenoDB is, the address, where the data is, that it stays
+  on uninstall, how to back up, the CLI commands and how to stop. It never
+  prints the token.
+- **The first package's files** (in the private folder) are copied out on
+  the first start: only when `%USERPROFILE%\GrafenoDB` has no settings
+  yet; the database through a consistent backup, checked as it is
+  restored; the settings keep their token; the old folder is left as it
+  was, with `MOVED-TO-GRAFENODB-FOLDER.txt`; a file at the destination
+  stops it (nothing is replaced); once only.
+- `grafeno shell` with no connection options connects to that server;
+  `grafeno backup <file>` alone backs up that database.
+- `grafeno setup` and `grafeno service install/uninstall` are refused with
+  what to do instead; `grafeno doctor` checks the user's settings.
 
-- **GrafenoDB**, in the Start menu: it opens a console that runs
-  `grafeno serve` (`uap10:Parameters`, hence Windows 10 2004, build 19041,
-  as the minimum). Ctrl+C or closing the window stops it.
-- **GrafenoCli**, with no Start menu entry: the `grafeno` alias, given the
-  arguments typed.
+Nothing changes for a program that is not packaged, except `grafeno
+serve`'s explanation of a taken port and the new `grafeno migrate`.
 
-No service, extension or capability is declared beyond these. Grafeno
-listens on `127.0.0.1:7810` by default, so Windows' firewall does not ask;
-listening on the network needs a firewall rule the user adds.
+### Conflicts
+
+The setup's service and the package both default to port 7810. `grafeno
+serve` checks the port before writing anything, and when it is taken says
+by what: the Grafeno service installed with the setup (it asks the
+service manager), another Grafeno server (it answers `/v1/about`), or
+another program; that the data is not affected; and how to use another
+port. A database file open in another process is refused with its own
+message. Nothing is stopped or uninstalled.
+
+### From the setup's installation: `grafeno migrate`
+
+```powershell
+grafeno migrate            # the plan; changes nothing
+grafeno migrate --apply    # does it
+```
+
+It finds the setup's settings (`C:\ProgramData\Grafeno\grafeno.toml`), the
+`Grafeno` service and whether it runs, the server answering with its
+version and file layout (a newer layout than this program reads stops
+it), the target (`%USERPROFILE%\GrafenoDB`), and a free port. With
+`--apply`:
+
+- the copy is consistent: a backup from the running service over HTTP
+  (`GET /v1/backup`, while it keeps serving), or from the file when the
+  service is stopped (never a raw copy of an open file);
+- it is checked as it is restored into a new file; nothing existing is
+  replaced, and an existing target stops it;
+- new settings get a new token and port 7810, or the next free one when
+  the service holds 7810; accounts, keys and roles come with the data;
+- the service and its files are never stopped, changed or removed, and no
+  token is printed. Remove the setup's installation yourself when the copy
+  serves well.
+
+Privileges: the setup's settings (with its token) are readable only by
+SYSTEM and the administrators. Without them, start the service and give
+its owner token with `--token` (an administrator gets it with the setup's
+`grafeno config token`), or run `grafeno migrate --apply` once from an
+elevated PowerShell. Ordinary use of the package needs no administrator.
+
+Going back (package to setup) is not automated: `grafeno backup` here,
+then `grafeno restore` into the setup's data folder as administrator.
+
+### Backup and restore
+
+- `grafeno backup <new file>`: from the running server (it keeps serving),
+  or from the file when the server is stopped.
+- To restore: stop the server, move
+  `%USERPROFILE%\GrafenoDB\data\grafeno.redb` aside, then
+  `grafeno restore <backup> %USERPROFILE%\GrafenoDB\data\grafeno.redb`
+  (it checks every page and namespace and never replaces a file), and
+  start the server.
+
+### Updates
+
+The package version is `Cargo.toml`'s with a fourth number 0 (the Store
+reserves it): 0.5.1 → 0.5.1.0, 0.5.2 → 0.5.2.0, 1.0.0 → 1.0.0.0. Updates
+keep the settings, the token and the database (tested). The database
+layout follows the engine's rules (docs/install.md): a file stays layout
+18 until it holds hyperedges, then 19, which engines before 0.5 refuse;
+upgrades copy the file first. The Store does not install older versions
+over newer ones; restoring an older backup is the way back.
 
 ## Building
 
-Tools: Rust (the version the workflows pin), the Windows SDK
-(`makeappx.exe`, `signtool.exe`; GitHub's Windows runners have it).
+Tools: Rust (the version the workflows pin) and the Windows SDK
+(`makeappx.exe`, `signtool.exe`, `appcert.exe`), which GitHub's Windows
+runners have.
 
 ```powershell
 cargo build --release --locked -p grafeno-server
@@ -102,116 +177,133 @@ powershell -File packaging/windows/msix/validate.ps1
 ```
 
 `build.ps1` writes `dist\msix\GrafenoDB_<version>_x64.msix` and its
-`.sha256`, unsigned. The version is `Cargo.toml`'s with a fourth number,
-0 (the Store reserves it): `0.5.1` gives `0.5.1.0`. To change it, change
-the workspace version as for any release; `-Version` overrides it for a
-test.
-
-`validate.ps1` checks the identity (name and publisher exactly), the
-architecture, the version, that every image the manifest names is there,
-that the package holds only the program, its images, the manifest and the
-licenses (no settings, keys or certificates), that it declares no service
-and no capability beyond `runFullTrust`, and that `grafeno.exe` is an x64
-program printing that version.
-
-The images in `Assets/` come from `packaging/windows/grafeno-mark.svg`;
-`make-assets.ps1` renders them again (with Edge, headless) when the mark
-changes.
+`.sha256`, unsigned; `-Version` overrides the version for a test.
+`validate.ps1` checks the identity exactly, the architecture, the version
+(fourth number 0), every image the manifest names, that the package holds
+only the program, its images, the manifest and the licenses (no settings,
+keys or certificates), no service and no capability but runFullTrust, and
+that `grafeno.exe` is x64 and prints that version.
 
 ## Testing
 
-`test-install.ps1` installs the package and runs it through its life:
-install, `grafeno --version`, `--help`, `config path`, setup and service
-refused, `grafeno serve` creating its settings and database in the
-package's private folder (nothing in `C:\ProgramData` or the real
-`%LOCALAPPDATA%\Grafeno`), a node written over HTTP, `grafeno doctor`,
-`grafeno shell`, `grafeno mcp` answering `initialize`, a clean stop with no
-process left, the Start menu entry serving, a database made outside the package, an update to a newer
-package keeping the settings and the data, uninstalling (the alias and the
-private folder go, the outside database stays), and reinstalling (fresh
-settings, no data).
+`test-install.ps1` (in the workflow, on GitHub's Windows Server runner)
+installs the package and checks, on the real installation:
 
-It is for a disposable machine: it trusts an ephemeral self-signed
-certificate (subject = the Publisher) for the run, signs copies of the
-packages with it, and removes it at the end. The MSIX workflow runs it on
-GitHub's Windows runner.
+1. install, the alias, `--version`, `--help`, `config path`, setup and
+   service refused;
+2. the first package's files copied out once (same token, data intact, old
+   folder left with its note);
+3. serving: the token, an HTTP write, the database in
+   `%USERPROFILE%\GrafenoDB\data`, nothing in `C:\ProgramData`, the
+   settings not open to other users, a second server refused with the
+   cause, `doctor`, `shell`, `mcp` answering `initialize`;
+4. backup while serving and while stopped, the start message (and no
+   token in it), no process left, restore (and restore refusing to
+   replace), the Start menu entry serving;
+5. an update to a newer package keeping the token and the data;
+6. uninstalling: the package, alias and private folder go,
+   `%USERPROFILE%\GrafenoDB` stays; a reinstall finds it;
+7. with the setup installed and its service on 7810: serving refused,
+   naming the service, writing nothing; `grafeno migrate` planning without
+   changes or tokens; `--apply` copying the service's data to new settings
+   on 7811; a second `--apply` replacing nothing; the service still
+   running with its data.
 
-On a computer of your own, prefer the workflow: an unsigned package does
-not install, and Smart App Control may block the unsigned `grafeno.exe`
-validate.ps1 runs.
+`wack.ps1` runs the Windows App Certification Kit on the package and
+prints each test; the workflow runs it after the install test, keeps its
+report as the artifact `wack-report-<version>`, and shows its outcome in
+the run's summary (it does not fail the run, so that its report is always
+kept; a submission needs it to pass).
+
+### Windows 10 and 11 by hand
+
+GitHub has no Windows 10 or 11 runner. On a disposable virtual machine of
+each (Windows 10 2004 or later; Windows 11), as administrator:
+
+1. Download the workflow's artifact, the setup and `grafeno.exe` (zip) of
+   the same version.
+2. `powershell -ExecutionPolicy Bypass -File test-install.ps1 -Package
+   GrafenoDB_<v>_x64.msix -Update <a newer test package> -Setup
+   <setup.exe> -Engine grafeno.exe` (a newer package: `build.ps1 -Version
+   <x.y.z+1>.0`).
+3. `wack.ps1 -Package GrafenoDB_<v>_x64.msix`.
+4. By hand: open GrafenoDB from the Start menu and read its start message;
+   close the window and check that no `grafeno` process is left.
+
+With Smart App Control on (Windows 11), the test-signed package and the
+unsigned `grafeno.exe` may be blocked; such a machine can check the
+package as the Store signs it only after publication (or in a private
+flight). Record each run here:
+
+| Environment | Status |
+| --- | --- |
+| Windows Server (GitHub runner), CI | runs on every change (see the workflow) |
+| Windows 11 x64 | pending |
+| Windows 10 2004+ x64 | pending |
+| WACK | in CI (outcome in each run's summary) |
+| Store certification | pending (first submission) |
 
 ## The workflow
 
 `.github/workflows/msix.yml` runs by hand (Actions → MSIX → Run workflow),
 on tags `v*`, and on changes to these files. It builds `grafeno.exe`, the
-package, checks it, builds a newer one for the update test, runs
-`test-install.ps1`, and uploads the unsigned package as the artifact
-`grafeno-msix-<version>`. It publishes nothing and does not touch the
-release workflow; on a tag, it fails if the tag and `Cargo.toml` differ.
+package and a newer one, checks them, builds the setup, runs
+`test-install.ps1` and `wack.ps1`, and uploads the unsigned package
+(`grafeno-msix-<version>`) and the WACK report. On a tag it fails if the
+tag and `Cargo.toml` differ. It publishes nothing and does not change the
+release workflow.
 
 ## Signing
 
-Three different things:
-
-1. **The unsigned package** (the artifact): what Partner Center takes.
-   It does not install by double-clicking: Windows installs only signed
-   packages.
+1. **The unsigned package** (the artifact): what Partner Center takes. It
+   does not install by double-clicking.
 2. **Signed for installing outside the Store**: needs a code-signing
-   certificate a Windows machine trusts, whose subject is the manifest's
-   Publisher. None is in this repository; the workflow's test certificate
-   lives only for its run and is trusted only on that runner.
+   certificate a machine trusts, whose subject is the Publisher. None is
+   in this repository; the tests' certificate lives only for their run.
 3. **Signed by Microsoft**: the Store signs the package it distributes.
-   That signature covers that package only: it does not sign the setup,
-   the zip or the MSI files on GitHub Releases.
+   That signature covers that package only, not the setup, zip or MSI on
+   GitHub Releases.
 
-## Publishing in the Microsoft Store
+## Publishing in Partner Center
 
-Automatic submission is not set up: it needs a Partner Center API client
-(Microsoft Entra application) with access to the account, stored as a
-secret, and is left for when that exists.
+Automatic submission is not set up (it needs a Partner Center API client
+with access to the account, stored as a secret).
 
-1. Run the MSIX workflow on the release's tag (or by hand on its commit)
-   and download the artifact `grafeno-msix-<version>`.
-2. Partner Center (partner.microsoft.com) → Apps and games → **GrafenoDB**
-   → **Start update** (or **Start submission** the first time).
-3. **Packages**: upload `GrafenoDB_<version>_x64.msix`. Partner Center
-   checks that its identity matches the product; device family: Windows
-   Desktop.
-4. **Properties**: category (Developer tools), privacy policy URL (the
-   engine sends nothing anywhere the user did not configure), support
-   contact, and the restricted capability **runFullTrust** with its reason:
-   "a desktop database server and command line packaged with the desktop
-   bridge".
-5. **Age ratings**: the questionnaire.
-6. **Store listings** (at least English): description, what's new,
-   screenshots (at least one, 1366×768 or larger; a terminal running
-   `grafeno serve` and `grafeno shell`). Store logos are optional; render
-   them from `packaging/windows/grafeno-mark.svg` as `make-assets.ps1`
-   does if wanted.
-7. **Pricing and availability**: free; markets (all, or chosen);
-   visibility (public, or private while testing); release (as soon as
-   certified, or a date).
-8. **Submit to the Store.** Certification takes from hours to days.
-   Package flighting and gradual rollout of updates, where Partner Center
-   offers them for the account, are on the update's Packages page.
+1. Run the MSIX workflow on the release's tag (or by hand on its commit);
+   check that the install test and WACK passed (the run's summary and
+   report); download `grafeno-msix-<version>`.
+2. Partner Center → Apps and games → **GrafenoDB** → **Start submission**
+   (later, **Start update**).
+3. **Pricing and availability**: free; markets; visibility (private while
+   testing, then public); release as soon as certified or on a date.
+4. **Properties**: category Developer tools; privacy policy URL (publish
+   `store/privacy-policy-draft.md` after review); support contact; the
+   restricted capability runFullTrust with the reason in
+   `store/runfulltrust.md`.
+5. **Age ratings**: the questionnaire (a developer tool; the app shares no
+   user content).
+6. **Packages**: upload `GrafenoDB_<version>_x64.msix`; Partner Center
+   checks its identity against the product; device family Windows Desktop.
+7. **Store listings**: English and Spanish from `store/listing.md`, with
+   real screenshots (its list).
+8. **Submission options**, notes for certification: "GrafenoDB is a
+   database server with a console. Opening it from the Start menu starts
+   the server on 127.0.0.1:7810 and prints how to use it; `grafeno --help`
+   in PowerShell lists the commands."
+9. **Submit to the Store.** Gradual rollout and package flights, where the
+   account offers them, are on later updates' Packages page.
 
-When certification fails, Partner Center gives a report with the policy
-and the step that failed. Usual causes for this package: the
-`runFullTrust` reason missing, the listing lacking what the program does,
-or the program failing when the tester opens it (the Start menu entry
-must serve). Fix it, build a package with a higher version (a new
-Cargo.toml version for real changes) and resubmit.
+When certification fails, its report names the policy and the step. Usual
+causes here: the runFullTrust reason, a listing that does not say what the
+program does, or the program failing when the tester opens it. Fix, build
+a package with a higher version and resubmit.
 
 ## Known limits
 
-- One server per user from the package (the default settings); others need
+- One server per user from the package by default; others need
   `--config` or `--db` and another port.
 - No service: Grafeno runs while its console (or the program that starts
   it) runs, and does not start with Windows.
-- Uninstalling removes the settings and the database in the package's
-  folder. To keep a database, back it up first (`grafeno backup`), or put
-  it outside the package (`grafeno config init --db D:\Data\grafeno.redb
-  --force`; that folder is the user's and stays).
-- Other programs see the files at the on-disk path above, not at
-  `%LOCALAPPDATA%\Grafeno`.
-- x64 only for now.
+- `%USERPROFILE%\GrafenoDB` stays after uninstalling; delete it to remove
+  the data.
+- x64 only.

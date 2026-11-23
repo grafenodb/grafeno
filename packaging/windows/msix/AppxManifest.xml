@@ -3,21 +3,18 @@
   The MSIX package of the Grafeno engine for the Microsoft Store (README.md
   beside this file). build.ps1 puts the version in place of @VERSION@.
 
-  Two applications share grafeno.exe:
-  - "GrafenoDB", the Start menu entry: it opens a console that serves the
-    user's own database (grafeno serve).
-  - "GrafenoCli", without a Start menu entry: the `grafeno` command in
-    PowerShell and CMD (an execution alias), with the arguments typed.
+  One application: the Start menu entry, which opens a console serving the
+  user's database (grafeno with no arguments, from the package), and the
+  `grafeno` command in PowerShell and CMD (an execution alias).
   No service, no elevation: Grafeno runs as the user's process.
 -->
 <Package
   xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
   xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
   xmlns:uap5="http://schemas.microsoft.com/appx/manifest/uap/windows10/5"
-  xmlns:uap10="http://schemas.microsoft.com/appx/manifest/uap/windows10/10"
   xmlns:desktop4="http://schemas.microsoft.com/appx/manifest/desktop/windows10/4"
   xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
-  IgnorableNamespaces="uap uap5 uap10 desktop4 rescap">
+  IgnorableNamespaces="uap uap5 desktop4 rescap">
 
   <Identity
     Name="GrafenoDB.GrafenoDB"
@@ -33,8 +30,8 @@
   </Properties>
 
   <Dependencies>
-    <!-- 19041 (Windows 10 2004): uap10:Parameters; AppData writes of a
-         packaged program go to its private folder since 1903. -->
+    <!-- 19041 (Windows 10 2004): the oldest version the package is
+         tested against (docs: packaging/windows/msix/README.md). -->
     <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.19041.0" MaxVersionTested="10.0.26100.0" />
   </Dependencies>
 
@@ -43,12 +40,14 @@
   </Resources>
 
   <Applications>
+    <!-- One application (the Store accepts no more): the Start menu entry
+         and the `grafeno` alias. Started with no arguments from the
+         package, grafeno serves the user's database. -->
     <Application
       Id="GrafenoDB"
       Executable="grafeno.exe"
       EntryPoint="Windows.FullTrustApplication"
-      desktop4:SupportsMultipleInstances="true"
-      uap10:Parameters="serve">
+      desktop4:SupportsMultipleInstances="true">
       <uap:VisualElements
         DisplayName="GrafenoDB"
         Description="Serve your Grafeno database on http://127.0.0.1:7810 (Ctrl+C stops it)."
@@ -57,20 +56,6 @@
         Square44x44Logo="Assets\Square44x44Logo.png">
         <uap:DefaultTile Wide310x150Logo="Assets\Wide310x150Logo.png" Square310x310Logo="Assets\Square310x310Logo.png" />
       </uap:VisualElements>
-    </Application>
-
-    <Application
-      Id="GrafenoCli"
-      Executable="grafeno.exe"
-      EntryPoint="Windows.FullTrustApplication"
-      desktop4:SupportsMultipleInstances="true">
-      <uap:VisualElements
-        DisplayName="grafeno (command line)"
-        Description="The grafeno command for PowerShell and CMD."
-        BackgroundColor="transparent"
-        Square150x150Logo="Assets\Square150x150Logo.png"
-        Square44x44Logo="Assets\Square44x44Logo.png"
-        AppListEntry="none" />
       <Extensions>
         <uap5:Extension Category="windows.appExecutionAlias">
           <uap5:AppExecutionAlias desktop4:Subsystem="console">
