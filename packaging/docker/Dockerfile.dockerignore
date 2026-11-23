@@ -1,0 +1,8 @@
+# Only what packaging/docker/Dockerfile copies: the release's static
+# binaries (dist/linux), the entry point and the licenses.
+*
+!dist/linux/grafeno-x86_64-unknown-linux-musl.tar.gz
+!dist/linux/grafeno-aarch64-unknown-linux-musl.tar.gz
+!packaging/docker/entrypoint.sh
+!LICENSE-MIT
+!LICENSE-APACHE
