@@ -1,0 +1,72 @@
+# The container image of a release already published: its static Linux
+# binaries are downloaded from the GitHub release, checked against the
+# release's .sha256 files, built into the image (packaging/docker), tested,
+# and pushed to ghcr.io/<owner>/grafeno as <version> and <major>.<minor>,
+# and as latest when it is the latest release. For a release made before
+# the release workflow pushed images, or to push one again. Run by hand:
+# Actions → Image → Run workflow, with the version (0.5.1).
+name: Image
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "A published release's version, such as 0.5.1"
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  image:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    env:
+      VERSION: ${{ inputs.version }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: The release's binaries, checked
+        run: |
+          case "$VERSION" in
+            [0-9]*.[0-9]*.[0-9]*) ;;
+            *) echo "not a version: $VERSION"; exit 1 ;;
+          esac
+          gh release view "v$VERSION" --json isDraft --jq '.isDraft' | grep -qx false || { echo "v$VERSION is not a published release"; exit 1; }
+          mkdir -p dist/linux
+          for target in x86_64-unknown-linux-musl aarch64-unknown-linux-musl; do
+            gh release download "v$VERSION" -D dist/linux -p "grafeno-$target.tar.gz" -p "grafeno-$target.tar.gz.sha256"
+          done
+          (cd dist/linux && sha256sum -c ./*.sha256)
+          echo "REVISION=$(git rev-list -n 1 "v$VERSION" 2>/dev/null || gh api "repos/$GITHUB_REPOSITORY/commits/v$VERSION" --jq .sha)" >> "$GITHUB_ENV"
+          latest="$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq .tag_name)"
+          echo "LATEST=$([ "$latest" = "v$VERSION" ] && echo yes || echo no)" >> "$GITHUB_ENV"
+      - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - name: Build and test it
+        run: |
+          docker buildx build -f packaging/docker/Dockerfile --platform linux/amd64 \
+            --build-arg VERSION="$VERSION" --build-arg REVISION="$REVISION" --load -t grafeno:test .
+          sh packaging/docker/test-image.sh grafeno:test "$VERSION"
+          docker buildx build -f packaging/docker/Dockerfile --platform linux/arm64 \
+            --build-arg VERSION="$VERSION" --build-arg REVISION="$REVISION" --load -t grafeno:test-arm64 .
+          test "$(docker run --rm --platform linux/arm64 grafeno:test-arm64 --version)" = "grafeno $VERSION"
+      - name: Push it to the GitHub Container Registry
+        run: |
+          image="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/grafeno"
+          tags="-t $image:$VERSION -t $image:${VERSION%.*}"
+          if [ "$LATEST" = yes ]; then tags="$tags -t $image:latest"; fi
+          printf '%s' "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          # shellcheck disable=SC2086
+          docker buildx build -f packaging/docker/Dockerfile --platform linux/amd64,linux/arm64 \
+            --build-arg VERSION="$VERSION" --build-arg REVISION="$REVISION" \
+            --provenance=mode=max --sbom=true $tags --push .
+          docker buildx imagetools inspect "$image:$VERSION"
+          docker logout ghcr.io
+          {
+            echo "### $image:$VERSION"
+            echo "- from the binaries of release v$VERSION (commit $REVISION), checked against its .sha256 files"
+            echo "- tags: $VERSION, ${VERSION%.*}$( [ "$LATEST" = yes ] && echo ', latest')"
+          } >> "$GITHUB_STEP_SUMMARY"
