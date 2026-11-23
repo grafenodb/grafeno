@@ -211,9 +211,22 @@ installs the package and checks, on the real installation:
 
 `wack.ps1` runs the Windows App Certification Kit on the package and
 prints each test; the workflow runs it after the install test, keeps its
-report as the artifact `wack-report-<version>`, and shows its outcome in
-the run's summary (it does not fail the run, so that its report is always
-kept; a submission needs it to pass).
+report as the artifact `wack-report-<version>` and shows its outcome in
+the run's summary. It fails when a required test fails. Microsoft's
+optional Desktop Bridge tests are "informational only and will not be
+used to evaluate your app during Microsoft Store onboarding"; two show up
+here and are reported, not failed:
+
+- **Blocked executables** (optional; about Windows 10 S): `grafeno.exe`
+  can start processes (`CreateProcessW`; the Rust standard library also
+  names `cmd.exe`, to run batch files). Grafeno starts `icacls` and
+  `whoami` to restrict its settings file, and nothing else; the package
+  is not meant for Windows 10 S.
+- **DPI awareness** (a warning): a console program draws no windows of
+  its own.
+
+The first runs also failed **Application count** (the package then had two
+applications); it has one since, and that test passes.
 
 ### Windows 10 and 11 by hand
 
@@ -240,7 +253,7 @@ flight). Record each run here:
 | Windows Server (GitHub runner), CI | runs on every change (see the workflow) |
 | Windows 11 x64 | pending |
 | Windows 10 2004+ x64 | pending |
-| WACK | in CI (outcome in each run's summary) |
+| WACK | in CI: every required test passes; Blocked executables (optional) fails, DPI awareness warns |
 | Store certification | pending (first submission) |
 
 ## The workflow

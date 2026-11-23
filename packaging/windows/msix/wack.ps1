@@ -37,16 +37,27 @@ try {
     if (-not (Test-Path $Report)) { throw "WACK wrote no report (exit $LASTEXITCODE)" }
     [xml]$xml = Get-Content -Raw $Report
     $overall = $xml.REPORT.OVERALL_RESULT
+    # Microsoft's optional Desktop Bridge tests are "informational only and
+    # will not be used to evaluate your app during Microsoft Store
+    # onboarding" (learn.microsoft.com, windows-desktop-bridge-app-tests):
+    # Blocked executables and Archive files usage are about Windows 10 S.
+    # DPI awareness is a warning (a console program draws no windows).
+    $optional = @('Blocked executables', 'Archive files usage', 'DPIAwarenessValidation')
+    $required = @()
     foreach ($test in $xml.SelectNodes('//TEST')) {
         $result = $test.RESULT.'#cdata-section'
         if (-not $result) { $result = $test.RESULT.InnerText }
-        Write-Host ("{0,-10} {1}" -f $result, $test.NAME)
+        $kind = if ($optional -contains $test.NAME) { ' (optional, informational)' } else { '' }
+        Write-Host ("{0,-10} {1}{2}" -f $result, $test.NAME, $kind)
         if ($result -and $result -notmatch 'PASS') {
             foreach ($message in $test.SelectNodes('.//MESSAGE')) { Write-Host "           $($message.TEXT)" }
+            if ($result -match 'FAIL' -and -not $kind) { $required += $test.NAME }
         }
     }
     Write-Host "WACK overall result: $overall (report: $Report)"
-    if ($overall -ne 'PASS') { throw "WACK: $overall" }
+    if ($required.Count -gt 0) { throw "WACK: required tests failed: $($required -join ', ')" }
+    if ($overall -eq 'FAIL') { throw 'WACK: FAIL' }
+    Write-Host 'Every required test passed.'
 } finally {
     Get-AppxPackage -Name 'GrafenoDB.GrafenoDB' | Remove-AppxPackage -ErrorAction SilentlyContinue
     Get-ChildItem Cert:\LocalMachine\TrustedPeople | Where-Object Thumbprint -eq $cert.Thumbprint | Remove-Item
