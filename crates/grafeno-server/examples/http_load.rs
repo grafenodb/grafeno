@@ -33,7 +33,13 @@ fn agent() -> ureq::Agent {
         .into()
 }
 
-fn query(agent: &ureq::Agent, url: &str, token: &str, text: &str, params: Value) -> Result<Value, String> {
+fn query(
+    agent: &ureq::Agent,
+    url: &str,
+    token: &str,
+    text: &str,
+    params: Value,
+) -> Result<Value, String> {
     let mut response = agent
         .post(format!("{url}/v1/bench/query"))
         .header("authorization", format!("Bearer {token}"))
@@ -57,7 +63,13 @@ fn setup(url: &str, token: &str, nodes: u64) -> Result<(), String> {
         .post(format!("{url}/v1/namespaces"))
         .header("authorization", format!("Bearer {token}"))
         .send_json(json!({ "name": "bench" }));
-    query(&agent, url, token, "CREATE INDEX mms_code IF NOT EXISTS FOR (n:mms) ON (n.code)", json!({}))?;
+    query(
+        &agent,
+        url,
+        token,
+        "CREATE INDEX mms_code IF NOT EXISTS FOR (n:mms) ON (n.code)",
+        json!({}),
+    )?;
     let chunk = 5_000;
     let mut start = 0;
     while start < nodes {
@@ -79,7 +91,13 @@ fn setup(url: &str, token: &str, nodes: u64) -> Result<(), String> {
         )?;
         start += chunk;
     }
-    let count = query(&agent, url, token, "MATCH (n:mms) RETURN count(n) AS n", json!({}))?;
+    let count = query(
+        &agent,
+        url,
+        token,
+        "MATCH (n:mms) RETURN count(n) AS n",
+        json!({}),
+    )?;
     eprintln!("bench: {} mms nodes", count["rows"][0][0]);
     Ok(())
 }
@@ -99,7 +117,10 @@ fn run(url: &str, token: &str, case: &str, users: usize, seconds: u64) -> Result
             while !stop.load(Ordering::Relaxed) {
                 let begun = Instant::now();
                 let ok = match case.as_str() {
-                    "health" => agent.get(format!("{url}/health")).call().is_ok_and(|r| r.status() == 200),
+                    "health" => agent
+                        .get(format!("{url}/health"))
+                        .call()
+                        .is_ok_and(|r| r.status() == 200),
                     "namespaces" => agent
                         .get(format!("{url}/v1/namespaces"))
                         .header("authorization", format!("Bearer {token}"))
@@ -130,7 +151,10 @@ fn run(url: &str, token: &str, case: &str, users: usize, seconds: u64) -> Result
     }
     std::thread::sleep(Duration::from_secs(seconds));
     stop.store(true, Ordering::Relaxed);
-    let mut all: Vec<u32> = handles.into_iter().flat_map(|h| h.join().unwrap()).collect();
+    let mut all: Vec<u32> = handles
+        .into_iter()
+        .flat_map(|h| h.join().unwrap())
+        .collect();
     let elapsed = started.elapsed().as_secs_f64();
     all.sort_unstable();
     let pct = |q: f64| -> f64 {
