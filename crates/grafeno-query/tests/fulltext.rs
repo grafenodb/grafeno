@@ -270,3 +270,52 @@ fn spanish_and_simple_analyzers() {
     assert_eq!(count("plain", "canciones"), 1, "no stemming");
     assert_eq!(count("plain", "el"), 1, "no stop words");
 }
+
+/// `labels` and `where` keep only the nodes they pass, before the limit is
+/// counted (as in a vector search); fuzzy and prefix words read the
+/// index's terms, cached per commit, and see a term added since.
+#[test]
+fn searching_with_a_filter_and_fuzzy_words() {
+    let db = notes();
+    run(
+        &db,
+        "CREATE FULLTEXT INDEX notes FOR (n:Note) ON EACH [n.title, n.body]
+         OPTIONS {analyzer: 'english', weights: {title: 3}}",
+    );
+    run(
+        &db,
+        "MATCH (n:Note) WHERE n.title STARTS WITH 'Graph' SET n.kept = true",
+    );
+    let kept = rows(
+        &db,
+        "CALL db.searchIndex('notes', 'graph', {limit: 2, fragments: false, where: {kept: true}})
+         YIELD node RETURN node.title",
+    );
+    // Two results although the best ones overall include unkept notes.
+    assert_eq!(kept.as_array().unwrap().len(), 2, "{kept}");
+    for row in kept.as_array().unwrap() {
+        assert!(row[0].as_str().unwrap().starts_with("Graph"), "{kept}");
+    }
+    let none = rows(
+        &db,
+        "CALL db.searchIndex('notes', 'graph', {limit: 5, labels: ['Draft']}) YIELD node RETURN node.title",
+    );
+    assert_eq!(none, json!([]));
+    assert!(
+        fail(
+            &db,
+            "CALL db.searchIndex('notes', 'graph', {where: 3}) YIELD node RETURN node"
+        )
+        .contains("where")
+    );
+
+    // Fuzzy and prefix words, then a new term after a commit.
+    assert_eq!(titles(&db, "recipy~1"), ["Cooking"]);
+    assert_eq!(titles(&db, "embed*"), ["Vector search"]);
+    run(
+        &db,
+        "CREATE (:Note {title: 'Quinoa', body: 'a seed eaten as a grain'})",
+    );
+    assert_eq!(titles(&db, "quinao~2"), ["Quinoa"]);
+    assert_eq!(titles(&db, "quin*"), ["Quinoa"]);
+}

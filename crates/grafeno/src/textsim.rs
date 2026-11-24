@@ -31,6 +31,37 @@ pub fn levenshtein(a: &str, b: &str) -> usize {
     previous[b.len()]
 }
 
+/// [`levenshtein`] if it is at most `max`; `None` past it. It stops as
+/// soon as a whole row of the table is past `max` (no later row can come
+/// back under it), so most far-apart words cost a few rows.
+pub fn levenshtein_within(a: &[char], b: &[char], max: usize) -> Option<usize> {
+    if a.len().abs_diff(b.len()) > max {
+        return None;
+    }
+    if a.is_empty() || b.is_empty() {
+        return Some(a.len().max(b.len()));
+    }
+    let mut previous: Vec<usize> = (0..=b.len()).collect();
+    let mut current = vec![0; b.len() + 1];
+    for (i, ca) in a.iter().enumerate() {
+        current[0] = i + 1;
+        let mut least = current[0];
+        for (j, cb) in b.iter().enumerate() {
+            let cost = usize::from(ca != cb);
+            current[j + 1] = (previous[j + 1] + 1)
+                .min(current[j] + 1)
+                .min(previous[j] + cost);
+            least = least.min(current[j + 1]);
+        }
+        if least > max {
+            return None;
+        }
+        std::mem::swap(&mut previous, &mut current);
+    }
+    let distance = previous[b.len()];
+    (distance <= max).then_some(distance)
+}
+
 /// [`levenshtein`] that also counts swapping two neighbors as one edit
 /// (optimal string alignment: "jonh" and "john" are one edit apart).
 pub fn damerau_levenshtein(a: &str, b: &str) -> usize {
@@ -540,6 +571,24 @@ mod tests {
         assert_eq!(damerau_within("graphene", "grafeno", 1), None);
         assert_eq!(damerau_within("graphene", "grafeno", 3), Some(3));
         assert!(close(edit_similarity("martha", "marhta"), 1.0 - 1.0 / 6.0));
+        // The bounded Levenshtein agrees with the full one up to its bound.
+        let chars = |s: &str| s.chars().collect::<Vec<char>>();
+        for (a, b) in [
+            ("kitten", "sitting"),
+            ("añejo", "anejo"),
+            ("hiperbilirrubinemia", "hiperbilirruibnemia"),
+            ("", "ab"),
+            ("fractura", "fracturas"),
+        ] {
+            let full = levenshtein(a, b);
+            for max in 0..4 {
+                assert_eq!(
+                    levenshtein_within(&chars(a), &chars(b), max),
+                    (full <= max).then_some(full),
+                    "{a} / {b} within {max}"
+                );
+            }
+        }
     }
 
     #[test]

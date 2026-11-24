@@ -240,6 +240,42 @@ fn vector_search_arg(value: Option<&Value>) -> Result<grafeno::VectorSearch, Que
     Ok(search)
 }
 
+/// The `labels` and `where` of a search's options: the nodes to keep.
+fn filter_arg(
+    options: &BTreeMap<String, Value>,
+) -> Result<Option<grafeno::VectorFilter>, QueryError> {
+    let mut filter = grafeno::VectorFilter::default();
+    match options.get("labels") {
+        None | Some(Value::Null) => {}
+        Some(Value::List(labels)) => {
+            for label in labels {
+                let Value::Str(label) = label else {
+                    return Err(QueryError::runtime("labels is a list of labels"));
+                };
+                filter.labels.push(label.clone());
+            }
+        }
+        Some(_) => return Err(QueryError::runtime("labels is a list of labels")),
+    }
+    match options.get("where") {
+        None | Some(Value::Null) => {}
+        Some(Value::Map(props)) => {
+            for (key, value) in props {
+                filter.props.insert(
+                    key.clone(),
+                    value.to_property().map_err(QueryError::runtime)?,
+                );
+            }
+        }
+        Some(_) => {
+            return Err(QueryError::runtime(
+                "where is a map of property values: {status: 'active'}",
+            ));
+        }
+    }
+    Ok((!filter.is_empty()).then_some(filter))
+}
+
 /// Hits as `node, score` rows, without the nodes the caller may not see.
 fn vector_rows(ctx: &Context, hits: Vec<grafeno::Hit>) -> Result<Vec<Vec<Value>>, QueryError> {
     let mut rows = Vec::new();
@@ -532,7 +568,7 @@ pub(crate) fn call(
                     "db.searchIndex() needs the index's name and the query",
                 ));
             };
-            let (limit, fragments) = match args.get(2) {
+            let (limit, fragments, filter) = match args.get(2) {
                 Some(Value::Map(options)) => {
                     let limit =
                         limit_arg(&[options.get("limit").cloned().unwrap_or(Value::Null)], 0)?;
@@ -543,11 +579,12 @@ pub(crate) fn call(
                             return Err(QueryError::runtime("fragments is true or false"));
                         }
                     };
-                    (limit, fragments)
+                    (limit, fragments, filter_arg(options)?)
                 }
-                _ => (limit_arg(args, 2)?, true),
+                _ => (limit_arg(args, 2)?, true, None),
             };
-            let hits = read.fulltext_search(ns, index, query, limit, fragments)?;
+            let hits =
+                read.fulltext_search_filtered(ns, index, query, limit, fragments, filter.as_ref())?;
             let mut rows = Vec::new();
             for hit in hits {
                 let Some(node) = ctx.node(hit.node)? else {

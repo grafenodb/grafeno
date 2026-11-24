@@ -552,6 +552,9 @@ pub(crate) struct Shared {
     /// Odd while a commit is under way; it grows by two with each commit.
     generation: AtomicU64,
     projections: Mutex<Vec<Cached>>,
+    /// Each full-text index's distinct terms, sorted, as of a commit: what
+    /// fuzzy and prefix words of a query are matched against.
+    fulltext_terms: Mutex<Vec<CachedTerms>>,
     /// The bytes the cached projections may take.
     projection_budget: std::sync::atomic::AtomicUsize,
     /// The change log's window and commit listeners.
@@ -574,6 +577,7 @@ impl Default for Shared {
         Self {
             generation: AtomicU64::new(0),
             projections: Mutex::default(),
+            fulltext_terms: Mutex::default(),
             projection_budget: std::sync::atomic::AtomicUsize::new(DEFAULT_PROJECTION_CACHE),
             changes: crate::changes::Hub::default(),
             audit_retention: crate::audit::Retention::default(),
@@ -586,6 +590,16 @@ impl Default for Shared {
         }
     }
 }
+
+struct CachedTerms {
+    generation: u64,
+    ns: String,
+    index: String,
+    terms: Arc<Vec<String>>,
+}
+
+/// Term lists kept at once (one per full-text index and commit).
+const CACHED_TERM_LISTS: usize = 32;
 
 struct Cached {
     generation: u64,
@@ -625,6 +639,48 @@ impl Shared {
         let after = self.generation.load(Ordering::SeqCst);
         let generation = (before == after && before.is_multiple_of(2)).then_some(before);
         (snapshot, generation)
+    }
+
+    /// The cached terms of full-text index `index` of `ns`, as of commit
+    /// `generation`.
+    pub(crate) fn fulltext_terms(
+        &self,
+        generation: u64,
+        ns: &str,
+        index: &str,
+    ) -> Option<Arc<Vec<String>>> {
+        let cached = self
+            .fulltext_terms
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        cached
+            .iter()
+            .find(|c| c.generation == generation && c.ns == ns && c.index == index)
+            .map(|c| c.terms.clone())
+    }
+
+    pub(crate) fn keep_fulltext_terms(
+        &self,
+        generation: u64,
+        ns: &str,
+        index: &str,
+        terms: Arc<Vec<String>>,
+    ) {
+        let mut cached = self
+            .fulltext_terms
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        // Older commits will not be asked for again by new readers.
+        cached.retain(|c| c.generation >= generation);
+        if cached.len() >= CACHED_TERM_LISTS {
+            cached.remove(0);
+        }
+        cached.push(CachedTerms {
+            generation,
+            ns: ns.to_owned(),
+            index: index.to_owned(),
+            terms,
+        });
     }
 
     fn get(&self, generation: u64, ns: &str, spec: &ProjectionSpec) -> Option<Arc<Projection>> {

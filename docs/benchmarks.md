@@ -1563,3 +1563,26 @@ tools/bench-http/README.md).
 musl's allocator serializes allocations across threads, so every request
 that allocates (a snapshot, JSON) got dearer as users were added; the
 Linux builds now link mimalloc, which keeps the cost flat, as glibc does.
+
+## Full-text search on the ICD-11 catalogue (2026-11-24)
+
+An outside benchmark against another search engine, on the WHO's ICD-11
+in Spanish (MMS: 37,211 entities; index over title, terms and context with
+weights 5, 3 and 0.5, `spanish` analyzer), sends each search as a phrase,
+its words and a fuzzy variant of each word of four letters or more
+(`"fractura hueso" fractura hueso fractura~2 hueso~1`). Measured in
+containers with that benchmark's engine phase (closed-loop users calling
+`db.searchIndex(..., {limit: 25, fragments: false})` with 400 realistic
+queries), the same machine and data:
+
+| `db.searchIndex`, 1 / 16 / 64 users | requests per second | CPU per query, 1 user |
+| --- | ---: | ---: |
+| 0.5.2 | 41 / 284 / 288 | 20 ms |
+| after (term lists per commit, scoring without copies) | 81 / 426 / 310 | 9 ms |
+| the other engine, same run | 101 / 506 / 541 | 11 ms |
+
+Single-word queries cost little once their entries are read: "sistema"
+(13,715 matches) answers 25 results in about 6 ms. What remains is
+proportional to the matches of common words, every one of which is
+scored; the other engine skips most of them with per-block bounds, which
+explains the gap with 64 users.

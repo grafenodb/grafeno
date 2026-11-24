@@ -12,6 +12,23 @@ break a client of the previous one, and the database files' layout
 version (now 19 for a file that holds hyperedges, 18 otherwise) is
 upgraded in place, with a copy kept first.
 
+## Unreleased
+
+- **Changed**: full-text search costs about half the CPU per query. A fuzzy
+  (`word~2`) or prefix (`word*`) term no longer seeks every term of the
+  index that starts with the same letter: each index's terms are read
+  once per commit and kept in memory, and the edit distance stops as soon
+  as it is out of reach. A term's entries are scored without copying them
+  or their positions, once per query (a word, its fuzzy variants and a
+  phrase share them), and only the best matches are sorted. On the ICD-11
+  catalogue (37,000 entities, Spanish, words plus fuzzy variants) a query
+  took about 9 ms of CPU against 20; a fuzzy expansion, in a query of the
+  same words, half the time. A fuzzy term now expands to its 64 nearest
+  terms rather than the first 64 in order.
+- **Added**: `db.searchIndex(index, query, {labels, where})` keeps only the
+  nodes with those labels and property values, before `limit` is counted,
+  as a vector search does (`ReadTx::fulltext_search_filtered` in Rust).
+
 ## 0.5.2 (2026-11-23)
 
 Faster on Linux under concurrent requests, and a container image. Nothing

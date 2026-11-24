@@ -15,6 +15,7 @@
 //! as the entries are.
 
 use std::collections::{BTreeSet, HashMap, HashSet};
+use std::sync::Arc;
 
 use grafeno_core::{Error, NodeId, Props, Result};
 use redb::{ReadableTable, TableDefinition};
@@ -363,6 +364,19 @@ fn parse(bytes: &[u8]) -> Option<Posting<'_>> {
         frequency,
         positions,
     })
+}
+
+/// An entry's field, the field's length and the term's frequency there,
+/// read without its positions (all BM25 needs).
+fn parse_counts(bytes: &[u8]) -> Option<(usize, u32, u32)> {
+    let rest = bytes.strip_prefix(&[TERM])?;
+    let end = rest.iter().position(|b| *b == 0)?;
+    let rest = &rest[end + 1..];
+    let field = *rest.first()? as usize;
+    let number = |at: usize| -> Option<u32> {
+        Some(u32::from_be_bytes(rest.get(at..at + 4)?.try_into().ok()?))
+    };
+    Some((field, number(1)?, number(5)?))
 }
 
 /// Documents and terms per field of one index.
@@ -798,6 +812,14 @@ struct Searcher<'a, T: ReadableTable<IndexKey, ()>> {
     average: Vec<f32>,
     /// The terms that matched, for fragments.
     matched: HashSet<String>,
+    /// For the cache of the index's terms.
+    shared: &'a crate::algo::Shared,
+    generation: Option<u64>,
+    /// The index's distinct terms, sorted, once read.
+    dictionary: Option<Arc<Vec<String>>>,
+    /// Scores already computed in this query, by field and term: a word,
+    /// its fuzzy variants and a phrase often ask for the same term.
+    scored: HashMap<(Option<usize>, String), Arc<Scores>>,
 }
 
 type Scores = HashMap<u128, f32>;
@@ -880,24 +902,80 @@ impl<T: ReadableTable<IndexKey, ()>> Searcher<'_, T> {
         Ok(out)
     }
 
+    /// The index's distinct terms, sorted: cached per commit, so that a
+    /// fuzzy or prefix word reads a list in memory instead of seeking every
+    /// term that could match.
+    fn dictionary(&mut self) -> Result<Arc<Vec<String>>> {
+        if let Some(terms) = &self.dictionary {
+            return Ok(terms.clone());
+        }
+        let cached = self.generation.and_then(|generation| {
+            self.shared
+                .fulltext_terms(generation, self.ns, &self.def.name)
+        });
+        let terms = match cached {
+            Some(terms) => terms,
+            None => {
+                let terms = Arc::new(self.terms_from("", usize::MAX)?);
+                if let Some(generation) = self.generation {
+                    self.shared.keep_fulltext_terms(
+                        generation,
+                        self.ns,
+                        &self.def.name,
+                        terms.clone(),
+                    );
+                }
+                terms
+            }
+        };
+        self.dictionary = Some(terms.clone());
+        Ok(terms)
+    }
+
     /// BM25 of `term`, per field and weighted, for every node that has it.
-    fn term_scores(&self, field: Option<usize>, term: &str) -> Result<Scores> {
-        let postings: Vec<_> = self
-            .postings(term)?
-            .into_iter()
-            .filter(|posting| field.is_none_or(|field| posting.1 == field))
-            .collect();
-        let documents: HashSet<u128> = postings.iter().map(|posting| posting.0).collect();
+    /// Its entries are read once per query, without copying them or their
+    /// positions.
+    fn term_scores(&mut self, field: Option<usize>, term: &str) -> Result<Arc<Scores>> {
+        if let Some(scores) = self.scored.get(&(field, term.to_owned())) {
+            return Ok(scores.clone());
+        }
+        let mut low = vec![TERM];
+        low.extend_from_slice(term.as_bytes());
+        low.push(0);
+        let mut high = low.clone();
+        high.push(0xFF);
+        let mut entries: Vec<(u128, usize, u32, u32)> = Vec::new();
+        for item in self
+            .table
+            .range(
+                (self.ns, self.def.name.as_str(), low.as_slice(), 0u128)
+                    ..=(self.ns, self.def.name.as_str(), high.as_slice(), u128::MAX),
+            )
+            .map_err(storage)?
+        {
+            let (key, _) = item.map_err(storage)?;
+            let (_, _, bytes, id) = key.value();
+            if let Some((entry_field, length, frequency)) = parse_counts(bytes)
+                && field.is_none_or(|field| field == entry_field)
+            {
+                entries.push((id, entry_field, length, frequency));
+            }
+        }
+        let mut documents: Vec<u128> = entries.iter().map(|entry| entry.0).collect();
+        documents.sort_unstable();
+        documents.dedup();
         let found = documents.len() as f32;
         let idf = (1.0 + (self.documents - found + 0.5) / (found + 0.5)).ln();
-        let mut scores = Scores::new();
-        for (id, field, length, frequency, _) in postings {
+        let mut scores = Scores::with_capacity(documents.len());
+        for (id, field, length, frequency) in entries {
             let average = self.average.get(field).copied().unwrap_or(1.0).max(1.0);
             let frequency = frequency as f32;
             let norm = K1 * (1.0 - B + B * length as f32 / average);
             *scores.entry(id).or_default() +=
                 self.fulltext.weight(field) * idf * frequency * (K1 + 1.0) / (frequency + norm);
         }
+        let scores = Arc::new(scores);
+        self.scored.insert((field, term.to_owned()), scores.clone());
         Ok(scores)
     }
 
@@ -913,31 +991,49 @@ impl<T: ReadableTable<IndexKey, ()>> Searcher<'_, T> {
                 if positive && !scores.is_empty() {
                     self.matched.insert(term.clone());
                 }
-                Ok(scores)
+                Ok(Scores::clone(&scores))
             }
             Query::Term { field, term, how } => {
+                let dictionary = self.dictionary()?;
                 let candidates: Vec<(String, f32)> = match how {
-                    How::Prefix => self
-                        .terms_from(term, MAX_EXPANSIONS)?
-                        .into_iter()
-                        .map(|found| (found, 1.0))
-                        .collect(),
+                    How::Prefix => {
+                        let start =
+                            dictionary.partition_point(|found| found.as_str() < term.as_str());
+                        dictionary[start..]
+                            .iter()
+                            .take_while(|found| found.starts_with(term.as_str()))
+                            .take(MAX_EXPANSIONS)
+                            .map(|found| (found.clone(), 1.0))
+                            .collect()
+                    }
                     How::Fuzzy(distance) => {
-                        let first: String = term.chars().take(1).collect();
-                        let mut near = Vec::new();
-                        for found in self.terms_from(&first, usize::MAX)? {
-                            if found.len().abs_diff(term.len()) > *distance {
+                        // Terms that start with the same letter, at most
+                        // `distance` edits away; the nearest are kept.
+                        let target: Vec<char> = term.chars().collect();
+                        let first: String = target.iter().take(1).collect();
+                        let start =
+                            dictionary.partition_point(|found| found.as_str() < first.as_str());
+                        let mut near: Vec<(usize, &String)> = Vec::new();
+                        for found in dictionary[start..]
+                            .iter()
+                            .take_while(|found| found.starts_with(first.as_str()))
+                        {
+                            // A character is at most four bytes.
+                            if found.len().abs_diff(term.len()) > 4 * *distance {
                                 continue;
                             }
-                            let apart = crate::textsim::levenshtein(term, &found);
-                            if apart <= *distance {
-                                near.push((found, 1.0 - 0.2 * apart as f32));
-                                if near.len() == MAX_EXPANSIONS {
-                                    break;
-                                }
+                            let chars: Vec<char> = found.chars().collect();
+                            if let Some(apart) =
+                                crate::textsim::levenshtein_within(&target, &chars, *distance)
+                            {
+                                near.push((apart, found));
                             }
                         }
-                        near
+                        near.sort();
+                        near.truncate(MAX_EXPANSIONS);
+                        near.into_iter()
+                            .map(|(apart, found)| (found.clone(), 1.0 - 0.2 * apart as f32))
+                            .collect()
                     }
                     How::Exact => unreachable!("handled above"),
                 };
@@ -947,7 +1043,7 @@ impl<T: ReadableTable<IndexKey, ()>> Searcher<'_, T> {
                     if positive && !found_scores.is_empty() {
                         self.matched.insert(found.clone());
                     }
-                    for (id, score) in found_scores {
+                    for (&id, &score) in found_scores.iter() {
                         let best = scores.entry(id).or_default();
                         *best = best.max(score * factor);
                     }
@@ -1043,7 +1139,7 @@ impl<T: ReadableTable<IndexKey, ()>> Searcher<'_, T> {
             return Ok(scores);
         }
         for term in terms {
-            for (id, score) in self.term_scores(field, term)? {
+            for (&id, &score) in self.term_scores(field, term)?.iter() {
                 if hits.contains(&id) {
                     *scores.entry(id).or_default() += score;
                 }
@@ -1128,6 +1224,21 @@ impl ReadTx {
         limit: usize,
         with_fragments: bool,
     ) -> Result<Vec<FulltextHit>> {
+        self.fulltext_search_filtered(ns, index, query, limit, with_fragments, None)
+    }
+
+    /// [`ReadTx::fulltext_search`] keeping only the nodes `filter` passes
+    /// (any of its labels, each of its property values), before `limit`
+    /// is counted: as the `labels` and `where` of a vector search.
+    pub fn fulltext_search_filtered(
+        &self,
+        ns: &str,
+        index: &str,
+        query: &str,
+        limit: usize,
+        with_fragments: bool,
+        filter: Option<&crate::VectorFilter>,
+    ) -> Result<Vec<FulltextHit>> {
         let def = self
             .index_defs(ns)?
             .into_iter()
@@ -1156,18 +1267,48 @@ impl ReadTx {
             documents: stats.documents as f32,
             average,
             matched: HashSet::new(),
+            shared: &self.shared,
+            generation: self.generation,
+            dictionary: None,
+            scored: HashMap::new(),
         };
         let scores = searcher.eval(&parsed, true)?;
         let matched = searcher.matched;
         let mut ranked: Vec<(u128, f32)> = scores.into_iter().collect();
-        ranked.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
+        let order = |a: &(u128, f32), b: &(u128, f32)| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0));
+        // The best first, without sorting every match: a few more than
+        // `limit` (a hidden node is skipped), the rest only if they run out.
+        let head = limit.saturating_mul(2).saturating_add(16);
+        if ranked.len() > head {
+            ranked.select_nth_unstable_by(head, order);
+            ranked[..head].sort_unstable_by(order);
+        } else {
+            ranked.sort_unstable_by(order);
+        }
         let mut out = Vec::new();
-        for (id, score) in ranked {
+        let mut sorted_rest = ranked.len() <= head;
+        let mut at = 0;
+        while at < ranked.len() {
+            if at == head && !sorted_rest {
+                ranked[head..].sort_unstable_by(order);
+                sorted_rest = true;
+            }
+            let (id, score) = ranked[at];
+            at += 1;
             let node = NodeId::from_u128(id);
             // `node` leaves out what the view hides.
             let Some(found) = self.node(ns, node)? else {
                 continue;
             };
+            if let Some(filter) = filter
+                && !((filter.labels.is_empty() || filter.labels.iter().any(|l| found.has_label(l)))
+                    && filter
+                        .props
+                        .iter()
+                        .all(|(key, value)| found.props.get(key) == Some(value)))
+            {
+                continue;
+            }
             out.push(FulltextHit {
                 node,
                 score,

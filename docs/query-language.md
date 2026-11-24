@@ -195,7 +195,7 @@ CALL db.search('borrow checker', 5) YIELD node, score RETURN node.title, score;
 | `db.match(label, properties, limit = 10)` | `node`, `score`, `decision`, `fields` | nodes that may be the record described, by the label's match rule |
 | `db.search(text, limit = 10)` | `node`, `score` | the node text (BM25), best first |
 | `db.search(text, {limit, mode, embedding, index, fusion, k, text_weight, candidates})` | `node`, `score` | text, vector or hybrid search (see *Full-text search*) |
-| `db.searchIndex(index, query, limit = 10 \| {limit, fragments})` | `node`, `score`, `fragments` | a full-text index, with its query language and the fragments that matched |
+| `db.searchIndex(index, query, limit = 10 \| {limit, fragments, labels, where})` | `node`, `score`, `fragments` | a full-text index, with its query language and the fragments that matched; `labels` and `where` keep only those nodes, before `limit` |
 | `db.searchVector(embedding, limit = 10 \| {limit, index, ef, labels, where})` | `node`, `score` | nearest nodes by embedding, or in a vector index (see *Vector indexes*) |
 | `db.searchVectors(embeddings, limit \| {…})` | `query`, `node`, `score` | the same for several embeddings at once (`query` is the position in the list) |
 | `db.similar(node, limit \| {…})` | `node`, `score` | the nodes nearest to a node's own vector, itself left out |
@@ -813,9 +813,16 @@ CALL db.searchIndex('notes', '"graph memory" +agent -draft', 10) YIELD node, sco
   only excluded terms is refused.
 - **Ranking**: BM25 per field (k1 1.2, b 0.75), weighted and summed; a
   prefix or a fuzzy term counts its best expansion (a fuzzy one a fifth
-  less per edit). Phrases and nearness look at the first 64 positions of
-  a term in a field.
-- **Fragments**: `{field, text, matches}` per field that matched (at most
+  less per edit). A prefix expands to its first 64 terms in order, a
+  fuzzy term to the 64 nearest that start with the same letter. Phrases
+  and nearness look at the first 64 positions of a term in a field.
+- **Filters**: `{labels: ['Disease'], where: {status: 'active'}}` keeps
+  the nodes with any of those labels and each of those property values,
+  as a vector search's do, and counts `limit` among them: `{limit: 20,
+  where: {...}}` gives up to 20 that pass, not 20 of which some are left
+  out afterwards.
+- **Fragments** (`fragments: false` leaves them out, and costs less):
+  `{field, text, matches}` per field that matched (at most
   three, heaviest first): the whole value when short, otherwise the words
   around the first match; `matches` are `[start, end)` offsets in
   characters of `text`.
