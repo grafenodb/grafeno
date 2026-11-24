@@ -106,21 +106,25 @@ pub fn authenticate(state: &AppState, token: &str) -> Result<Caller, ApiError> {
         Ok((Arc::new(account), view))
     };
     if let Some((id, secret)) = auth::split_token(token, auth::ACCESS_PREFIX) {
+        let hash = auth::hash_secret(secret);
+        let matches = |session: &grafeno::Session| {
+            crate::http::constant_time_eq(hash.as_bytes(), session.token_hash.as_bytes())
+        };
+        let current = |session: &Option<grafeno::Session>| session.as_ref().is_some_and(matches);
         let mut session = db.begin_read()?.session(id)?;
-        if session.is_none() && state.writer.cluster().is_some() {
+        // In a cluster, a session signed in or refreshed on another member
+        // may not have reached this one yet: wait for it briefly.
+        if !current(&session) && state.writer.cluster().is_some() {
             for _ in 0..20 {
                 std::thread::sleep(Duration::from_millis(50));
                 session = db.begin_read()?.session(id)?;
-                if session.is_some() {
+                if current(&session) {
                     break;
                 }
             }
         }
         let session = session.ok_or_else(|| unauthorized("unauthorized", "the session ended"))?;
-        if !crate::http::constant_time_eq(
-            auth::hash_secret(secret).as_bytes(),
-            session.token_hash.as_bytes(),
-        ) {
+        if !matches(&session) {
             return Err(unauthorized(
                 "unauthorized",
                 "the access token was replaced: refresh again",

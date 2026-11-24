@@ -21,6 +21,10 @@ node embeddings, cheaper full-text search, a short queue before 503, and
 `@embedding`: an older member would keep it as an empty index on a
 property and find nothing through it.
 
+- **Fixed**: in a cluster, an access token refreshed on one member and
+  used at once on another got 401 ("the access token was replaced") until
+  the refresh replicated there; the member now waits for it briefly, as
+  it already did for a session just signed in.
 - **Added**: a vector index on the node embeddings, `CREATE VECTOR INDEX
   docs FOR (d:Doc) ON (d.@embedding) OPTIONS {dimension: 768}`. It
   searches the namespace's embeddings kept to the nodes with its labels,
