@@ -12,7 +12,14 @@ break a client of the previous one, and the database files' layout
 version (now 19 for a file that holds hyperedges, 18 otherwise) is
 upgraded in place, with a copy kept first.
 
-## Unreleased
+## 0.5.3 (2026-11-24)
+
+Less disk and less CPU for catalogue workloads: vector indexes on the
+node embeddings, cheaper full-text search, a short queue before 503, and
+`grafeno vacuum`. Nothing changes in the file layout or the HTTP API
+(still 1). In a cluster, upgrade every member before creating an index on
+`@embedding`: an older member would keep it as an empty index on a
+property and find nothing through it.
 
 - **Added**: a vector index on the node embeddings, `CREATE VECTOR INDEX
   docs FOR (d:Doc) ON (d.@embedding) OPTIONS {dimension: 768}`. It
