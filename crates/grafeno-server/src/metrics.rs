@@ -22,6 +22,8 @@ pub struct ServerMetrics {
     requests: [AtomicU64; 4],
     /// Requests turned away because too many were being served.
     busy: AtomicU64,
+    /// Requests that waited for a turn.
+    queued: AtomicU64,
     request_seconds: Histogram,
     queries: AtomicU64,
     query_seconds: Histogram,
@@ -36,6 +38,7 @@ impl Default for ServerMetrics {
         Self {
             requests: Default::default(),
             busy: AtomicU64::new(0),
+            queued: AtomicU64::new(0),
             request_seconds: Histogram::seconds(),
             queries: AtomicU64::new(0),
             query_seconds: Histogram::seconds(),
@@ -54,6 +57,11 @@ impl ServerMetrics {
 
     pub fn busy(&self) {
         self.busy.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// A request waited for a turn.
+    pub fn queued(&self) {
+        self.queued.fetch_add(1, Ordering::Relaxed);
     }
 
     pub fn audit_left_out(&self) {
@@ -94,8 +102,14 @@ impl ServerMetrics {
         counter(
             &mut out,
             "grafeno_http_busy_total",
-            "Requests answered 503 because too many were being served.",
+            "Requests answered 503 because too many were being served and waiting.",
             load(&self.busy),
+        );
+        counter(
+            &mut out,
+            "grafeno_http_queued_total",
+            "Requests that waited for a turn because max_requests were being served.",
+            load(&self.queued),
         );
         counter(
             &mut out,

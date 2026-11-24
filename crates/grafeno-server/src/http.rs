@@ -53,9 +53,15 @@ pub struct AppState {
     pub auth: crate::accounts::AuthConfig,
     /// Limits for each GQ query.
     pub limits: grafeno_query::Limits,
-    /// Requests being served under `/v1`; beyond its permits the server
-    /// answers 503 instead of piling up work.
+    /// Requests being served under `/v1`; beyond its permits a request
+    /// waits in a short queue, and past it the server answers 503 instead
+    /// of piling up work.
     pub in_flight: Arc<tokio::sync::Semaphore>,
+    /// Requests waiting for a turn now, and how many may.
+    pub queued: Arc<std::sync::atomic::AtomicUsize>,
+    pub queue_requests: usize,
+    /// How long a request waits for a turn before it gets 503.
+    pub queue_wait: std::time::Duration,
     /// Counters for `GET /v1/metrics`.
     pub metrics: Arc<crate::metrics::ServerMetrics>,
     /// Records per transaction of a bulk import.
@@ -173,6 +179,12 @@ impl Writes {
 /// Requests served at once under `/v1` by default.
 pub const MAX_REQUESTS: usize = 512;
 
+/// Requests that may wait for a turn, by default, beyond those served.
+pub const QUEUE_REQUESTS: usize = 1024;
+
+/// How long a request waits for a turn by default before it gets 503.
+pub const QUEUE_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+
 /// Records per transaction of a bulk import, by default. Small enough that
 /// an agent's write waits for one chunk at most (tens of milliseconds); at
 /// 20 000 it waited most of a second (`examples/saturation.rs`).
@@ -211,6 +223,9 @@ impl AppState {
             token: token.map(|token| Arc::new(crate::auth::StaticToken::new(token, None))),
             limits: grafeno_query::Limits::standard(),
             in_flight: Arc::new(tokio::sync::Semaphore::new(MAX_REQUESTS)),
+            queued: Arc::default(),
+            queue_requests: QUEUE_REQUESTS,
+            queue_wait: QUEUE_WAIT,
             metrics: Arc::default(),
             import_chunk: IMPORT_CHUNK,
             background: crate::events::BackgroundConfig::default(),
@@ -301,6 +316,14 @@ impl AppState {
 
     pub fn with_max_requests(mut self, max: usize) -> Self {
         self.in_flight = Arc::new(tokio::sync::Semaphore::new(max.max(1)));
+        self
+    }
+
+    /// How many requests may wait for a turn when every one is taken, and
+    /// for how long (0 requests: 503 at once, as before).
+    pub fn with_queue(mut self, requests: usize, wait: std::time::Duration) -> Self {
+        self.queue_requests = requests;
+        self.queue_wait = wait;
         self
     }
 
@@ -1224,8 +1247,9 @@ fn parse_edge_id(text: &str) -> grafeno::Result<EdgeId> {
 
 // ---------------------------------------------------------------- handlers
 
-/// Turns requests away with 503 (and `Retry-After`) when too many are in
-/// flight, instead of queueing without bound.
+/// Serves at most `max_requests` at once; beyond them a request waits for
+/// a turn, `queue_requests` at most and `queue_wait` each, and past that
+/// gets 503 with `Retry-After`: a burst is absorbed, a flood turned away.
 /// Counts every request under `/v1` and how long it took.
 async fn observe(State(state): State<AppState>, request: Request, next: Next) -> Response {
     let started = std::time::Instant::now();
@@ -1276,9 +1300,24 @@ async fn metrics(State(state): State<AppState>) -> Response {
 }
 
 async fn admit(State(state): State<AppState>, request: Request, next: Next) -> Response {
-    match state.in_flight.clone().try_acquire_owned() {
-        Ok(_permit) => next.run(request).await,
-        Err(_) => {
+    use std::sync::atomic::Ordering;
+    if let Ok(_permit) = state.in_flight.clone().try_acquire_owned() {
+        return next.run(request).await;
+    }
+    // Every turn is taken: wait for one, if the queue has room.
+    let waiting = state.queued.fetch_add(1, Ordering::AcqRel);
+    if waiting >= state.queue_requests {
+        state.queued.fetch_sub(1, Ordering::AcqRel);
+        state.metrics.busy();
+        return busy_response();
+    }
+    state.metrics.queued();
+    let turn =
+        tokio::time::timeout(state.queue_wait, state.in_flight.clone().acquire_owned()).await;
+    state.queued.fetch_sub(1, Ordering::AcqRel);
+    match turn {
+        Ok(Ok(_permit)) => next.run(request).await,
+        _ => {
             state.metrics.busy();
             busy_response()
         }

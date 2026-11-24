@@ -25,6 +25,14 @@ upgraded in place, with a copy kept first.
   took about 9 ms of CPU against 20; a fuzzy expansion, in a query of the
   same words, half the time. A fuzzy term now expands to its 64 nearest
   terms rather than the first 64 in order.
+- **Changed**: past `max_requests` served at once, a request waits for a
+  turn instead of getting 503 at once: up to `queue_requests` (1024) wait,
+  each for up to `queue_wait_ms` (5000), and only past that comes 503 with
+  `Retry-After`. A burst (a client that fans one page out into several
+  queries, under a spike of users) is absorbed rather than refused: in an
+  outside benchmark with 1,000 users, the 80 503s of the engine became
+  none. `grafeno_http_queued_total` counts the requests that waited;
+  `queue_requests = 0` restores the old behaviour.
 - **Added**: `db.searchIndex(index, query, {labels, where})` keeps only the
   nodes with those labels and property values, before `limit` is counted,
   as a vector search does (`ReadTx::fulltext_search_filtered` in Rust).

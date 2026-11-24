@@ -936,7 +936,9 @@ where
 
 #[tokio::test]
 async fn a_full_server_answers_503() {
-    let state = AppState::new(Arc::new(Grafeno::in_memory().unwrap()), None).with_max_requests(1);
+    let state = AppState::new(Arc::new(Grafeno::in_memory().unwrap()), None)
+        .with_max_requests(1)
+        .with_queue(0, std::time::Duration::ZERO);
     // Hold the only slot, as a slow request would.
     let _busy = state.in_flight.clone().try_acquire_owned().unwrap();
     let app = router(state);
@@ -950,6 +952,42 @@ async fn a_full_server_answers_503() {
     // Health checks stay outside the limit.
     let (status, _) = call(&app, "GET", "/health", None).await;
     assert_eq!(status, StatusCode::OK);
+}
+
+/// A request that finds every turn taken waits in a short queue: it is
+/// served when a turn frees up, and gets 503 with Retry-After when its
+/// wait runs out or the queue is full.
+#[tokio::test]
+async fn a_busy_server_queues_briefly() {
+    let state = AppState::new(Arc::new(Grafeno::in_memory().unwrap()), None)
+        .with_max_requests(1)
+        .with_queue(1, std::time::Duration::from_millis(400));
+    let busy = state.in_flight.clone().try_acquire_owned().unwrap();
+    let app = router(state.clone());
+    let get = || {
+        Request::builder()
+            .uri("/v1/namespaces")
+            .body(Body::empty())
+            .unwrap()
+    };
+    // The turn frees up while the request waits: it is served.
+    let waiting = tokio::spawn(app.clone().oneshot(get()));
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    assert_eq!(state.queued.load(std::sync::atomic::Ordering::Acquire), 1);
+    // The queue (one place) is full: a second one is turned away at once.
+    let refused = app.clone().oneshot(get()).await.unwrap();
+    assert_eq!(refused.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(refused.headers()[header::RETRY_AFTER], "1");
+    drop(busy);
+    let served = waiting.await.unwrap().unwrap();
+    assert_eq!(served.status(), StatusCode::OK);
+    // Nobody frees the turn: the wait runs out after 400 ms.
+    let _busy = state.in_flight.clone().try_acquire_owned().unwrap();
+    let started = std::time::Instant::now();
+    let late = app.clone().oneshot(get()).await.unwrap();
+    assert_eq!(late.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert!(started.elapsed() >= std::time::Duration::from_millis(350));
+    assert_eq!(state.queued.load(std::sync::atomic::Ordering::Acquire), 0);
 }
 
 #[tokio::test]

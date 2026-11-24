@@ -7,7 +7,9 @@
 //! token = "…"            # every /v1 request needs `Authorization: Bearer <token>`
 //! cors_origins = []      # origins allowed to call the API from a browser
 //! durability = "immediate"  # or "eventual": commits reach the disk within 0.5 s
-//! max_requests = 512     # served at once; more get 503 with Retry-After
+//! max_requests = 512     # served at once; more wait for a turn
+//! queue_requests = 1024  # may wait at once; more get 503 with Retry-After
+//! queue_wait_ms = 5000   # how long one waits before 503
 //! copy_before_upgrade = true  # copy the file before a new version upgrades its layout
 //!
 //! [query]                # limits for each GQ query; 0 turns one off
@@ -98,6 +100,12 @@ pub struct Config {
     pub durability: Option<DurabilitySetting>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_requests: Option<usize>,
+    /// Requests that may wait for a turn when `max_requests` are served.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub queue_requests: Option<usize>,
+    /// How long one waits for a turn before it gets 503, in milliseconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub queue_wait_ms: Option<u64>,
     /// Keep a copy of the database before a new version upgrades its
     /// layout (true by default; see `Grafeno::copy_before_upgrade`).
     #[serde(default, skip_serializing_if = "Option::is_none")]

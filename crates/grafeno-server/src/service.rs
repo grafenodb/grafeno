@@ -34,6 +34,9 @@ pub struct ServerSettings {
     pub durability: grafeno::Durability,
     /// Requests served at once.
     pub max_requests: usize,
+    /// Requests that may wait for a turn, and how long each.
+    pub queue_requests: usize,
+    pub queue_wait: std::time::Duration,
     /// Cache sizes.
     pub memory: grafeno::OpenOptions,
     /// The group-commit writer, and records per bulk-import transaction.
@@ -97,6 +100,11 @@ impl ServerSettings {
             scan_threads: config.query.scan_threads.unwrap_or(0),
             durability: config.durability.map(Into::into).unwrap_or_default(),
             max_requests: config.max_requests.unwrap_or(http::MAX_REQUESTS),
+            queue_requests: config.queue_requests.unwrap_or(http::QUEUE_REQUESTS),
+            queue_wait: config
+                .queue_wait_ms
+                .map(std::time::Duration::from_millis)
+                .unwrap_or(http::QUEUE_WAIT),
             memory: grafeno::OpenOptions {
                 copy_before_upgrade: config.copy_before_upgrade.unwrap_or(true),
                 ..config.memory.options()
@@ -137,6 +145,8 @@ impl ServerSettings {
                 grafeno::Durability::Eventual => "eventual",
             },
             "max_requests": self.max_requests,
+            "queue_requests": self.queue_requests,
+            "queue_wait_ms": self.queue_wait.as_millis() as u64,
             "copy_before_upgrade": self.memory.copy_before_upgrade,
             "query": {
                 "timeout_secs": secs(self.limits.timeout),
@@ -211,6 +221,7 @@ pub fn run(
         .with_import_chunk(settings.import_chunk)
         .with_limits(settings.limits.clone())
         .with_max_requests(settings.max_requests)
+        .with_queue(settings.queue_requests, settings.queue_wait)
         .with_auth(settings.auth)
         .with_settings(settings.public_view());
     let runtime = tokio::runtime::Builder::new_multi_thread()
