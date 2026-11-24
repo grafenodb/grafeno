@@ -38,6 +38,7 @@ argon2 = "0.5"
 rpassword = "7"
 futures-util = { version = "0.3", default-features = false }
 tower = { version = "0.5", features = ["util"] }
+mimalloc = { version = "0.1.52", default-features = false, optional = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
@@ -48,6 +49,10 @@ windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Storage
 
 [dev-dependencies]
 http-body-util = "0.1"
+
+[features]
+# mimalloc instead of the system allocator (tools/bench-http/README.md).
+mimalloc = ["dep:mimalloc"]
 
 # `cargo deb` (packaging/linux/Dockerfile builds it). The scripts create the
 # grafeno user, /etc/grafeno/grafeno.toml with a token, and start the service.

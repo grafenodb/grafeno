@@ -910,6 +910,12 @@ fn serve_beside_mcp(
     Ok(())
 }
 
+/// With the `mimalloc` feature, mimalloc serves every allocation instead
+/// of the system's allocator (tools/bench-http/README.md says why).
+#[cfg(feature = "mimalloc")]
+#[global_allocator]
+static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 fn main() -> ExitCode {
     let mut args: Vec<std::ffi::OsString> = std::env::args_os().collect();
     // From the Microsoft Store package, no arguments (its Start menu entry)

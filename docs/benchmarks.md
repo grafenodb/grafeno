@@ -1546,3 +1546,20 @@ one recall has, at a higher latency, to reach what event nodes reach
 with the ranking that exists. Limits as above, plus: sprints differ in a
 single word, a sharper test than real memories may pose; the vectors are
 not a model's; and C2 is tuned on the data it is scored on.
+
+## CPU per request under concurrent users (`tools/bench-http`)
+
+Measured in containers, 2026-11-23: the server's CPU per request with 1,
+16 and 64 closed-loop users, on 100,000 nodes, for the published 0.5.1
+image (musl's allocator), the same build with mimalloc, and a glibc build
+([data](data/http_allocator.csv); the method and the full table are in
+tools/bench-http/README.md).
+
+| CPU per request (ms), 1 / 16 / 64 users | musl (0.5.1) | musl + mimalloc | glibc |
+| --- | ---: | ---: | ---: |
+| `GET /v1/namespaces` | 0.57 / 2.45 / 1.76 | 0.54 / 0.62 / 0.55 | 0.51 / 0.58 / 0.54 |
+| GQ `MATCH` by code (indexed) | 0.43 / 1.53 / 1.26 | 0.42 / 0.45 / 0.46 | 0.40 / 0.46 / 0.42 |
+
+musl's allocator serializes allocations across threads, so every request
+that allocates (a snapshot, JSON) got dearer as users were added; the
+Linux builds now link mimalloc, which keeps the cost flat, as glibc does.

@@ -12,6 +12,17 @@ break a client of the previous one, and the database files' layout
 version (now 19 for a file that holds hyperedges, 18 otherwise) is
 upgraded in place, with a copy kept first.
 
+## Unreleased
+
+- **Fixed**: on Linux (the static binaries, the `.deb`, the `.rpm` and the
+  container image), each request cost more CPU as concurrent users grew:
+  musl's allocator serializes allocations across threads. With 16 users,
+  `GET /v1/namespaces` took 2.45 ms of CPU against 0.57 ms with one, and
+  the server used 4 to 5.5 cores where 1.2 to 1.9 do now. The Linux builds
+  use mimalloc (the `mimalloc` feature of grafeno-server); Windows was not
+  affected. tools/bench-http measures it in containers, and the Installers
+  workflow fails if the CPU per request doubles from 1 to 16 users.
+
 ## 0.5.1 (2026-11-23)
 
 A first 0.5.1, tagged on 2026-11-22 from an earlier commit, was withdrawn

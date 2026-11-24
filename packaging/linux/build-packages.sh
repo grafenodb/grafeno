@@ -16,7 +16,9 @@ for TARGET in $TARGETS; do
     # Cargo's cache mount keeps crates across versions: touch ours so they
     # are always rebuilt from these sources.
     find crates -name '*.rs' -exec touch {} +
-    $BUILD --release --locked --target "$TARGET" -p grafeno-server
+    # mimalloc, not musl's allocator: under concurrent requests musl's
+    # costs several times the CPU per request (tools/bench-http/README.md).
+    $BUILD --release --locked --target "$TARGET" -p grafeno-server --features mimalloc
     file "target/$TARGET/release/grafeno"
     cargo deb --no-build --no-strip --target "$TARGET" -p grafeno-server --output /out/
     cargo generate-rpm --target "$TARGET" -p crates/grafeno-server --output /out/

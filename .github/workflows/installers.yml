@@ -17,12 +17,14 @@ on:
     paths:
       - "install.sh"
       - "packaging/**"
+      - "tools/bench-http/**"
       - "crates/grafeno-server/**"
       - ".github/workflows/installers.yml"
   pull_request:
     paths:
       - "install.sh"
       - "packaging/**"
+      - "tools/bench-http/**"
       - "crates/grafeno-server/**"
       - ".github/workflows/installers.yml"
   workflow_dispatch:
@@ -73,6 +75,10 @@ jobs:
           docker buildx build -f packaging/docker/Dockerfile --platform linux/arm64 --build-arg VERSION="$version" --load -t grafeno:test-arm64 .
           test "$(docker run --rm --platform linux/arm64 grafeno:test-arm64 --version)" = "grafeno $version"
           docker image ls grafeno
+      - name: The CPU per request does not grow with concurrent users (tools/bench-http)
+        run: |
+          docker buildx build -f tools/bench-http/Dockerfile --build-arg TARGET=x86_64-unknown-linux-musl --load -t grafeno-bench:load .
+          sh tools/bench-http/check.sh grafeno-bench:load grafeno:test
 
   apparmor:
     name: The .deb under AppArmor (Ubuntu runner)
