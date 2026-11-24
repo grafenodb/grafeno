@@ -310,3 +310,43 @@ fn truncated_backups_and_unrelated_redb_files_are_not_published() {
     assert!(!target.exists());
     assert_eq!(std::fs::read_dir(files.path()).unwrap().count(), 2);
 }
+
+/// `vacuum` gives back the space a deleted namespace left, keeps every
+/// record, and refuses a file that is open.
+#[test]
+fn vacuum_gives_back_freed_space_and_keeps_the_data() {
+    let path = temp("vacuum");
+    {
+        let db = Grafeno::open(&path).unwrap();
+        db.write(|tx| {
+            tx.create_namespace("gone", None)?;
+            tx.create_namespace("kept", None)?;
+            for i in 0..4000 {
+                let text = format!("{i} {}", "padding ".repeat(80));
+                tx.create_node("gone", NewNode::new("Big").prop("text", text.clone()))?;
+                if i % 10 == 0 {
+                    tx.create_node("kept", NewNode::new("Small").prop("i", i))?;
+                }
+            }
+            Ok(())
+        })
+        .unwrap();
+        db.write(|tx| tx.drop_namespace("gone")).unwrap();
+        // Open: refused.
+        let error = Grafeno::vacuum(&path).unwrap_err().to_string();
+        assert!(error.contains("open in another process"), "{error}");
+    }
+    let done = Grafeno::vacuum(&path).unwrap();
+    assert!(
+        done.after < done.before / 2,
+        "{} bytes before, {} after",
+        done.before,
+        done.after
+    );
+    let db = Grafeno::open(&path).unwrap();
+    let read = db.begin_read().unwrap();
+    assert_eq!(read.stats("kept").unwrap().nodes, 400);
+    drop(read);
+    drop(db);
+    let _ = std::fs::remove_file(&path);
+}

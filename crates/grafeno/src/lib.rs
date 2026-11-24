@@ -60,7 +60,7 @@ mod writer;
 pub use access::{
     Account, AccountKind, ApiKey, Grant, KeyScope, Principal, Role, Session, check_principal_name,
 };
-pub use backup::BackupStats;
+pub use backup::{BackupStats, Vacuumed};
 pub use changes::{Change, ChangeOp, ChangePage, Part, Retention};
 pub use check::{CheckReport, CompactReport, RebuildReport, VectorHealth};
 pub use constraints::{

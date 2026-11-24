@@ -584,6 +584,23 @@ Verifica cada página contra su suma de comprobación, y luego los índices.
 Las exportaciones (`grafeno export`) son el otro tipo de copia: JSON Lines,
 legibles y portables entre versiones, pero sin las claves.
 
+**Espacio.** El archivo no se reduce solo: lo que liberan los borrados y
+las reescrituras (un namespace eliminado, un catálogo cargado de nuevo) lo
+reutilizan las escrituras siguientes, pero no se devuelve al sistema. Con el
+servicio detenido, `grafeno vacuum` compacta el archivo en su sitio y
+devuelve ese espacio:
+
+```bash
+grafeno vacuum --config /etc/grafeno/grafeno.toml
+```
+
+No cambia nada de los datos, y cada uno de sus pasos es una transacción, así
+que una interrupción deja un archivo entero. En sistemas de archivos que
+guardan los archivos dispersos (la mayoría en Linux), las páginas liberadas
+ya ocupaban poco disco real; ahí sobre todo reduce el tamaño aparente del
+archivo, el que ven las copias y los respaldos. En un archivo de 6,1 GB con
+dos cargas de catálogo tardó 81 segundos y lo dejó en 4,2 GB.
+
 Para llevar un namespace a otras herramientas o traerlo de ellas (hojas de
 cálculo, programas de dibujo y análisis de grafos, otras bases de datos),
 usa CSV o GraphML. Guardan el conocimiento actual, sin los hechos retractados

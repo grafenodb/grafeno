@@ -70,7 +70,34 @@ fn publish(file: NamedTempFile, path: &Path) -> Result<u64> {
     Ok(bytes)
 }
 
+/// What [`Grafeno::vacuum`] did: the file's size before and after.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Vacuumed {
+    pub before: u64,
+    pub after: u64,
+}
+
 impl Grafeno {
+    /// Compacts the database file at `path` in place: the pages freed by
+    /// deletes and rewrites go back to the system, and the pages that are
+    /// left are packed. Nothing in the data changes. The file must not be
+    /// open (stop the server first); each step is a transaction of its own,
+    /// so an interrupted vacuum leaves a whole file, compacted or not.
+    pub fn vacuum(path: &Path) -> Result<Vacuumed> {
+        let before = std::fs::metadata(path).map_err(storage)?.len();
+        let mut db = redb::Database::open(path).map_err(|error| match error {
+            redb::DatabaseError::DatabaseAlreadyOpen => Error::Storage(format!(
+                "{} is open in another process: stop the server (or the program) using it first",
+                path.display()
+            )),
+            other => storage(other),
+        })?;
+        while db.compact().map_err(storage)? {}
+        drop(db);
+        let after = std::fs::metadata(path).map_err(storage)?.len();
+        Ok(Vacuumed { before, after })
+    }
+
     /// Recovers a closed backup into a new database file. The source is read
     /// only; checksum verification, layout upgrades and namespace checks run
     /// on a private copy. Reported repairs and namespace inconsistencies are

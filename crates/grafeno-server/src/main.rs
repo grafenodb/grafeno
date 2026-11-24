@@ -244,6 +244,17 @@ enum Command {
         #[arg(long = "namespace", short = 'n')]
         namespaces: Vec<String>,
     },
+    /// Compact a database file in place: the space freed by deletes and
+    /// rewrites goes back to the system. The server using it must be
+    /// stopped. Nothing in the data changes.
+    Vacuum {
+        /// The database file.
+        #[arg(long, env = "GRAFENO_DB", conflicts_with = "config")]
+        db: Option<PathBuf>,
+        /// The settings file of the server whose database to compact.
+        #[arg(long)]
+        config: Option<PathBuf>,
+    },
     /// Check the file (every page against its checksum), then that indexes
     /// and counters agree with the records. Fails if not.
     Check {
@@ -1424,6 +1435,25 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                     );
                 }
             }
+        }
+        Command::Vacuum { db, config } => {
+            let config = config.or_else(grafeno_server::packaged::settings);
+            let path = match (db, config) {
+                (Some(db), _) => db,
+                (None, Some(settings)) => Config::load(&settings)?
+                    .db
+                    .ok_or_else(|| format!("{} keeps its data in memory", settings.display()))?,
+                (None, None) => return Err("give --db <file> or --config <settings>".into()),
+            };
+            let done = Grafeno::vacuum(&path)?;
+            let mib = |bytes: u64| bytes as f64 / (1024.0 * 1024.0);
+            println!(
+                "{}: {:.1} MiB before, {:.1} MiB after ({:.1} MiB given back).",
+                path.display(),
+                mib(done.before),
+                mib(done.after),
+                mib(done.before.saturating_sub(done.after))
+            );
         }
         Command::Restore { backup, output } => {
             let bytes = Grafeno::recover_backup(&backup, &output)?;

@@ -33,6 +33,12 @@ upgraded in place, with a copy kept first.
   outside benchmark with 1,000 users, the 80 503s of the engine became
   none. `grafeno_http_queued_total` counts the requests that waited;
   `queue_requests = 0` restores the old behaviour.
+- **Added**: `grafeno vacuum` compacts a database file in place, with the
+  server stopped, and gives back the space deletes and rewrites freed
+  (`Grafeno::vacuum` in Rust). On a 6.1 GB file of two catalogue loads it
+  left 4.2 GB in 81 seconds; on sparse file systems the real disk use
+  changes little, the apparent size (what copies see) does.
+  `examples/table_sizes.rs` shows what each table takes.
 - **Added**: `db.searchIndex(index, query, {labels, where})` keeps only the
   nodes with those labels and property values, before `limit` is counted,
   as a vector search does (`ReadTx::fulltext_search_filtered` in Rust).

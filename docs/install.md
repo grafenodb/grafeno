@@ -560,6 +560,22 @@ It verifies every page against its checksum, then the indexes. Exports
 (`grafeno export`) are the other kind of copy: JSON Lines, readable and
 portable between versions, but without the keys.
 
+**Space.** The file does not shrink by itself: what deletes and rewrites
+free (a namespace dropped, a catalogue loaded again) is reused by later
+writes, not given back. With the service stopped, `grafeno vacuum`
+compacts the file in place and gives that space back:
+
+```bash
+grafeno vacuum --config /etc/grafeno/grafeno.toml
+```
+
+Nothing in the data changes, and each of its steps is a transaction, so
+an interruption leaves a whole file. On file systems that keep files
+sparse (most on Linux), the freed pages took little real disk already;
+there it mostly shrinks the file's apparent size, which copies and
+backups of the file see. On a 6.1 GB file of two catalogue loads it took
+81 seconds and left 4.2 GB.
+
 To move a namespace to or from other tools (spreadsheets, graph drawing
 and analysis programs, other databases), use CSV or GraphML. They hold current knowledge, without
 retracted facts or the history behind them, so they do not replace a
