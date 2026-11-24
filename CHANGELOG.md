@@ -12,7 +12,11 @@ break a client of the previous one, and the database files' layout
 version (now 19 for a file that holds hyperedges, 18 otherwise) is
 upgraded in place, with a copy kept first.
 
-## Unreleased
+## 0.5.2 (2026-11-23)
+
+Faster on Linux under concurrent requests, and a container image. Nothing
+changes in the files, the HTTP API (still 1) or the replication formats:
+0.5.1 and 0.5.2 run side by side in a cluster.
 
 - **Fixed**: on Linux (the static binaries, the `.deb`, the `.rpm` and the
   container image), each request cost more CPU as concurrent users grew:
@@ -22,6 +26,14 @@ upgraded in place, with a copy kept first.
   use mimalloc (the `mimalloc` feature of grafeno-server); Windows was not
   affected. tools/bench-http measures it in containers, and the Installers
   workflow fails if the CPU per request doubles from 1 to 16 users.
+- **Added**: the container image `ghcr.io/grafenodb/grafeno` (packaging/docker),
+  for linux/amd64 and linux/arm64, with provenance and an SBOM, published
+  by the release workflow as `<version>`, `<major>.<minor>` and `latest`
+  (docs/install.md, "Container image"). It holds the release's static
+  binary, runs as an unprivileged user with its data in the volume
+  `/data`, and never serves without a token: the first start writes
+  `/data/grafeno.toml` with a fresh one, never printed. 0.5.1's image was
+  published afterwards with the new Image workflow.
 
 ## 0.5.1 (2026-11-23)
 

@@ -72,7 +72,7 @@ release, y contra su firma minisign cuando se conoce una clave
 (`GRAFENO_MINISIGN_KEY`, con `minisign` instalado); si no coinciden, se
 detiene. En sistemas con SELinux etiqueta el binario que instala para que
 systemd pueda ejecutarlo. Opciones, como flags o variables de entorno (para
-instalaciones desatendidas): `--version 0.5.1` (`GRAFENO_VERSION`), `--binary`
+instalaciones desatendidas): `--version 0.5.2` (`GRAFENO_VERSION`), `--binary`
 (`GRAFENO_METHOD=binary`), `--no-repo` (`GRAFENO_REPO=0`), `--prefix DIR`
 (`GRAFENO_PREFIX`), `--service`, `--no-start`; `GRAFENO_BASE_URL` y
 `GRAFENO_REPO_URL` lo apuntan a espejos.
@@ -96,7 +96,7 @@ sudo apt update && sudo apt install grafeno
 O un paquete descargado:
 
 ```bash
-sudo apt install ./grafeno_0.5.1-1_amd64.deb
+sudo apt install ./grafeno_0.5.2-1_amd64.deb
 ```
 
 ### Fedora, RHEL y derivados
@@ -117,7 +117,7 @@ descargado no está firmado (la copia del repositorio sí): instálalo con
 `--nogpgcheck` después de comprobar su SHA-256:
 
 ```bash
-sudo dnf install --nogpgcheck ./grafeno-0.5.1-1.x86_64.rpm
+sudo dnf install --nogpgcheck ./grafeno-0.5.2-1.x86_64.rpm
 ```
 
 #### Qué hacen los paquetes
@@ -265,7 +265,7 @@ En modo desatendido (scripts, aprovisionamiento), las mismas respuestas son
 parámetros:
 
 ```powershell
-.\grafeno-0.5.1-windows-x64-setup.exe /VERYSILENT /SUPPRESSMSGBOXES /DIR="C:\Grafeno" /DATADIR="D:\GrafenoData" /PORT=7810 /NETWORK=0 /ACCOUNT=virtual /ADMIN=admin /ADMINPASSWORD="..." /TASKS="service,path"
+.\grafeno-0.5.2-windows-x64-setup.exe /VERYSILENT /SUPPRESSMSGBOXES /DIR="C:\Grafeno" /DATADIR="D:\GrafenoData" /PORT=7810 /NETWORK=0 /ACCOUNT=virtual /ADMIN=admin /ADMINPASSWORD="..." /TASKS="service,path"
 ```
 
 `/NETWORK=1` escucha en todas las interfaces y abre el puerto en el
@@ -318,7 +318,7 @@ usuario sin privilegios (uid 10001), guarda todo en el volumen `/data` y
 escucha en el 7810 (`packaging/docker`).
 
 ```sh
-docker run -d --name grafeno -p 127.0.0.1:7810:7810 -v grafeno-data:/data ghcr.io/grafenodb/grafeno:0.5.1
+docker run -d --name grafeno -p 127.0.0.1:7810:7810 -v grafeno-data:/data ghcr.io/grafenodb/grafeno:0.5.2
 docker exec grafeno grafeno config token --path /data/grafeno.toml
 ```
 
@@ -792,8 +792,8 @@ funciona (por la versión de la API de `GET /v1/about`, hoy 1).
 | Linux `.tar.gz`, `.deb`, `.rpm`, x86_64 y aarch64 | `docker build -f packaging/linux/Dockerfile --output dist/linux .` | Docker |
 | Imagen de contenedor, amd64 y arm64 (a partir de esos archivos) | `docker buildx build -f packaging/docker/Dockerfile --platform linux/amd64,linux/arm64 -t grafeno .` | Docker (buildx) |
 | Los repositorios APT y DNF | `GRAFENO_GPG_KEY=<key id> packaging/repo/build-repo.sh dist/linux site https://grafenodb.github.io/grafeno` | GnuPG, rpm, createrepo_c, apt-utils |
-| Instalador `.exe` de Windows | `cargo build --release -p grafeno-server`, luego `iscc /DAppVersion=0.5.1 packaging\windows\grafeno.iss` | Rust (MSVC), Inno Setup 6 |
-| Manifiestos de winget | `python packaging/windows/winget/make-manifests.py 0.5.1 dist\grafeno-0.5.1-windows-x64-setup.exe <url> dist\winget` | Python |
+| Instalador `.exe` de Windows | `cargo build --release -p grafeno-server`, luego `iscc /DAppVersion=0.5.2 packaging\windows\grafeno.iss` | Rust (MSVC), Inno Setup 6 |
+| Manifiestos de winget | `python packaging/windows/winget/make-manifests.py 0.5.2 dist\grafeno-0.5.2-windows-x64-setup.exe <url> dist\winget` | Python |
 
 Ni Node ni un toolkit gráfico: el motor se compila solo con Rust. El binario
 de aarch64 se compila de forma cruzada con Zig (`cargo zigbuild`), y el
