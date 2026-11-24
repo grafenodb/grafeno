@@ -486,7 +486,8 @@ impl ReadTx {
         )?;
         // Each vector index: its graph, and one vector per node that has a
         // vector of its dimension in the property (all of them, once built).
-        for def in &defs {
+        // (One on `@embedding` has no graph: the embeddings were checked above.)
+        for def in defs.iter().filter(|def| !def.on_embedding()) {
             let Some(spec) = &def.vector else {
                 continue;
             };
@@ -736,7 +737,7 @@ impl WriteTx {
         // Vector indexes start over, with their parameters, and are filled
         // again as the nodes are written back.
         for def in self.index_defs(ns)? {
-            if def.vector.is_some() {
+            if def.vector.is_some() && !def.on_embedding() {
                 crate::vindex::reset_space(&self.tx, ns, &def)?;
                 self.vectors.forget(&crate::vindex::space_of(ns, &def.name));
             }
@@ -1066,13 +1067,17 @@ impl WriteTx {
     /// built again with the index's own similarity and `m`.
     pub fn compact_vector_index(&mut self, ns: &str, name: &str) -> Result<CompactReport> {
         let read = self.index_defs(ns)?;
-        if !read
+        let Some(def) = read
             .iter()
-            .any(|def| def.name == name && def.vector.is_some())
-        {
+            .find(|def| def.name == name && def.vector.is_some())
+        else {
             return Err(grafeno_core::Error::Invalid(format!(
                 "{ns:?} has no vector index {name:?}"
             )));
+        };
+        // One on `@embedding` searches the namespace's graph: that one.
+        if def.on_embedding() {
+            return self.compact_vectors(ns);
         }
         self.compact_vectors(&crate::vindex::space_of(ns, name))
     }

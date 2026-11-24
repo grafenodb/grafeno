@@ -352,3 +352,173 @@ fn health_counts_removals_and_compacting_starts_over() {
     db.write(|tx| tx.compact_vectors(NS)).unwrap();
     assert_eq!(health(&db)[0].removed, 0);
 }
+
+/// Unit vector at `degrees`.
+fn at(degrees: f32) -> Vec<f32> {
+    let angle = degrees.to_radians();
+    vec![angle.cos(), angle.sin()]
+}
+
+#[test]
+fn an_index_on_the_embeddings_keeps_to_its_labels() {
+    let db = Grafeno::in_memory().unwrap();
+    // 4500 `Wide` nodes (more than a search scores one by one) and 300
+    // `Narrow` ones, all with embeddings in the namespace's one graph.
+    let (wide, narrow) = db
+        .write(|tx| {
+            let mut wide = Vec::new();
+            for i in 0..4500 {
+                let id = tx.create_node(NS, NewNode::new("Wide").prop("i", i))?;
+                tx.set_embedding(NS, id, &at(i as f32 * 0.08))?;
+                wide.push(id);
+            }
+            let mut narrow = Vec::new();
+            for i in 0..300 {
+                let id = tx.create_node(NS, NewNode::new("Narrow").prop("i", 10_000 + i))?;
+                tx.set_embedding(NS, id, &at(i as f32 * 1.2 + 0.04))?;
+                narrow.push(id);
+            }
+            Ok((wide, narrow))
+        })
+        .unwrap();
+    let held = db
+        .write(|tx| {
+            let a = tx.create_index(NS, index("wide", "Wide", "@embedding", VectorSpec::new(2)))?;
+            let b = tx.create_index(
+                NS,
+                index("narrow", "Narrow", "@embedding", VectorSpec::new(2)),
+            )?;
+            Ok((a, b))
+        })
+        .unwrap();
+    assert_eq!(held, (4500, 300));
+    let defs = db.begin_read().unwrap().index_defs(NS).unwrap();
+    assert!(defs.iter().all(|def| def.on_embedding()));
+
+    let by_index = |name: &str, degrees: f32, limit: usize| {
+        search(
+            &db,
+            &at(degrees),
+            VectorSearch {
+                index: Some(name.into()),
+                limit,
+                ..VectorSearch::default()
+            },
+        )
+    };
+    // Through the graph (Wide) and scored one by one (Narrow): only nodes
+    // with the index's label, the closest first.
+    // (Searches through the graph compare quantized vectors: neighbors a
+    // fraction of a degree apart may come in either order.)
+    let near = by_index("wide", 40.0, 3);
+    assert_eq!(near.len(), 3);
+    assert!(near.iter().all(|i| (495..=505).contains(i)), "{near:?}");
+    assert_eq!(by_index("narrow", 40.0, 2), vec![10_033, 10_034]);
+    // The same filter the plain search would need, without an index.
+    assert_eq!(
+        search(
+            &db,
+            &at(40.0),
+            VectorSearch {
+                limit: 2,
+                filter: Some(VectorFilter {
+                    labels: vec!["Narrow".into()],
+                    ..VectorFilter::default()
+                }),
+                ..VectorSearch::default()
+            },
+        ),
+        vec![10_033, 10_034]
+    );
+    // A search filter applies within the index's labels.
+    assert!(
+        search(
+            &db,
+            &at(40.0),
+            VectorSearch {
+                index: Some("narrow".into()),
+                limit: 5,
+                filter: Some(VectorFilter {
+                    labels: vec!["Wide".into()],
+                    ..VectorFilter::default()
+                }),
+                ..VectorSearch::default()
+            },
+        )
+        .is_empty()
+    );
+    // A node's own embedding.
+    let read = db.begin_read().unwrap();
+    let similar = read
+        .similar(
+            NS,
+            narrow[100],
+            &VectorSearch {
+                index: Some("narrow".into()),
+                limit: 2,
+                ..VectorSearch::default()
+            },
+        )
+        .unwrap();
+    let similar: Vec<NodeId> = similar.into_iter().map(|hit| hit.node).collect();
+    assert_eq!(similar.len(), 2);
+    assert!(similar.contains(&narrow[99]) && similar.contains(&narrow[101]));
+    // No graph of its own: nothing but the namespace's in the health list,
+    // and the database checks out.
+    let health = read.vector_health(NS).unwrap();
+    assert_eq!(health.len(), 1);
+    assert!(health[0].index.is_none());
+    assert!(read.check(NS).unwrap().is_ok());
+    let listed = read.indexes(NS).unwrap();
+    assert_eq!(
+        listed.iter().map(|info| info.entries).collect::<Vec<_>>(),
+        vec![300, 4500]
+    );
+    drop(read);
+
+    // Writes are seen at once: a node that loses its label, or its
+    // embedding, leaves the index; a new embedding moves it.
+    db.write(|tx| {
+        tx.add_label(NS, narrow[33], "Gone")?;
+        tx.remove_label(NS, narrow[33], "Narrow")?;
+        tx.remove_embedding(NS, narrow[34])?;
+        tx.add_label(NS, wide[500], "Gone")?;
+        tx.remove_label(NS, wide[500], "Wide")?;
+        tx.set_embedding(NS, narrow[200], &at(50.0))?;
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(by_index("narrow", 40.0, 2), vec![10_032, 10_035]);
+    assert_eq!(by_index("narrow", 50.0, 1), vec![10_200]);
+    assert!(!by_index("wide", 40.0, 5).contains(&500));
+    assert!(db.begin_read().unwrap().check(NS).unwrap().is_ok());
+
+    // Its options are the embeddings': cosine, the default graph, built at
+    // once, of their dimension; and only a vector index is on @embedding.
+    let refused = |def: IndexDef| {
+        db.write(|tx| tx.create_index(NS, def))
+            .unwrap_err()
+            .to_string()
+    };
+    assert!(refused(index("x", "Wide", "@embedding", VectorSpec::new(3))).contains("dimension"));
+    assert!(
+        refused(index(
+            "x",
+            "Wide",
+            "@embedding",
+            VectorSpec {
+                similarity: Similarity::Euclidean,
+                ..VectorSpec::new(2)
+            }
+        ))
+        .contains("ef_search only")
+    );
+    assert!(refused(IndexDef::new("Wide", "@embedding")).contains("only a vector index"));
+    // Compacting it compacts the namespace's graph.
+    db.write(|tx| tx.compact_vector_index(NS, "wide")).unwrap();
+    let near = by_index("wide", 40.0, 3);
+    assert!(
+        near.iter().all(|i| (495..=505).contains(i) && *i != 500),
+        "{near:?}"
+    );
+}

@@ -14,6 +14,19 @@ upgraded in place, with a copy kept first.
 
 ## Unreleased
 
+- **Added**: a vector index on the node embeddings, `CREATE VECTOR INDEX
+  docs FOR (d:Doc) ON (d.@embedding) OPTIONS {dimension: 768}`. It
+  searches the namespace's embeddings kept to the nodes with its labels,
+  so each vector is stored once instead of as a property in the node and
+  again in the index's own graph; it has nothing to fill or build and
+  takes only `dimension` and `ef_search`. On the ICD-11 catalogue (110,441
+  nodes with 384-value vectors, three labels) a fresh import took 1,616 MB
+  on disk against 2,273 (the node records 328 MiB against 950: a record
+  no longer spills past a page), and imported in 149 s against 170. Recall
+  of the 10 nearest held (99.7% against 96.4% for the label with a third
+  of the vectors, 95.1% against 96.1% for the one with two thirds); the
+  smaller label's searches took 9 ms at the median against 7. Only a
+  vector index may be on `@embedding`.
 - **Changed**: full-text search costs about half the CPU per query. A fuzzy
   (`word~2`) or prefix (`word*`) term no longer seeks every term of the
   index that starts with the same letter: each index's terms are read

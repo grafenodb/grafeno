@@ -894,6 +894,22 @@ MATCH (d:Doc {title: 'Graphs'}) CALL db.similar(d, {index: 'docs', limit: 5}) YI
   `online`. The local shell finishes such builds before its next prompt.
 - Hybrid search may use one: `db.search(text, {mode: 'hybrid',
   embedding: $e, vector_index: 'docs'})`; recall takes `vector_index` too.
+- **On the embeddings**: `CREATE VECTOR INDEX docs FOR (d:Doc) ON
+  (d.@embedding) OPTIONS {dimension: 768}` searches the node embeddings
+  (`SET d.@embedding = $e`, or `embedding` in an export line), kept to
+  the nodes with its labels. The vector is stored once, in the
+  namespace's own graph, instead of as a property in the node and again
+  in the index's graph: on a catalog of 110 000 nodes with 384-value
+  vectors, the file took 1.6 GB on disk against 2.3 GB.
+  It has nothing to fill or build and takes only `dimension` (that of
+  the embeddings) and `ef_search`: the graph is cosine with the default
+  `m` and `ef_construction`. A node is in it while it has one of the
+  labels and an embedding; compacting it compacts the namespace's graph.
+  Searches through it walk the shared graph with the labels as a filter,
+  so a label that holds a small share of the embeddings costs more steps
+  than an index of its own: on that catalog, a label with a third of the
+  embeddings found 99.7% of the true 10 nearest (96.4% with its own
+  index) in 9 ms rather than 7.
 
 ## Constraints on facts
 

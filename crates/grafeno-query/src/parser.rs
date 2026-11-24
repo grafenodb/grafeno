@@ -873,6 +873,12 @@ impl Parser<'_> {
                 ));
             }
             parser.expect(Token::Dot, "`.`")?;
+            // `n.@embedding`: the node embeddings (vector indexes only; the
+            // engine refuses it elsewhere).
+            if matches!(parser.peek(), Token::Meta(name) if name == "embedding") {
+                parser.advance();
+                return Ok(grafeno::EMBEDDING_KEY.to_owned());
+            }
             parser.ident("a property")
         };
         // `n.key` or `(n.a, n.b, …)`

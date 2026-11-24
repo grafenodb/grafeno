@@ -158,3 +158,61 @@ fn vector_index_errors() {
         assert!(error.contains(expected), "{query}: {error}");
     }
 }
+
+#[test]
+fn a_vector_index_on_the_embeddings() {
+    let db = Grafeno::in_memory().unwrap();
+    run(
+        &db,
+        "UNWIND range(0, 199) AS i
+         CREATE (n:Item {i: i}) SET n.@embedding = [cos(radians(i)), sin(radians(i))]",
+    );
+    run(
+        &db,
+        "UNWIND range(0, 49) AS i
+         CREATE (n:Other {i: 1000 + i}) SET n.@embedding = [cos(radians(i * 2)), sin(radians(i * 2))]",
+    );
+    let made = rows(
+        &db,
+        "CREATE VECTOR INDEX FOR (n:Item) ON (n.@embedding) OPTIONS {dimension: 2, ef_search: 32}",
+    );
+    assert_eq!(made[0][0], "Item_embedding_vector");
+    assert_eq!(made[0][4], 200);
+    let nearest = rows(
+        &db,
+        "CALL db.searchVector([0.0, 1.0], {index: 'Item_embedding_vector', limit: 2})
+         YIELD node RETURN node.i",
+    );
+    assert_eq!(nearest[0][0], 90);
+    assert!(
+        nearest
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|row| (89..=91).contains(&row[0].as_i64().unwrap()))
+    );
+    let similar = rows(
+        &db,
+        "MATCH (n:Item {i: 30}) CALL db.similar(n, {index: 'Item_embedding_vector', limit: 2})
+         YIELD node RETURN node.i ORDER BY node.i",
+    );
+    assert_eq!(similar, json!([[29], [31]]));
+    assert!(
+        fail(
+            &db,
+            "CREATE VECTOR INDEX x FOR (n:Other) ON (n.@embedding) OPTIONS {dimension: 2, m: 8}"
+        )
+        .contains("ef_search only")
+    );
+    assert!(
+        fail(
+            &db,
+            "CREATE VECTOR INDEX x FOR (n:Other) ON (n.@embedding) OPTIONS {dimension: 3}"
+        )
+        .contains("dimension")
+    );
+    assert!(
+        fail(&db, "CREATE INDEX FOR (n:Other) ON (n.@embedding)").contains("only a vector index")
+    );
+    assert!(db.begin_read().unwrap().check(NS).unwrap().is_ok());
+}

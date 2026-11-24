@@ -10,20 +10,29 @@
 //! with `building` set starts empty and is filled a chunk at a time by
 //! [`WriteTx::build_index_step`] (logged as itself, so every member does
 //! the same), while writes go on and keep the nodes they touch indexed.
+//!
+//! An index on `@embedding` (key [`EMBEDDING_KEY`]) is the exception: its
+//! vectors are the node embeddings, kept once in the namespace's own space,
+//! and it searches that space kept to the nodes with its labels. It has
+//! nothing to fill, build, check or rebuild, and takes no space of its own.
 
 use std::collections::HashMap;
 
 use grafeno_core::{Error, NodeId, Props, Result};
-use redb::WriteTransaction;
+use redb::{ReadableTable, WriteTransaction};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as Json;
 
 use crate::index::IndexDef;
 use crate::store::{
-    HNSW_LINKS, NODE_LABELS, VECTOR_META, VECTORS, VECTORS_Q8, encode, nodes_with_label, storage,
+    HNSW_LINKS, LabelKey, NODE_LABELS, RecordKey, VECTOR_META, VECTORS, VECTORS_Q8, encode,
+    nodes_with_label, storage,
 };
 use crate::vector::{self, DEFAULT_EF_CONSTRUCTION, DEFAULT_M, Similarity, VectorMeta};
 use crate::{Hit, ReadTx, WriteTx};
+
+/// The key of a vector index on the node embeddings: `ON (n.@embedding)`.
+pub const EMBEDDING_KEY: &str = "@embedding";
 
 /// Candidates on layer 0 of a search, by default.
 pub const DEFAULT_EF_SEARCH: usize = 64;
@@ -123,6 +132,28 @@ pub(crate) fn vector_of(value: &Json) -> Option<Vec<f32>> {
         .collect()
 }
 
+/// The nodes with the labels of `def` that have an embedding in `ns`.
+fn embedded(
+    labels: &impl ReadableTable<LabelKey, ()>,
+    vectors: &impl ReadableTable<RecordKey, &'static [u8]>,
+    ns: &str,
+    def: &IndexDef,
+) -> Result<u64> {
+    let mut ids = Vec::new();
+    for label in def.labels() {
+        ids.extend(nodes_with_label(labels, ns, label)?);
+    }
+    ids.sort();
+    ids.dedup();
+    let mut count = 0;
+    for id in ids {
+        if vectors.get((ns, id.as_u128())).map_err(storage)?.is_some() {
+            count += 1;
+        }
+    }
+    Ok(count)
+}
+
 /// Removes every vector, link and the metadata of a space.
 pub(crate) fn clear_space(tx: &WriteTransaction, space: &str) -> Result<()> {
     let keep = |key: &str| key != space;
@@ -202,7 +233,10 @@ impl WriteTx {
         new: Option<(&[String], &Props)>,
         old: Option<(&[String], &Props)>,
     ) -> Result<()> {
-        for def in defs.iter().filter(|def| !def.edges && !def.hyperedges) {
+        for def in defs
+            .iter()
+            .filter(|def| !def.edges && !def.hyperedges && !def.on_embedding())
+        {
             let Some(spec) = &def.vector else {
                 continue;
             };
@@ -236,6 +270,50 @@ impl WriteTx {
             }
         }
         Ok(())
+    }
+
+    /// Refuses an index on `@embedding` whose options are not those of the
+    /// namespace's embeddings: cosine, the default graph, built at once,
+    /// and the dimension of the embeddings already stored.
+    pub(crate) fn check_embedding_index(
+        &self,
+        ns: &str,
+        def: &IndexDef,
+        spec: &VectorSpec,
+    ) -> Result<()> {
+        if spec.similarity != Similarity::Cosine
+            || spec.m != DEFAULT_M
+            || spec.ef_construction != DEFAULT_EF_CONSTRUCTION
+            || spec.building.is_some()
+        {
+            return Err(Error::Invalid(format!(
+                "{} is on @embedding, which is searched with cosine similarity in the namespace's own graph: it takes dimension and ef_search only",
+                def.name
+            )));
+        }
+        let meta = {
+            let table = self.tx.open_table(VECTOR_META).map_err(storage)?;
+            vector::read_meta(&table, ns)?
+        };
+        if let Some(meta) = meta
+            && meta.count() > 0
+            && meta.dimension() != spec.dimension
+        {
+            return Err(Error::Invalid(format!(
+                "{} has dimension {}, but the embeddings of {ns} have {}",
+                def.name,
+                spec.dimension,
+                meta.dimension()
+            )));
+        }
+        Ok(())
+    }
+
+    /// The nodes with the labels of `def` that have an embedding.
+    pub(crate) fn embedding_count(&self, ns: &str, def: &IndexDef) -> Result<u64> {
+        let labels = self.tx.open_table(NODE_LABELS).map_err(storage)?;
+        let vectors = self.tx.open_table(VECTORS).map_err(storage)?;
+        embedded(&labels, &vectors, ns, def)
     }
 
     /// Fills a new vector index from the nodes it covers (none while it is
@@ -405,10 +483,16 @@ impl ReadTx {
             .collect())
     }
 
-    /// The vectors a vector index holds.
-    pub(crate) fn vector_count(&self, ns: &str, name: &str) -> Result<u64> {
-        Ok(vector::read_meta(&self.vector_meta, &space_of(ns, name))?
-            .map_or(0, |meta| meta.count()))
+    /// The vectors a vector index holds (on `@embedding`: the nodes with
+    /// its labels that have an embedding).
+    pub(crate) fn vector_count(&self, ns: &str, def: &IndexDef) -> Result<u64> {
+        if def.on_embedding() {
+            return embedded(&self.labels, &self.vectors, ns, def);
+        }
+        Ok(
+            vector::read_meta(&self.vector_meta, &space_of(ns, &def.name))?
+                .map_or(0, |meta| meta.count()),
+        )
     }
 
     /// The nodes closest to `query` in a vector index (`search.index`), or
@@ -421,6 +505,8 @@ impl ReadTx {
         query: &[f32],
         search: &VectorSearch,
     ) -> Result<Vec<Hit>> {
+        // An index on `@embedding` searches the embeddings, kept to its labels.
+        let mut scope: Option<Vec<String>> = None;
         let (space, default_ef) = match &search.index {
             Some(name) => {
                 let def = self
@@ -428,12 +514,17 @@ impl ReadTx {
                     .into_iter()
                     .find(|def| def.name == *name)
                     .ok_or_else(|| Error::Invalid(format!("there is no index named {name:?}")))?;
-                let spec = def.vector.ok_or_else(|| {
+                let spec = def.vector.as_ref().ok_or_else(|| {
                     Error::Invalid(format!(
                         "{name} is not a vector index (CREATE VECTOR INDEX makes one)"
                     ))
                 })?;
-                (space_of(ns, name), spec.ef_search)
+                if def.key == EMBEDDING_KEY {
+                    scope = Some(def.labels().into_iter().map(str::to_owned).collect());
+                    (ns.to_owned(), spec.ef_search)
+                } else {
+                    (space_of(ns, name), spec.ef_search)
+                }
             }
             None => (ns.to_owned(), (search.limit * 4).max(DEFAULT_EF_SEARCH)),
         };
@@ -443,31 +534,40 @@ impl ReadTx {
         // node (and its vector); with properties or a view, the node is read.
         let labels_only =
             filter.is_some_and(|filter| filter.props.is_empty()) && self.view().is_none();
+        let has_any = |labels: &[String], id: u128| -> Result<bool> {
+            for label in labels {
+                if self
+                    .labels
+                    .get((ns, label.as_str(), id))
+                    .map_err(storage)?
+                    .is_some()
+                {
+                    return Ok(true);
+                }
+            }
+            Ok(false)
+        };
         let mut seen: HashMap<u128, bool> = HashMap::new();
         let mut keep = |id: u128| -> Result<bool> {
             if search.exclude.is_some_and(|node| node.as_u128() == id) {
                 return Ok(false);
             }
-            if filter.is_none() && self.view().is_none() {
+            if filter.is_none() && scope.is_none() && self.view().is_none() {
                 return Ok(true);
             }
             if let Some(known) = seen.get(&id) {
                 return Ok(*known);
             }
-            let kept = if labels_only {
-                let mut any = false;
-                for label in &filter.expect("a filter").labels {
-                    if self
-                        .labels
-                        .get((ns, label.as_str(), id))
-                        .map_err(storage)?
-                        .is_some()
-                    {
-                        any = true;
-                        break;
-                    }
-                }
-                any
+            if let Some(scope) = &scope
+                && !has_any(scope, id)?
+            {
+                seen.insert(id, false);
+                return Ok(false);
+            }
+            let kept = if filter.is_none() && self.view().is_none() {
+                true
+            } else if labels_only {
+                has_any(&filter.expect("a filter").labels, id)?
             } else {
                 // `node` leaves out what the view hides.
                 match self.node(ns, NodeId::from_u128(id))? {
@@ -485,12 +585,15 @@ impl ReadTx {
             seen.insert(id, kept);
             Ok(kept)
         };
-        // Few nodes with the filter's labels: score them all, exactly.
-        if let Some(filter) = filter
-            && !filter.labels.is_empty()
-        {
+        // Few nodes with the filter's labels (or the index's): score them
+        // all, exactly.
+        let few = [filter.map(|filter| filter.labels.clone()), scope.clone()];
+        for labels in few.into_iter().flatten() {
+            if labels.is_empty() {
+                continue;
+            }
             let mut passing = 0u64;
-            for label in &filter.labels {
+            for label in &labels {
                 passing += self
                     .label_counts
                     .get((ns, label.as_str()))
@@ -499,7 +602,7 @@ impl ReadTx {
             }
             if passing <= EXACT_UP_TO {
                 let mut ids = Vec::new();
-                for label in &filter.labels {
+                for label in &labels {
                     ids.extend(nodes_with_label(&self.labels, ns, label)?);
                 }
                 ids.sort();
@@ -545,8 +648,12 @@ impl ReadTx {
                     .ok_or_else(|| {
                         Error::Invalid(format!("there is no vector index named {name:?}"))
                     })?;
-                self.node(ns, node)?
-                    .and_then(|found| found.props.get(&def.key).and_then(vector_of))
+                if def.on_embedding() {
+                    self.embedding(ns, node)?
+                } else {
+                    self.node(ns, node)?
+                        .and_then(|found| found.props.get(&def.key).and_then(vector_of))
+                }
             }
             None => self.embedding(ns, node)?,
         };

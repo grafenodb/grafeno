@@ -165,7 +165,11 @@ impl IndexDef {
     /// `unique`, `key` or `fuzzy`, joined by `_`.
     pub fn generated_name(&self) -> String {
         let mut parts: Vec<&str> = self.labels();
-        parts.extend(self.keys());
+        parts.extend(
+            self.keys()
+                .into_iter()
+                .map(|key| key.trim_start_matches('@')),
+        );
         if self.hyperedges {
             parts.push("hyperedge");
         }
@@ -181,6 +185,13 @@ impl IndexDef {
             parts.push("unique");
         }
         parts.join("_")
+    }
+
+    /// A vector index on the node embeddings (`ON (n.@embedding)`): it
+    /// keeps no graph of its own and searches the namespace's embeddings,
+    /// kept to the nodes with its labels.
+    pub fn on_embedding(&self) -> bool {
+        self.vector.is_some() && self.key == crate::vindex::EMBEDDING_KEY
     }
 
     /// Every property, in order.
@@ -806,7 +817,7 @@ impl ReadTx {
             .into_iter()
             .map(|def| {
                 let entries = if def.vector.is_some() {
-                    self.vector_count(ns, &def.name)?
+                    self.vector_count(ns, &def)?
                 } else {
                     count(&self.index_entries, ns, &def.name)?
                 };
@@ -1170,6 +1181,9 @@ impl WriteTx {
                     "a vector index is on one node property, and nothing else".into(),
                 ));
             }
+            if def.on_embedding() {
+                self.check_embedding_index(ns, &def, spec)?;
+            }
             if spec.dimension == 0
                 || spec.dimension > 65_536
                 || !(2..=128).contains(&spec.m)
@@ -1223,8 +1237,23 @@ impl WriteTx {
                 def.describe()
             )));
         }
+        if def.keys().iter().any(|key| key.starts_with('@')) && !def.on_embedding() {
+            return Err(Error::Invalid(format!(
+                "{} is on {}: only a vector index is on @embedding",
+                def.name,
+                def.keys().join(", ")
+            )));
+        }
         if def.hyperedges {
             self.hyperedge_layout()?;
+        }
+        if def.on_embedding() {
+            self.tx
+                .open_table(INDEXES)
+                .map_err(storage)?
+                .insert((ns, def.name.as_str()), encode(&def)?.as_slice())
+                .map_err(storage)?;
+            return self.embedding_count(ns, &def);
         }
         let records = self.records_of(ns, &def)?;
         if def.vector.is_some() {
