@@ -66,6 +66,7 @@ build unless the file says otherwise; on E1, runs vary by about ±20%.
 | `entity_search.csv` | GQ lookups, sorts and pages over 1 000 000 `Person` nodes, before and after the entity lookups | `crates/grafeno-query/examples/entity_search.rs` | E1-disk | 2026-11-26 | paired bars per query and indexes, log scale |
 | `rewire.csv` | Rewiring 1 000 000 edges with `CALL { … } IN TRANSACTIONS` against one transaction, with an agent's write latency and a reader's | `crates/grafeno-query/examples/rewire.rs` | E1-disk | 2026-11-26 | bars of agent p99 and max per mode, log scale |
 | `many_connections.csv` | 1 000 to 4 000 HTTP connections at once, reads, GQ and writes mixed, before and after writes give their turn back; and with 1 024 open files | `crates/grafeno-server/examples/many_connections.rs` (`tools/bench-http/Dockerfile`) | E2 (musl, mimalloc, no memory limit) | 2026-11-26 | requests per second and p99 per connections, before / after |
+| `import_pressure.csv` | An agent's write latency and a reader's GQ latency over HTTP during a 4 000 000-record import and other loads, before and after CSV and GraphML imports use the bulk lane | `crates/grafeno-server/examples/import_pressure.rs` | E1-disk | 2026-11-26 | bars of agent p99 and max per load, log scale |
 
 `python docs/charts/build.py` draws the charts of
 [performance](../performance.md) from these files (light and dark SVG in

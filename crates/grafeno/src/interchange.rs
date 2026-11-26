@@ -48,6 +48,8 @@ use grafeno_core::{
 };
 use serde::{Deserialize, Serialize};
 
+use std::sync::Arc;
+
 use crate::db::{Grafeno, ReadTx, WriteTx};
 
 /// State kind of the source ids an import mapped to nodes.
@@ -702,7 +704,29 @@ fn for_each_edge(read: &ReadTx, ns: &str, mut f: impl FnMut(&Edge) -> Result<()>
 
 // ---------------------------------------------------------------- imports
 
+/// Where an import's chunks are committed: in transactions of the
+/// database's own, or in a writer's bulk lane, one chunk at a time between
+/// the interactive writes (what a server does, so that a large file does
+/// not hold the writer).
+pub(crate) enum Commit<'a> {
+    Db(&'a Grafeno),
+    Writer(&'a crate::Writer),
+}
+
+impl Commit<'_> {
+    fn run<T: Send + 'static>(
+        &self,
+        f: impl Fn(&mut WriteTx) -> Result<T> + Send + 'static,
+    ) -> Result<T> {
+        match self {
+            Commit::Db(db) => db.write(|tx| f(tx)),
+            Commit::Writer(writer) => writer.write_bulk(f),
+        }
+    }
+}
+
 /// A node to write: its source id, labels, properties and text.
+#[derive(Clone)]
 struct InNode {
     source: String,
     labels: Vec<String>,
@@ -710,6 +734,7 @@ struct InNode {
     text: Option<String>,
 }
 
+#[derive(Clone)]
 struct InEdge {
     source: Option<String>,
     from: String,
@@ -722,6 +747,7 @@ struct InEdge {
 
 /// A hyperedge to write: its source id, label, participants (node as the
 /// file names it, and role), properties and valid time.
+#[derive(Clone)]
 struct InHyper {
     source: Option<String>,
     label: String,
@@ -754,14 +780,19 @@ mod uuid_like {
 }
 
 fn write_nodes(
-    db: &Grafeno,
+    commit: &Commit<'_>,
     ns: &str,
     nodes: Vec<InNode>,
     stats: &mut InterchangeStats,
     options: &InterchangeOptions,
 ) -> Result<()> {
-    for chunk in nodes.chunks(CHUNK) {
-        let written = db.write(|tx| {
+    let mut rest = nodes.into_iter().peekable();
+    while rest.peek().is_some() {
+        let chunk: Arc<Vec<InNode>> = Arc::new(rest.by_ref().take(CHUNK).collect());
+        let (owned_ns, owned_options) = (ns.to_owned(), options.clone());
+        let written = commit.run(move |tx| {
+            let (chunk, ns, options): (&[InNode], &str, &InterchangeOptions) =
+                (&chunk, &owned_ns, &owned_options);
             tx.act_as(options.actor.clone());
             tx.set_origin(options.origin.clone());
             let mut written = 0;
@@ -809,14 +840,19 @@ fn mapped(tx: &WriteTx, ns: &str, source: &str) -> Result<Option<NodeId>> {
 }
 
 fn write_edges(
-    db: &Grafeno,
+    commit: &Commit<'_>,
     ns: &str,
     edges: Vec<InEdge>,
     stats: &mut InterchangeStats,
     options: &InterchangeOptions,
 ) -> Result<()> {
-    for chunk in edges.chunks(CHUNK) {
-        let (written, errors) = db.write(|tx| {
+    let mut rest = edges.into_iter().peekable();
+    while rest.peek().is_some() {
+        let chunk: Arc<Vec<InEdge>> = Arc::new(rest.by_ref().take(CHUNK).collect());
+        let (owned_ns, owned_options) = (ns.to_owned(), options.clone());
+        let (written, errors) = commit.run(move |tx| {
+            let (chunk, ns, options): (&[InEdge], &str, &InterchangeOptions) =
+                (&chunk, &owned_ns, &owned_options);
             tx.act_as(options.actor.clone());
             tx.set_origin(options.origin.clone());
             let mut written = 0;
@@ -889,14 +925,19 @@ fn write_edges(
 }
 
 fn write_hyperedges(
-    db: &Grafeno,
+    commit: &Commit<'_>,
     ns: &str,
     hyperedges: Vec<InHyper>,
     stats: &mut InterchangeStats,
     options: &InterchangeOptions,
 ) -> Result<()> {
-    for chunk in hyperedges.chunks(CHUNK) {
-        let (written, errors) = db.write(|tx| {
+    let mut rest = hyperedges.into_iter().peekable();
+    while rest.peek().is_some() {
+        let chunk: Arc<Vec<InHyper>> = Arc::new(rest.by_ref().take(CHUNK).collect());
+        let (owned_ns, owned_options) = (ns.to_owned(), options.clone());
+        let (written, errors) = commit.run(move |tx| {
+            let (chunk, ns, options): (&[InHyper], &str, &InterchangeOptions) =
+                (&chunk, &owned_ns, &owned_options);
             tx.act_as(options.actor.clone());
             tx.set_origin(options.origin.clone());
             let mut written = 0;
@@ -1022,6 +1063,16 @@ impl Grafeno {
         input: impl BufRead,
         options: &InterchangeOptions,
     ) -> Result<InterchangeStats> {
+        self.import_nodes_csv_via(&Commit::Db(self), ns, input, options)
+    }
+
+    pub(crate) fn import_nodes_csv_via(
+        &self,
+        commit: &Commit<'_>,
+        ns: &str,
+        input: impl BufRead,
+        options: &InterchangeOptions,
+    ) -> Result<InterchangeStats> {
         let records = csv_records(input)?;
         let mut stats = InterchangeStats::default();
         let Some((head, rows)) = records.split_first() else {
@@ -1084,7 +1135,7 @@ impl Grafeno {
             }
             nodes.push(node);
         }
-        write_nodes(self, ns, nodes, &mut stats, options)?;
+        write_nodes(commit, ns, nodes, &mut stats, options)?;
         Ok(stats)
     }
 
@@ -1092,6 +1143,16 @@ impl Grafeno {
     /// or ids of nodes imported before.
     pub fn import_edges_csv(
         &self,
+        ns: &str,
+        input: impl BufRead,
+        options: &InterchangeOptions,
+    ) -> Result<InterchangeStats> {
+        self.import_edges_csv_via(&Commit::Db(self), ns, input, options)
+    }
+
+    pub(crate) fn import_edges_csv_via(
+        &self,
+        commit: &Commit<'_>,
         ns: &str,
         input: impl BufRead,
         options: &InterchangeOptions,
@@ -1185,7 +1246,7 @@ impl Grafeno {
             }
             edges.push(edge);
         }
-        write_edges(self, ns, edges, &mut stats, options)?;
+        write_edges(commit, ns, edges, &mut stats, options)?;
         Ok(stats)
     }
 
@@ -1194,6 +1255,16 @@ impl Grafeno {
     /// earlier import mapped).
     pub fn import_hyperedges_csv(
         &self,
+        ns: &str,
+        input: impl BufRead,
+        options: &InterchangeOptions,
+    ) -> Result<InterchangeStats> {
+        self.import_hyperedges_csv_via(&Commit::Db(self), ns, input, options)
+    }
+
+    pub(crate) fn import_hyperedges_csv_via(
+        &self,
+        commit: &Commit<'_>,
         ns: &str,
         input: impl BufRead,
         options: &InterchangeOptions,
@@ -1277,7 +1348,7 @@ impl Grafeno {
             }
             hyperedges.push(edge);
         }
-        write_hyperedges(self, ns, hyperedges, &mut stats, options)?;
+        write_hyperedges(commit, ns, hyperedges, &mut stats, options)?;
         Ok(stats)
     }
 
@@ -1288,10 +1359,20 @@ impl Grafeno {
         input: impl BufRead,
         options: &InterchangeOptions,
     ) -> Result<InterchangeStats> {
+        self.import_graphml_via(&Commit::Db(self), ns, input, options)
+    }
+
+    pub(crate) fn import_graphml_via(
+        &self,
+        commit: &Commit<'_>,
+        ns: &str,
+        input: impl BufRead,
+        options: &InterchangeOptions,
+    ) -> Result<InterchangeStats> {
         let (nodes, edges, hyperedges, mut stats) = parse_graphml(input, options)?;
-        write_nodes(self, ns, nodes, &mut stats, options)?;
-        write_edges(self, ns, edges, &mut stats, options)?;
-        write_hyperedges(self, ns, hyperedges, &mut stats, options)?;
+        write_nodes(commit, ns, nodes, &mut stats, options)?;
+        write_edges(commit, ns, edges, &mut stats, options)?;
+        write_hyperedges(commit, ns, hyperedges, &mut stats, options)?;
         Ok(stats)
     }
 }
@@ -1599,4 +1680,64 @@ fn parse_graphml(input: impl BufRead, options: &InterchangeOptions) -> Result<Pa
         }
     }
     Ok((nodes, edges, hyperedges, stats))
+}
+
+impl crate::Writer {
+    /// [`Grafeno::import_nodes_csv`] through this writer's bulk lane: each
+    /// chunk a transaction of its own, after the interactive writes
+    /// waiting, and durable at the end.
+    pub fn import_nodes_csv(
+        &self,
+        ns: &str,
+        input: impl BufRead,
+        options: &InterchangeOptions,
+    ) -> Result<InterchangeStats> {
+        let stats =
+            self.database()
+                .import_nodes_csv_via(&Commit::Writer(self), ns, input, options)?;
+        self.flush()?;
+        Ok(stats)
+    }
+
+    /// [`Grafeno::import_edges_csv`] through the bulk lane.
+    pub fn import_edges_csv(
+        &self,
+        ns: &str,
+        input: impl BufRead,
+        options: &InterchangeOptions,
+    ) -> Result<InterchangeStats> {
+        let stats =
+            self.database()
+                .import_edges_csv_via(&Commit::Writer(self), ns, input, options)?;
+        self.flush()?;
+        Ok(stats)
+    }
+
+    /// [`Grafeno::import_hyperedges_csv`] through the bulk lane.
+    pub fn import_hyperedges_csv(
+        &self,
+        ns: &str,
+        input: impl BufRead,
+        options: &InterchangeOptions,
+    ) -> Result<InterchangeStats> {
+        let stats =
+            self.database()
+                .import_hyperedges_csv_via(&Commit::Writer(self), ns, input, options)?;
+        self.flush()?;
+        Ok(stats)
+    }
+
+    /// [`Grafeno::import_graphml`] through the bulk lane.
+    pub fn import_graphml(
+        &self,
+        ns: &str,
+        input: impl BufRead,
+        options: &InterchangeOptions,
+    ) -> Result<InterchangeStats> {
+        let stats =
+            self.database()
+                .import_graphml_via(&Commit::Writer(self), ns, input, options)?;
+        self.flush()?;
+        Ok(stats)
+    }
 }

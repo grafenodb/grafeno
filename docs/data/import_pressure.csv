@@ -1,0 +1,13 @@
+version,load,records,seconds,records_per_second,agent_p50_ms,agent_p99_ms,agent_max_ms,reader_p50_ms,reader_p99_ms,reader_max_ms
+before,"none (agent and reader alone)",0,5.00,0,3.82,9.34,11.8,2.24,4.12,7.7
+before,"JSON Lines import, bulk",3999999,150.76,26531,51.41,94.23,722.4,2.33,3.91,260.1
+before,"GQ CALL { … } IN TRANSACTIONS OF 2000 ROWS",500000,19.64,25463,55.38,88.61,118.0,2.43,4.37,14.1
+before,"CSV import of nodes",500000,20.56,24313,49.58,1744.13,2123.9,2.50,3.60,6.3
+before,"streaming ingestion (NDJSON)",500000,16.27,30739,9.48,32.89,34.3,2.30,4.02,5.6
+before,"GQ, one statement in one transaction",200000,7.34,27242,7.78,7340.92,7340.9,2.73,4.31,4.9
+after,"none (agent and reader alone)",0,5.00,0,3.61,5.47,8.1,2.14,3.40,9.9
+after,"JSON Lines import, bulk",3999999,146.28,27344,49.77,84.99,730.8,2.30,3.96,350.7
+after,"GQ CALL { … } IN TRANSACTIONS OF 2000 ROWS",500000,18.94,26403,51.85,81.88,98.0,2.26,3.42,19.3
+after,"CSV import of nodes",500000,20.07,24917,53.80,97.26,108.6,2.27,3.36,4.6
+after,"streaming ingestion (NDJSON)",500000,15.54,32172,9.31,25.53,27.8,2.25,3.38,6.5
+after,"GQ, one statement in one transaction",200000,6.85,29176,3.88,6850.94,6850.9,2.46,3.68,4.7

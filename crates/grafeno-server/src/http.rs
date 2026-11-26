@@ -161,6 +161,96 @@ impl Writes {
         self.local.import(input, chunk)
     }
 
+    /// [`grafeno::Writer::import_nodes_csv`]: through the bulk lane (single servers
+    /// only, as [`Writes::import`]).
+    pub async fn import_nodes_csv(
+        self: &Arc<Self>,
+        ns: String,
+        body: axum::body::Bytes,
+        options: grafeno::InterchangeOptions,
+    ) -> ApiResult<grafeno::InterchangeStats> {
+        if self.cluster.is_some() {
+            return Err(ApiError::from(grafeno::Error::Invalid(
+                "imports into a cluster are not supported yet: import into a single server and start the cluster from it".into(),
+            )));
+        }
+        let writes = self.clone();
+        tokio::task::spawn_blocking(move || {
+            writes.local.import_nodes_csv(&ns, body.as_ref(), &options)
+        })
+        .await
+        .map_err(crate::http::joined)?
+        .map_err(ApiError::from)
+    }
+
+    /// [`grafeno::Writer::import_edges_csv`]: through the bulk lane (single servers
+    /// only, as [`Writes::import`]).
+    pub async fn import_edges_csv(
+        self: &Arc<Self>,
+        ns: String,
+        body: axum::body::Bytes,
+        options: grafeno::InterchangeOptions,
+    ) -> ApiResult<grafeno::InterchangeStats> {
+        if self.cluster.is_some() {
+            return Err(ApiError::from(grafeno::Error::Invalid(
+                "imports into a cluster are not supported yet: import into a single server and start the cluster from it".into(),
+            )));
+        }
+        let writes = self.clone();
+        tokio::task::spawn_blocking(move || {
+            writes.local.import_edges_csv(&ns, body.as_ref(), &options)
+        })
+        .await
+        .map_err(crate::http::joined)?
+        .map_err(ApiError::from)
+    }
+
+    /// [`grafeno::Writer::import_hyperedges_csv`]: through the bulk lane (single servers
+    /// only, as [`Writes::import`]).
+    pub async fn import_hyperedges_csv(
+        self: &Arc<Self>,
+        ns: String,
+        body: axum::body::Bytes,
+        options: grafeno::InterchangeOptions,
+    ) -> ApiResult<grafeno::InterchangeStats> {
+        if self.cluster.is_some() {
+            return Err(ApiError::from(grafeno::Error::Invalid(
+                "imports into a cluster are not supported yet: import into a single server and start the cluster from it".into(),
+            )));
+        }
+        let writes = self.clone();
+        tokio::task::spawn_blocking(move || {
+            writes
+                .local
+                .import_hyperedges_csv(&ns, body.as_ref(), &options)
+        })
+        .await
+        .map_err(crate::http::joined)?
+        .map_err(ApiError::from)
+    }
+
+    /// [`grafeno::Writer::import_graphml`]: through the bulk lane (single servers
+    /// only, as [`Writes::import`]).
+    pub async fn import_graphml(
+        self: &Arc<Self>,
+        ns: String,
+        body: axum::body::Bytes,
+        options: grafeno::InterchangeOptions,
+    ) -> ApiResult<grafeno::InterchangeStats> {
+        if self.cluster.is_some() {
+            return Err(ApiError::from(grafeno::Error::Invalid(
+                "imports into a cluster are not supported yet: import into a single server and start the cluster from it".into(),
+            )));
+        }
+        let writes = self.clone();
+        tokio::task::spawn_blocking(move || {
+            writes.local.import_graphml(&ns, body.as_ref(), &options)
+        })
+        .await
+        .map_err(crate::http::joined)?
+        .map_err(ApiError::from)
+    }
+
     pub fn metrics(&self) -> grafeno::WriterSnapshot {
         self.local.metrics()
     }
@@ -4240,10 +4330,7 @@ async fn import_graphml(
 ) -> ApiResult<Json<grafeno::InterchangeStats>> {
     let body = interchange_body(request).await?;
     let options = import_options();
-    let stats = blocking(&state, move |db| {
-        db.import_graphml(&ns, body.as_ref(), &options)
-    })
-    .await?;
+    let stats = state.writer.import_graphml(ns, body, options).await?;
     Ok(Json(stats))
 }
 
@@ -4254,10 +4341,7 @@ async fn import_nodes_csv(
 ) -> ApiResult<Json<grafeno::InterchangeStats>> {
     let body = interchange_body(request).await?;
     let options = import_options();
-    let stats = blocking(&state, move |db| {
-        db.import_nodes_csv(&ns, body.as_ref(), &options)
-    })
-    .await?;
+    let stats = state.writer.import_nodes_csv(ns, body, options).await?;
     Ok(Json(stats))
 }
 
@@ -4268,10 +4352,7 @@ async fn import_edges_csv(
 ) -> ApiResult<Json<grafeno::InterchangeStats>> {
     let body = interchange_body(request).await?;
     let options = import_options();
-    let stats = blocking(&state, move |db| {
-        db.import_edges_csv(&ns, body.as_ref(), &options)
-    })
-    .await?;
+    let stats = state.writer.import_edges_csv(ns, body, options).await?;
     Ok(Json(stats))
 }
 
@@ -4282,10 +4363,10 @@ async fn import_hyperedges_csv(
 ) -> ApiResult<Json<grafeno::InterchangeStats>> {
     let body = interchange_body(request).await?;
     let options = import_options();
-    let stats = blocking(&state, move |db| {
-        db.import_hyperedges_csv(&ns, body.as_ref(), &options)
-    })
-    .await?;
+    let stats = state
+        .writer
+        .import_hyperedges_csv(ns, body, options)
+        .await?;
     Ok(Json(stats))
 }
 

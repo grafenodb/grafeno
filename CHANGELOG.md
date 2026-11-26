@@ -23,6 +23,13 @@ upgraded in place, with a copy kept first.
   with equal values and then the sorted one reads each page in order and
   stops. On 1,000,000 people, every `PE` person by name took 0.56 ms a
   page of 100.
+- **Fixed**: CSV and GraphML imports (`/v1/{ns}/import/nodes.csv`, …)
+  wrote around the writer, in transactions of their own that took its
+  lock in turn with it: while 500,000 nodes were imported from CSV, an
+  agent's writes waited up to 2.1 s (p99 1.7 s). They now go through the
+  writer's bulk lane, 2,000 records a transaction, as JSON imports do:
+  p99 97 ms, at most 109 ms. A cluster member refuses them, as it does
+  JSON imports, instead of writing them on its own copy only.
 - **Fixed**: under many clients, the writes waiting for the writer each
   held one of the `max_requests` turns and a thread, and the reads queued
   behind them or got 503. A write now gives its turn back while it waits,

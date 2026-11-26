@@ -182,6 +182,11 @@ impl Writer {
         Ok(())
     }
 
+    /// The database it writes.
+    pub fn database(&self) -> &Grafeno {
+        &self.db
+    }
+
     /// Makes every commit so far durable.
     pub fn flush(&self) -> Result<()> {
         self.db.flush()

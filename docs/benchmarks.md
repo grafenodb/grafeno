@@ -1698,3 +1698,28 @@ The writes' latency is the writer's queue: one writer, as many groups a
 second as it can commit. On Windows the same load is bound by the
 loopback network (8,000 `GET /health` a second, and the same uneven
 tail), not by the engine, so these numbers are from Linux.
+
+## Large loads while others work (`crates/grafeno-server/examples/import_pressure.rs`)
+
+A server in the process on a file (E1-disk); an agent writes a memory
+over HTTP every 20 ms (`POST /v1/agent/nodes`) and a reader runs a GQ
+lookup through an index every 20 ms, while one load runs at a time
+(`docs/data/import_pressure.csv`):
+
+| Load | Records | Seconds | Agent p50 / p99 / max | Reader p50 / p99 / max |
+| --- | ---: | ---: | --- | --- |
+| none | | | 3.6 / 5.5 / 8 ms | 2.1 / 3.4 / 10 ms |
+| JSON Lines import, `?bulk=true` | 4,000,000 | 146 | 50 / 85 / 731 ms | 2.3 / 4.0 / 351 ms |
+| GQ `CALL { … } IN TRANSACTIONS OF 2000 ROWS` | 500,000 | 19 | 52 / 82 / 98 ms | 2.3 / 3.4 / 19 ms |
+| CSV import, before | 500,000 | 21 | 50 / 1,744 / 2,124 ms | 2.5 / 3.6 / 6 ms |
+| CSV import, after | 500,000 | 20 | 54 / 97 / 109 ms | 2.3 / 3.4 / 5 ms |
+| streaming ingestion (NDJSON) | 500,000 | 16 | 9 / 26 / 28 ms | 2.2 / 3.4 / 6 ms |
+| GQ, one statement, one transaction | 200,000 | 7 | 4 ms / 6.9 s / 6.9 s | 2.5 / 3.7 / 5 ms |
+
+Reads do not wait for writes at all (snapshots). An agent's write waits
+for the bulk transaction being committed, about 50 ms for 2,000 records,
+in every load that uses the bulk lane: JSON imports, `IN TRANSACTIONS`,
+ingestion (500 lines a batch) and now CSV and GraphML imports, which
+wrote around the writer and took its lock in turn with it. One statement
+of 200,000 rows still holds the writer for its whole run: large writes in
+GQ belong in `IN TRANSACTIONS`.

@@ -82,3 +82,33 @@ async fn batches_leave_room_for_interactive_writes() {
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
 }
+
+#[tokio::test]
+async fn csv_and_graphml_imports_go_through_the_bulk_lane() {
+    let state = AppState::new(Arc::new(Grafeno::in_memory().unwrap()), None);
+    let writer = state.writer.clone();
+    let app = router(state);
+    let before = writer.metrics().bulk_latency_seconds.count();
+    let mut csv = String::from("id,i:int\n");
+    for i in 0..5_000 {
+        csv.push_str(&format!("r{i},{i}\n"));
+    }
+    let request = Request::builder()
+        .method("POST")
+        .uri("/v1/csv/import/nodes.csv")
+        .header(header::CONTENT_TYPE, "text/csv")
+        .body(Body::from(csv))
+        .unwrap();
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    // Three chunks of up to 2,000 rows, each a bulk transaction: an
+    // import no longer writes around the writer.
+    assert_eq!(writer.metrics().bulk_latency_seconds.count() - before, 3);
+    let (_, counted) = post(
+        &app,
+        "/v1/csv/query",
+        json!({"query": "MATCH (n) RETURN count(n)"}),
+    )
+    .await;
+    assert_eq!(counted["rows"], json!([[5000]]));
+}
