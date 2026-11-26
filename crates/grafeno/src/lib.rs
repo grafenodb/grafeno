@@ -23,6 +23,7 @@
 
 mod access;
 pub mod algo;
+mod alias;
 mod audit;
 mod backup;
 mod changes;
@@ -45,6 +46,7 @@ mod resolve;
 mod rights;
 mod view;
 mod vindex;
+pub use alias::Alias;
 pub use audit::{AuditEvent, AuditPage, AuditRetention, NewAuditEvent, Outcome};
 pub use db::Origin;
 pub use view::View;

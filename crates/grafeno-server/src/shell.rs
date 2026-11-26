@@ -785,13 +785,22 @@ impl Shell {
                 print_table(&["namespace", "nodes", "edges"], &rows);
             }),
             "\\use" | "\\c" if !argument.is_empty() => {
-                self.namespace = argument.to_owned();
-                match self.backend.namespace_exists(argument) {
-                    Ok(true) => println!("Now on namespace {argument:?}."),
-                    _ => println!(
-                        "Now on namespace {argument:?}, which does not exist yet: the first write \
-                         creates it (or \\ns create {argument})."
-                    ),
+                // On a file, an alias is followed here (a server follows
+                // it for every request).
+                if let Backend::Local(db) = &self.backend
+                    && let Ok(Some(target)) = db.resolve_alias(argument)
+                {
+                    println!("{argument:?} is an alias: now on namespace {target:?}.");
+                    self.namespace = target;
+                } else {
+                    self.namespace = argument.to_owned();
+                    match self.backend.namespace_exists(argument) {
+                        Ok(true) => println!("Now on namespace {argument:?}."),
+                        _ => println!(
+                            "Now on namespace {argument:?}, which does not exist yet: the first \
+                             write creates it (or \\ns create {argument})."
+                        ),
+                    }
                 }
                 Ok(())
             }

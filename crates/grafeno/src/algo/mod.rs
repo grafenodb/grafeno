@@ -558,6 +558,8 @@ pub(crate) struct Shared {
     /// How many entries each property index held, as of a commit: whether
     /// an index holds every node of its labels, for sorts that read it.
     index_counts: Mutex<Vec<(u64, String, String, u64)>>,
+    /// The namespace aliases as of a commit.
+    aliases: Mutex<Option<(u64, crate::alias::AliasMap)>>,
     /// The bytes the cached projections may take.
     projection_budget: std::sync::atomic::AtomicUsize,
     /// The change log's window and commit listeners.
@@ -582,6 +584,7 @@ impl Default for Shared {
             projections: Mutex::default(),
             fulltext_terms: Mutex::default(),
             index_counts: Mutex::default(),
+            aliases: Mutex::default(),
             projection_budget: std::sync::atomic::AtomicUsize::new(DEFAULT_PROJECTION_CACHE),
             changes: crate::changes::Hub::default(),
             audit_retention: crate::audit::Retention::default(),
@@ -645,6 +648,21 @@ impl Shared {
             cached.remove(0);
         }
         cached.push((generation, ns.to_owned(), index.to_owned(), count));
+    }
+
+    /// The aliases kept, if no commit ran since they were read.
+    pub(crate) fn cached_aliases(&self) -> Option<crate::alias::AliasMap> {
+        let now = self.generation.load(Ordering::SeqCst);
+        let cached = self.aliases.lock().unwrap_or_else(|e| e.into_inner());
+        cached
+            .as_ref()
+            .filter(|(generation, _)| *generation == now)
+            .map(|(_, map)| map.clone())
+    }
+
+    pub(crate) fn keep_aliases(&self, generation: u64, map: crate::alias::AliasMap) {
+        let mut cached = self.aliases.lock().unwrap_or_else(|e| e.into_inner());
+        *cached = Some((generation, map));
     }
 
     /// Runs a commit, so that readers know the data changed.

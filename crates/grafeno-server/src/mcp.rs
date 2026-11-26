@@ -335,10 +335,24 @@ impl McpServer {
             .get("name")
             .and_then(Value::as_str)
             .ok_or((-32602, "missing tool name".to_owned()))?;
-        let arguments = params
+        let mut arguments = params
             .get("arguments")
             .cloned()
             .unwrap_or_else(|| json!({}));
+        // An alias stands for its namespace: the tool, and the access
+        // check, see the namespace (a remote server resolves its own).
+        if self.remote.is_none() {
+            let named = arguments
+                .get("namespace")
+                .and_then(Value::as_str)
+                .unwrap_or(&self.namespace)
+                .to_owned();
+            if let Ok(Some(target)) = self.db.resolve_alias(&named)
+                && let Some(map) = arguments.as_object_mut()
+            {
+                map.insert("namespace".into(), Value::String(target));
+            }
+        }
         if self.access.read_only && WRITING_TOOLS.contains(&name) {
             return Ok(json!({
                 "content": [{ "type": "text", "text": format!("{name} writes, and this MCP server is read-only") }],

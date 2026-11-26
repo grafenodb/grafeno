@@ -23,6 +23,12 @@ upgraded in place, with a copy kept first.
   with equal values and then the sorted one reads each page in order and
   stops. On 1,000,000 people, every `PE` person by name took 0.56 ms a
   page of 100.
+- **Added**: namespace aliases. An alias stands for one namespace in
+  every route under `/v1/{alias}/…`, in GQ, MCP and the shell, and moves
+  to another namespace in one commit (`PUT /v1/aliases/{name}`, `ALTER
+  ALIAS people SET NAMESPACE people_v2`): build a new version, then switch
+  with no pause. Rights are the namespace's; moving one needs `schema` on
+  both namespaces. A namespace can no longer be called `aliases`.
 - **Changed**: `MATCH … RETURN … ORDER BY … LIMIT n` keeps only the best
   rows while it matches: sorting a million nodes for the first 20 went
   over `max_memory`, and now holds 20 rows (1.4 s without an index). A

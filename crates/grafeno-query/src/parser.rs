@@ -455,6 +455,9 @@ impl Parser<'_> {
     /// `CREATE NAMESPACE`, `ALTER NAMESPACE` and `DROP NAMESPACE`, if one
     /// starts here.
     fn namespace_statement(&mut self) -> Result<Option<NamespaceOp>, QueryError> {
+        if self.keyword_at(1, "ALIAS") {
+            return self.alias_statement().map(Some);
+        }
         if !self.keyword_at(1, "NAMESPACE") {
             return Ok(None);
         }
@@ -506,6 +509,45 @@ impl Parser<'_> {
             return Ok(Some(NamespaceOp::Drop { name, if_exists }));
         }
         Ok(None)
+    }
+
+    /// `CREATE ALIAS`, `ALTER ALIAS` and `DROP ALIAS`, at their first word.
+    fn alias_statement(&mut self) -> Result<NamespaceOp, QueryError> {
+        if self.at_keyword("CREATE") {
+            self.position += 2;
+            let name = self.access_name("the alias's name")?;
+            let if_not_exists = self.if_not_exists();
+            if !(self.at_keyword("FOR") && self.keyword_at(1, "NAMESPACE")) {
+                return Err(self.unexpected("FOR NAMESPACE and the namespace's name"));
+            }
+            self.position += 2;
+            let target = self.access_name("the namespace's name")?;
+            return Ok(NamespaceOp::CreateAlias {
+                name,
+                target,
+                if_not_exists,
+            });
+        }
+        if self.at_keyword("ALTER") {
+            self.position += 2;
+            let name = self.access_name("the alias's name")?;
+            if !(self.at_keyword("SET") && self.keyword_at(1, "NAMESPACE")) {
+                return Err(self.unexpected("SET NAMESPACE and the namespace's name"));
+            }
+            self.position += 2;
+            let target = self.access_name("the namespace's name")?;
+            return Ok(NamespaceOp::AlterAlias { name, target });
+        }
+        if self.at_keyword("DROP") {
+            self.position += 2;
+            let name = self.access_name("the alias's name")?;
+            let if_exists = self.at_keyword("IF") && self.keyword_at(1, "EXISTS");
+            if if_exists {
+                self.position += 2;
+            }
+            return Ok(NamespaceOp::DropAlias { name, if_exists });
+        }
+        Err(self.unexpected("CREATE, ALTER or DROP ALIAS"))
     }
 
     /// `CREATE EVENT SUBSCRIPTION`, `DROP EVENT SUBSCRIPTION` and `SHOW
@@ -718,6 +760,10 @@ impl Parser<'_> {
         }
         if self.at_keyword("SHOW") {
             self.advance();
+            if self.at_keyword("ALIASES") {
+                self.advance();
+                return Ok(Some(Schema::ShowAliases));
+            }
             if self.at_keyword("NAMESPACES") {
                 self.advance();
                 return Ok(Some(Schema::ShowNamespaces));

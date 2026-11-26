@@ -380,6 +380,10 @@ requests accept either that or an ISO 8601 string (`2024-05-01`,
 | `GET`    | `/v1/namespaces/{ns}`                 |                                                         | the namespace, or 404         |
 | `PATCH`  | `/v1/namespaces/{ns}`                 | `{description?, language?}` (`null` removes either; one left out stays) | the namespace; a new `language` indexes its node texts again |
 | `DELETE` | `/v1/namespaces/{ns}`                 |                                                         | `{nodes, edges}` deleted with it |
+| `GET`    | `/v1/aliases`                         |                                                         | `[{name, namespace, updated_at}]`: the aliases whose namespace the caller may read |
+| `GET`    | `/v1/aliases/{name}`                  |                                                         | the alias, or 404             |
+| `PUT`    | `/v1/aliases/{name}`                  | `{namespace}`                                           | `{name, namespace, updated_at, previous?}`: creates the alias (201) or moves it (200) in one commit; `schema` on the namespace it points at and on the one it leaves |
+| `DELETE` | `/v1/aliases/{name}`                  |                                                         | 204; the namespace stays      |
 | `GET`    | `/v1/backup`                          |                                                         | the whole database file, consistent (owners) |
 | `GET`    | `/v1/export`                          | `?ns=a,b` (all by default)                              | JSON Lines                    |
 | `POST`   | `/v1/import`                          | JSON Lines (up to 1 GiB); `?bulk=true` loads in chunks between other writes | `{namespaces, nodes, edges}`  |
@@ -487,6 +491,23 @@ requests accept either that or an ISO 8601 string (`2024-05-01`,
   labels, name}`. With `write: "rank"` (or `"@embedding"`) the result is
   stored on each node instead, from `column` (the one after `node` by
   default), and the answer is the number of nodes written.
+- **Aliases** stand for a namespace wherever its name goes: `/v1/{alias}/…`
+  is served as `/v1/{namespace}/…` (the response says which in the
+  `grafeno-namespace` header), and so are GQ statements sent there, MCP
+  tools given it as `namespace` and the shell's `\use`. Build `people_v2`,
+  then `PUT /v1/aliases/people {"namespace": "people_v2"}`: requests
+  resolved before the commit finish on the old namespace, the next ones
+  go to the new one, with no pause. Rights are the namespace's: a grant
+  on the alias's name gives nothing, and moving an alias never opens what
+  the caller could not read under the namespace's own name; moving it
+  needs `schema` on both namespaces. An alias stands for one namespace
+  (a query, its ids and its writes are in one). Its name cannot be a
+  namespace's, nor can a namespace be created with it; it cannot point at
+  another alias, and a namespace that aliases point at is not dropped
+  (409) until they move. Aliases are written with the graph (backups,
+  replication), and in a cluster with groups they live in group 0, the
+  directory's group; every member resolves them from its copy. The
+  `/v1/namespaces/{ns}` routes take only namespace names.
 - **Lookups** (`/nodes/find`) find nodes by their properties as rows of a
   table. `where` maps each property to a value (equal to it: `7` equals
   `7.0`) or to `{op: value}` with `eq`, `ne`, `lt`, `lte`, `gt`, `gte`,

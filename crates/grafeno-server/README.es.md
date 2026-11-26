@@ -390,6 +390,10 @@ Los ids son UUID. Los tiempos en las respuestas son microsegundos desde la
 | `GET`    | `/v1/namespaces/{ns}`                 |                                                         | el namespace, o 404           |
 | `PATCH`  | `/v1/namespaces/{ns}`                 | `{description?, language?}` (`null` quita cualquiera; el que no se envía queda igual) | el namespace; un `language` nuevo vuelve a indexar sus textos |
 | `DELETE` | `/v1/namespaces/{ns}`                 |                                                         | `{nodes, edges}` eliminados con él |
+| `GET`    | `/v1/aliases`                         |                                                         | `[{name, namespace, updated_at}]`: los alias cuyo namespace puede leer quien llama |
+| `GET`    | `/v1/aliases/{name}`                  |                                                         | el alias, o 404               |
+| `PUT`    | `/v1/aliases/{name}`                  | `{namespace}`                                           | `{name, namespace, updated_at, previous?}`: crea el alias (201) o lo mueve (200) en un solo commit; `schema` en el namespace al que apunta y en el que deja |
+| `DELETE` | `/v1/aliases/{name}`                  |                                                         | 204; el namespace queda       |
 | `GET`    | `/v1/backup`                          |                                                         | todo el archivo de la base, consistente (owners) |
 | `GET`    | `/v1/export`                          | `?ns=a,b` (todos por defecto)                           | JSON Lines                    |
 | `POST`   | `/v1/import`                          | JSON Lines (hasta 1 GiB); `?bulk=true` carga por tramos entre otras escrituras | `{namespaces, nodes, edges}`  |
@@ -498,6 +502,24 @@ Los ids son UUID. Los tiempos en las respuestas son microsegundos desde la
   `"@embedding"`) el resultado se guarda en cada nodo, desde `column` (por
   defecto la que sigue a `node`), y la respuesta es el número de nodos
   escritos.
+- **Alias**: un nombre que vale por un namespace allí donde va su nombre:
+  `/v1/{alias}/…` se sirve como `/v1/{namespace}/…` (la respuesta lo dice
+  en la cabecera `grafeno-namespace`), y lo mismo las sentencias GQ
+  enviadas ahí, las herramientas MCP que lo reciben como `namespace` y el
+  `\use` de la consola. Se construye `people_v2` y luego `PUT
+  /v1/aliases/people {"namespace": "people_v2"}`: las peticiones resueltas
+  antes del commit terminan en el namespace viejo y las siguientes van al
+  nuevo, sin pausa. Los permisos son los del namespace: un permiso sobre
+  el nombre del alias no da nada, y mover un alias nunca abre lo que
+  quien llama no podría leer con el nombre propio del namespace; moverlo
+  exige `schema` en los dos namespaces. Un alias vale por un namespace
+  (una consulta, sus ids y sus escrituras están en uno). Su nombre no
+  puede ser el de un namespace, ni se puede crear un namespace con él; no
+  puede apuntar a otro alias, y un namespace al que apuntan alias no se
+  borra (409) hasta que se muevan. Los alias se escriben con el grafo
+  (copias, replicación), y en un clúster con grupos viven en el grupo 0,
+  el del directorio; cada miembro los resuelve desde su copia. Las rutas
+  `/v1/namespaces/{ns}` solo aceptan nombres de namespace.
 - **Búsquedas** (`/nodes/find`): nodos por sus propiedades, como filas de
   una tabla. `where` da a cada propiedad un valor (igual a él: `7` es igual
   a `7.0`) o `{op: valor}` con `eq`, `ne`, `lt`, `lte`, `gt`, `gte`, `in`

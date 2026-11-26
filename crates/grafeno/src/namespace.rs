@@ -34,6 +34,7 @@ pub const RESERVED: &[&str] = &[
     "roles",
     "privileges",
     "admin",
+    "aliases",
 ];
 
 /// Names longer than this are refused when a namespace is created.
@@ -62,8 +63,12 @@ pub(crate) fn read_meta(
 /// Registers `ns` if it is not registered yet (any write to a namespace
 /// does this, so writes never need a `create_namespace` first).
 pub(crate) fn ensure(tx: &WriteTransaction, ns: &str) -> Result<()> {
+    if ns == crate::alias::ALIAS_NS {
+        return Ok(());
+    }
     let mut table = tx.open_table(NAMESPACES).map_err(storage)?;
     if table.get(ns).map_err(storage)?.is_none() {
+        refuse_alias_name(tx, ns)?;
         let meta = NamespaceMeta {
             created_at: Timestamp::now(),
             description: None,
@@ -72,6 +77,21 @@ pub(crate) fn ensure(tx: &WriteTransaction, ns: &str) -> Result<()> {
         table
             .insert(ns, encode(&meta)?.as_slice())
             .map_err(storage)?;
+    }
+    Ok(())
+}
+
+/// A namespace cannot take an alias's name: the alias would hide it.
+fn refuse_alias_name(tx: &WriteTransaction, ns: &str) -> Result<()> {
+    let table = tx.open_table(crate::state::STATE).map_err(storage)?;
+    if table
+        .get((crate::alias::ALIAS_NS, "alias", ns))
+        .map_err(storage)?
+        .is_some()
+    {
+        return Err(Error::Conflict(format!(
+            "{ns:?} is an alias: a namespace cannot have its name (drop the alias first)"
+        )));
     }
     Ok(())
 }
@@ -149,6 +169,7 @@ impl WriteTx {
     pub fn create_namespace(&mut self, ns: &str, description: Option<&str>) -> Result<()> {
         check_new_namespace(ns)?;
         self.note(crate::replication::Touch::Namespace(ns.to_owned()));
+        refuse_alias_name(&self.tx, ns)?;
         let mut table = self.tx.open_table(NAMESPACES).map_err(storage)?;
         if table.get(ns).map_err(storage)?.is_some() {
             return Err(Error::Conflict(format!("namespace {ns:?} already exists")));

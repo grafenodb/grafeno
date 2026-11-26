@@ -790,6 +790,9 @@ pub fn need(method: &str, path: &str) -> Need {
         // Listing filters what the caller may read; creating checks the
         // name in the handler.
         ["namespaces"] => Need::Caller,
+        // Aliases: listing filters by the namespaces the caller may read;
+        // pointing one checks both namespaces in the handler.
+        ["aliases"] | ["aliases", _] => Need::Caller,
         ["namespaces", ns] => Need::Namespace(
             decode(ns),
             match method {

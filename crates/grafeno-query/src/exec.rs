@@ -57,6 +57,11 @@ pub struct WriteStats {
     /// `CREATE NAMESPACE` and `DROP NAMESPACE` (16.3).
     pub namespaces_created: u64,
     pub namespaces_dropped: u64,
+    /// `CREATE ALIAS` / `ALTER ALIAS`, and `DROP ALIAS`.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub aliases_set: u64,
+    #[serde(skip_serializing_if = "is_zero")]
+    pub aliases_dropped: u64,
 }
 
 fn is_zero(value: &u64) -> bool {
@@ -255,6 +260,80 @@ fn plan_info_with(read: &ReadTx, ns: &str, building: bool) -> Result<PlanInfo, Q
         } else {
             read.cached_planner_stats(ns)
         },
+    })
+}
+
+const ALIAS_COLUMNS: [&str; 4] = ["name", "namespace", "previous", "updated_at"];
+
+fn alias_row(alias: grafeno::Alias, previous: Option<String>) -> Vec<Value> {
+    vec![
+        Value::Str(alias.name),
+        Value::Str(alias.namespace),
+        previous.map_or(Value::Null, Value::Str),
+        Value::Time(alias.updated_at),
+    ]
+}
+
+/// `CREATE ALIAS`, `ALTER ALIAS` and `DROP ALIAS`: one row, the alias as
+/// it is now (and the namespace it pointed at before), or none when an
+/// `IF` clause left things as they were.
+fn run_alias(tx: &mut WriteTx, op: &NamespaceOp) -> Result<QueryResult, QueryError> {
+    let columns = ALIAS_COLUMNS.iter().map(|c| (*c).to_owned()).collect();
+    let mut stats = WriteStats::default();
+    let rows = match op {
+        NamespaceOp::CreateAlias {
+            name,
+            target,
+            if_not_exists,
+        } => match tx.alias(name)? {
+            Some(_) if *if_not_exists => Vec::new(),
+            Some(alias) => {
+                return Err(QueryError::runtime(format!(
+                    "alias {name:?} already points at {:?} (ALTER ALIAS moves it)",
+                    alias.namespace
+                )));
+            }
+            None => {
+                tx.set_alias(name, target)?;
+                stats.aliases_set += 1;
+                tx.alias(name)?
+                    .map(|alias| alias_row(alias, None))
+                    .into_iter()
+                    .collect()
+            }
+        },
+        NamespaceOp::AlterAlias { name, target } => {
+            if tx.alias(name)?.is_none() {
+                return Err(QueryError::runtime(format!(
+                    "there is no alias {name:?} (CREATE ALIAS makes one)"
+                )));
+            }
+            let previous = tx.set_alias(name, target)?;
+            stats.aliases_set += 1;
+            tx.alias(name)?
+                .map(|alias| alias_row(alias, previous))
+                .into_iter()
+                .collect()
+        }
+        NamespaceOp::DropAlias { name, if_exists } => match tx.alias(name)? {
+            None if *if_exists => Vec::new(),
+            None => {
+                return Err(QueryError::runtime(format!("there is no alias {name:?}")));
+            }
+            Some(alias) => {
+                tx.drop_alias(name)?;
+                stats.aliases_dropped += 1;
+                vec![alias_row(alias, None)]
+            }
+        },
+        _ => unreachable!("an alias statement"),
+    };
+    Ok(QueryResult {
+        columns,
+        rows,
+        stats,
+        profile: None,
+        trace: None,
     })
 }
 
@@ -612,6 +691,11 @@ fn run_schema(
                     tx.describe_namespace(name, comment.as_deref())?;
                     tx.namespace(name)?.map(row).into_iter().collect()
                 }
+                NamespaceOp::CreateAlias { .. }
+                | NamespaceOp::AlterAlias { .. }
+                | NamespaceOp::DropAlias { .. } => {
+                    return run_alias(tx, op);
+                }
                 NamespaceOp::Drop { name, if_exists } => {
                     if tx.namespace(name)?.is_none() {
                         if *if_exists {
@@ -620,6 +704,13 @@ fn run_schema(
                             return Err(grafeno::Error::NamespaceNotFound(name.clone()).into());
                         }
                     } else {
+                        let aliases = tx.aliases_of(name)?;
+                        if !aliases.is_empty() {
+                            return Err(QueryError::runtime(format!(
+                                "aliases point at {name:?} ({}): move or drop them first",
+                                aliases.join(", ")
+                            )));
+                        }
                         let dropped = tx.drop_namespace(name)?;
                         stats.namespaces_dropped += 1;
                         stats.nodes_deleted += dropped.nodes;
@@ -643,6 +734,23 @@ fn run_schema(
             })
         }
         Schema::Events(op) => run_events(read, tx, ns, op, params),
+        Schema::ShowAliases => Ok(QueryResult {
+            columns: ALIAS_COLUMNS.iter().map(|c| (*c).to_owned()).collect(),
+            rows: read
+                .aliases()?
+                .into_iter()
+                .filter(|alias| {
+                    limits
+                        .visible
+                        .as_ref()
+                        .is_none_or(|filter| filter.allows(&alias.namespace))
+                })
+                .map(|alias| alias_row(alias, None))
+                .collect(),
+            stats: WriteStats::default(),
+            profile: None,
+            trace: None,
+        }),
         Schema::ShowNamespaces => Ok(QueryResult {
             columns: ["name", "nodes", "edges", "created_at", "description"]
                 .iter()
@@ -873,6 +981,9 @@ pub struct Requirements {
     /// For a namespace statement: the namespace it names and the action it
     /// takes on it (`CreateNamespace`, `Schema` or `Drop`).
     pub namespace: Option<(String, grafeno::Act)>,
+    /// For an alias statement: the alias it changes (the caller needs
+    /// `schema` on the namespace it points at now, too).
+    pub alias: Option<String>,
 }
 
 /// [`Requirements`] of a statement, for a caller described by `context`.
@@ -881,9 +992,9 @@ pub fn requirements(
     context: Option<&crate::access::AccessContext>,
 ) -> Result<Requirements, QueryError> {
     let statement = crate::cache::parsed(query)?;
-    let namespace = match &statement.schema {
-        Some(Schema::Namespace(op)) => Some((op.name().to_owned(), op.act())),
-        _ => None,
+    let (namespace, alias) = match &statement.schema {
+        Some(Schema::Namespace(op)) => (op.target(), op.alias().map(str::to_owned)),
+        _ => (None, None),
     };
     let (kind, lacking) = match &statement.schema {
         Some(Schema::Access(access)) => (StatementKind::Access, access.lacking(context)),
@@ -898,6 +1009,7 @@ pub fn requirements(
         kind,
         lacking,
         namespace,
+        alias,
     })
 }
 
@@ -3948,6 +4060,7 @@ fn explain(
             Schema::Drop { name, .. } => format!("drop {name}"),
             Schema::Show { .. } => "list the indexes".into(),
             Schema::ShowNamespaces => "list the namespaces".into(),
+            Schema::ShowAliases => "list the aliases".into(),
             Schema::Events(EventsOp::Show) => "list the event subscriptions".into(),
             Schema::Events(EventsOp::Create { name, .. }) => {
                 format!("create the event subscription {name:?}")
@@ -3961,6 +4074,13 @@ fn explain(
                 NamespaceOp::Drop { name, .. } => {
                     format!("drop the namespace {name:?} and everything in it")
                 }
+                NamespaceOp::CreateAlias { name, target, .. } => {
+                    format!("create the alias {name:?} for {target:?}")
+                }
+                NamespaceOp::AlterAlias { name, target } => {
+                    format!("point the alias {name:?} at {target:?}")
+                }
+                NamespaceOp::DropAlias { name, .. } => format!("drop the alias {name:?}"),
             },
             Schema::Access(access) => access.describe(),
         };

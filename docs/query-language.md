@@ -1248,6 +1248,32 @@ that namespace, `ALTER` the namespace's `schema` privilege, `DROP` its
 sent through a namespace of the group the named one belongs to (group 0
 for a new one).
 
+### Aliases
+
+An alias is a name that stands for one namespace wherever a namespace name
+goes: the HTTP routes under it, GQ statements sent there, MCP tools and the
+shell's `\use`. Moving it to another namespace is one commit, so a new
+version can be built and switched to with no pause:
+
+```text
+CREATE ALIAS people FOR NAMESPACE people_v1;    // IF NOT EXISTS leaves one as it is
+// … build people_v2 …
+ALTER ALIAS people SET NAMESPACE people_v2;     // the next request reads people_v2
+SHOW ALIASES;                                   // name, namespace, previous, updated_at
+DROP ALIAS people IF EXISTS;                    // the alias, not its namespace
+```
+
+Each returns the alias's row (`previous` is the namespace `ALTER` moved it
+from); the write stats count `aliases_set` and `aliases_dropped`. Rights are
+the namespace's, not the alias's: creating or moving one needs the `schema`
+privilege on the namespace it points at and on the one it leaves, `DROP
+ALIAS` on the one it points at, and `SHOW ALIASES` lists those whose
+namespace the caller may read. An alias cannot take a namespace's name or
+point at another alias, a namespace cannot be created with an alias's name,
+and `DROP NAMESPACE` refuses a namespace that aliases point at. In a cluster
+with several groups, aliases live in group 0: send these statements through
+a namespace of group 0 (or use `/v1/aliases`).
+
 A namespace, its indexes and constraints and some first data can be set
 up from one script, kept with an application's code:
 

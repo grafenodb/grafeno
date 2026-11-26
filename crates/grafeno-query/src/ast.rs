@@ -43,6 +43,8 @@ pub(crate) enum Schema {
     Show { constraints: bool },
     /// `SHOW NAMESPACES`.
     ShowNamespaces,
+    /// `SHOW ALIASES`
+    ShowAliases,
     /// `CREATE`, `ALTER` and `DROP NAMESPACE`.
     Namespace(NamespaceOp),
     /// Users, roles and grants (14.3).
@@ -90,23 +92,42 @@ pub(crate) enum NamespaceOp {
     },
     /// `DROP NAMESPACE name [IF EXISTS]`
     Drop { name: String, if_exists: bool },
+    /// `CREATE ALIAS name [IF NOT EXISTS] FOR NAMESPACE target`
+    CreateAlias {
+        name: String,
+        target: String,
+        if_not_exists: bool,
+    },
+    /// `ALTER ALIAS name SET NAMESPACE target`: moves it, in one commit.
+    AlterAlias { name: String, target: String },
+    /// `DROP ALIAS name [IF EXISTS]`: the alias, not its namespace.
+    DropAlias { name: String, if_exists: bool },
 }
 
 impl NamespaceOp {
-    pub(crate) fn name(&self) -> &str {
+    /// The namespace it acts on and what the caller needs there, as the
+    /// HTTP routes: an alias statement needs `schema` on the namespace it
+    /// points the alias at (and, checked by the server, on the one it
+    /// leaves).
+    pub(crate) fn target(&self) -> Option<(String, grafeno::Act)> {
         match self {
-            NamespaceOp::Create { name, .. }
-            | NamespaceOp::Alter { name, .. }
-            | NamespaceOp::Drop { name, .. } => name,
+            NamespaceOp::Create { name, .. } => Some((name.clone(), grafeno::Act::CreateNamespace)),
+            NamespaceOp::Alter { name, .. } => Some((name.clone(), grafeno::Act::Schema)),
+            NamespaceOp::Drop { name, .. } => Some((name.clone(), grafeno::Act::Drop)),
+            NamespaceOp::CreateAlias { target, .. } | NamespaceOp::AlterAlias { target, .. } => {
+                Some((target.clone(), grafeno::Act::Schema))
+            }
+            NamespaceOp::DropAlias { .. } => None,
         }
     }
 
-    /// What the caller needs on the namespace it names: as the HTTP routes.
-    pub(crate) fn act(&self) -> grafeno::Act {
+    /// The alias it changes, if it is an alias statement.
+    pub(crate) fn alias(&self) -> Option<&str> {
         match self {
-            NamespaceOp::Create { .. } => grafeno::Act::CreateNamespace,
-            NamespaceOp::Alter { .. } => grafeno::Act::Schema,
-            NamespaceOp::Drop { .. } => grafeno::Act::Drop,
+            NamespaceOp::CreateAlias { name, .. }
+            | NamespaceOp::AlterAlias { name, .. }
+            | NamespaceOp::DropAlias { name, .. } => Some(name),
+            _ => None,
         }
     }
 }
@@ -127,9 +148,12 @@ pub(crate) enum Mode {
 impl Statement {
     pub(crate) fn writes(&self) -> bool {
         match &self.schema {
-            Some(Schema::Show { .. } | Schema::ShowNamespaces | Schema::Events(EventsOp::Show)) => {
-                false
-            }
+            Some(
+                Schema::Show { .. }
+                | Schema::ShowNamespaces
+                | Schema::ShowAliases
+                | Schema::Events(EventsOp::Show),
+            ) => false,
             Some(Schema::Access(access)) => access.writes(),
             Some(_) => true,
             None => self

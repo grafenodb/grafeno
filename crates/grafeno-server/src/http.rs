@@ -471,6 +471,13 @@ pub fn router(state: AppState) -> Router {
 pub fn router_with(state: AppState, options: &Options) -> Router {
     let v1 = Router::new()
         .route("/namespaces", get(namespaces).post(create_namespace))
+        .route("/aliases", get(crate::aliases::list))
+        .route(
+            "/aliases/{name}",
+            get(crate::aliases::get)
+                .put(crate::aliases::put)
+                .delete(crate::aliases::delete),
+        )
         .route(
             "/namespaces/{ns}",
             get(get_namespace)
@@ -733,7 +740,16 @@ pub fn router_with(state: AppState, options: &Options) -> Router {
     if !options.cors_origins.is_empty() {
         app = app.layer(cors(&options.cors_origins));
     }
-    app.with_state(state)
+    // An alias is resolved before routing (a router's layers run after
+    // it), so that every route, right and group sees the namespace it
+    // stands for.
+    Router::new()
+        .fallback_service(app.with_state(state.clone()))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            crate::aliases::resolve,
+        ))
+        .with_state(state)
 }
 
 fn panic_response(panic: Box<dyn std::any::Any + Send + 'static>) -> Response {
@@ -3015,8 +3031,25 @@ async fn drop_namespace(
     State(state): State<AppState>,
     Path(ns): Path<String>,
 ) -> ApiResult<Json<grafeno::DropStats>> {
-    let dropped = write(&state, move |tx| tx.drop_namespace(&ns)).await?;
+    let dropped = write(&state, move |tx| {
+        refuse_aliased(tx, &ns)?;
+        tx.drop_namespace(&ns)
+    })
+    .await?;
     Ok(Json(dropped))
+}
+
+/// A namespace that aliases point at is not dropped: they would point at
+/// nothing, and a write through one would make it again, empty.
+pub(crate) fn refuse_aliased(tx: &WriteTx, ns: &str) -> grafeno::Result<()> {
+    let aliases = tx.aliases_of(ns)?;
+    if aliases.is_empty() {
+        return Ok(());
+    }
+    Err(Error::Conflict(format!(
+        "aliases point at {ns:?} ({}): move or drop them first",
+        aliases.join(", ")
+    )))
 }
 
 async fn stats(
@@ -3492,8 +3525,22 @@ pub(crate) fn check_statement(
             .filter(|(target, act)| !caller.can(*act, target))
             .map(|(target, act)| caller.refusal(target, &[*act])),
     };
+    // Moving or dropping an alias needs the same on the namespace it
+    // points at now.
+    let missing = missing.or_else(|| {
+        let name = needs.alias.as_ref()?;
+        let current = state.db.resolve_alias(name).ok().flatten()?;
+        (!caller.can(grafeno::Act::Schema, &current))
+            .then(|| caller.refusal(&current, &[grafeno::Act::Schema]))
+    });
     if let (Some(message), false) = (&missing, needs.explain) {
         return Err(ApiError::forbidden(message.clone()));
+    }
+    // Aliases live with the directory, in group 0.
+    if needs.alias.is_some() && state.groups.get().is_some() && state.group != 0 {
+        return Err(ApiError::bad_request(
+            "aliases are kept in group 0: run this statement against a namespace of group 0, or use /v1/aliases",
+        ));
     }
     // Even under EXPLAIN, a plan of a namespace is for those who read it.
     if !matches!(
@@ -3504,7 +3551,9 @@ pub(crate) fn check_statement(
     }
     // With several groups, a namespace lives in the group the directory
     // says (group 0 when it says nothing): a statement on it must run there.
-    if let (Some((target, _)), Some(registry)) = (&needs.namespace, state.groups.get()) {
+    if let (Some((target, _)), Some(registry), None) =
+        (&needs.namespace, state.groups.get(), &needs.alias)
+    {
         let home = registry.placement(target).group;
         if home != state.group {
             return Err(ApiError::bad_request(format!(
