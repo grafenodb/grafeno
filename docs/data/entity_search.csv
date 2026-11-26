@@ -1,0 +1,26 @@
+query,indexes,before_ms,after_ms
+"PE by name, first 20","no index",658.19,478.30
+"PE by name, rows 10,001 to 10,020","no index",694.62,533.74
+"everyone by name, first 20","no index",fails (max_memory),1418.13
+"everyone by name descending, first 20","no index",fails (max_memory),1497.31
+"PE aged 30, by name","no index",421.32,424.06
+"count of PE","no index",452.37,410.67
+"PE by name, first 20","index on country",225.27,102.92
+"PE by name, rows 10,001 to 10,020","index on country",229.74,138.44
+"everyone by name, first 20","index on country",fails (max_memory),1313.33
+"everyone by name descending, first 20","index on country",fails (max_memory),1316.90
+"PE aged 30, by name","index on country",48.76,37.71
+"count of PE","index on country",83.87,72.00
+"PE by name, first 20","indexes on country and name",326.72,1.40
+"PE by name, rows 10,001 to 10,020","indexes on country and name",275.45,149.81
+"everyone by name, first 20","indexes on country and name",fails (max_memory),0.13
+"everyone by name descending, first 20","indexes on country and name",fails (max_memory),0.15
+"PE aged 30, by name","indexes on country and name",42.53,43.18
+"count of PE","indexes on country and name",77.63,62.01
+"PE by name, first 20","and on (country, name)",182.47,0.12
+"PE by name, rows 10,001 to 10,020","and on (country, name)",192.79,57.01
+"everyone by name, first 20","and on (country, name)",fails (max_memory),0.10
+"everyone by name descending, first 20","and on (country, name)",fails (max_memory),0.13
+"PE aged 30, by name","and on (country, name)",39.85,2.51
+"count of PE","and on (country, name)",73.52,77.70
+"find_nodes: every PE person, 100 a page (625 pages)","country, name; (country, name)",,0.56

@@ -401,7 +401,7 @@ pub(crate) fn encode_value(value: &Json) -> Option<Vec<u8>> {
 /// One value of a composite entry: as [`encode_value`], but strings escape
 /// their zero bytes (`00 FF`) and end with `00 00`, so a value ends where
 /// the next one starts and byte order stays value order.
-fn component(value: &Json) -> Option<Vec<u8>> {
+pub(crate) fn component(value: &Json) -> Option<Vec<u8>> {
     match value {
         Json::String(s) => {
             let mut out = vec![STRING];
@@ -791,7 +791,11 @@ fn seek_ids(
     }
 }
 
-fn count(table: &impl ReadableTable<IndexKey, ()>, ns: &str, name: &str) -> Result<u64> {
+pub(crate) fn count_entries(
+    table: &impl ReadableTable<IndexKey, ()>,
+    ns: &str,
+    name: &str,
+) -> Result<u64> {
     let empty: &[u8] = &[];
     let top: &[u8] = &[0xFF; 16];
     let mut entries = 0;
@@ -819,7 +823,7 @@ impl ReadTx {
                 let entries = if def.vector.is_some() {
                     self.vector_count(ns, &def)?
                 } else {
-                    count(&self.index_entries, ns, &def.name)?
+                    self.index_entry_count(ns, &def.name)?
                 };
                 Ok(IndexInfo { def, entries })
             })
@@ -1151,7 +1155,7 @@ impl WriteTx {
         if let Some(same) = existing.iter().find(|other| other.name == def.name) {
             if *same == def {
                 let table = self.tx.open_table(INDEX_ENTRIES).map_err(storage)?;
-                return count(&table, ns, &def.name);
+                return count_entries(&table, ns, &def.name);
             }
             return Err(Error::Invalid(format!(
                 "an index named {:?} already exists",

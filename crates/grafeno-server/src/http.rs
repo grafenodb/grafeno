@@ -488,6 +488,7 @@ pub fn router_with(state: AppState, options: &Options) -> Router {
         .route("/{ns}/vectors/recall", get(vector_recall))
         .route("/{ns}/vectors/health", get(vector_health))
         .route("/{ns}/nodes", get(list_nodes).post(create_node))
+        .route("/{ns}/nodes/find", post(find_nodes))
         .route(
             "/{ns}/nodes/{id}",
             get(get_node)
@@ -1442,6 +1443,104 @@ async fn list_nodes(
     })
     .await?;
     Ok(Json(Page::new(nodes, limit, |node| node.id.to_string())))
+}
+
+/// `POST /v1/{ns}/nodes/find`: nodes by their properties, sorted and paged
+/// with a cursor ([`grafeno::ReadTx::find_nodes`]).
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FindInput {
+    label: Option<String>,
+    /// Property → a value (equal to it) or `{op: value, …}` with `eq`,
+    /// `ne`, `lt`, `lte`, `gt`, `gte`, `in`, `prefix` or `exists`.
+    #[serde(default, rename = "where")]
+    filter: serde_json::Map<String, Value>,
+    order_by: Option<String>,
+    #[serde(default)]
+    descending: bool,
+    limit: Option<usize>,
+    after: Option<String>,
+}
+
+const FIND_OPS: [&str; 9] = [
+    "eq", "ne", "lt", "lte", "gt", "gte", "in", "prefix", "exists",
+];
+
+fn find_of(input: FindInput) -> Result<grafeno::Find, ApiError> {
+    use grafeno::Cmp;
+    let mut find = match input.label {
+        Some(label) => grafeno::Find::label(label),
+        None => grafeno::Find::any(),
+    };
+    for (key, value) in input.filter {
+        let ops = match &value {
+            Value::Object(map)
+                if !map.is_empty() && map.keys().all(|op| FIND_OPS.contains(&op.as_str())) =>
+            {
+                map.clone()
+            }
+            _ => {
+                find = find.filter(key, Cmp::Eq(value));
+                continue;
+            }
+        };
+        for (op, operand) in ops {
+            let bad = |what: &str| ApiError::bad_request(format!("`{op}` on `{key}` needs {what}"));
+            let cmp = match op.as_str() {
+                "eq" => Cmp::Eq(operand),
+                "ne" => Cmp::Ne(operand),
+                "lt" => Cmp::Lt(operand),
+                "lte" => Cmp::Lte(operand),
+                "gt" => Cmp::Gt(operand),
+                "gte" => Cmp::Gte(operand),
+                "in" => match operand {
+                    Value::Array(values) => Cmp::In(values),
+                    _ => return Err(bad("a list")),
+                },
+                "prefix" => match operand {
+                    Value::String(text) => Cmp::Prefix(text),
+                    _ => return Err(bad("a string")),
+                },
+                _ => match operand {
+                    Value::Bool(wanted) => Cmp::Exists(wanted),
+                    _ => return Err(bad("true or false")),
+                },
+            };
+            find = find.filter(key.clone(), cmp);
+        }
+    }
+    if let Some(key) = input.order_by {
+        find = find.order_by(grafeno::OrderBy {
+            key,
+            descending: input.descending,
+        });
+    } else if input.descending {
+        return Err(ApiError::bad_request("`descending` needs `order_by`"));
+    }
+    find.limit = input.limit.unwrap_or(DEFAULT_PAGE).clamp(1, MAX_PAGE);
+    find.after = input.after;
+    Ok(find)
+}
+
+#[derive(Serialize)]
+struct FindOutput {
+    items: Vec<grafeno::Node>,
+    next: Option<String>,
+    plan: String,
+}
+
+async fn find_nodes(
+    State(state): State<AppState>,
+    Path(ns): Path<String>,
+    Body(input): Body<FindInput>,
+) -> ApiResult<Json<FindOutput>> {
+    let find = find_of(input)?;
+    let page = blocking(&state, move |db| db.begin_read()?.find_nodes(&ns, &find)).await?;
+    Ok(Json(FindOutput {
+        items: page.nodes,
+        next: page.next,
+        plan: page.plan,
+    }))
 }
 
 async fn list_edges(

@@ -392,6 +392,7 @@ requests accept either that or an ISO 8601 string (`2024-05-01`,
 | `POST`   | `/v1/{ns}/nodes`                      | node (with `id`: upsert)                                | `{id, created}`               |
 | `GET`    | `/v1/{ns}/nodes`                      | `?label=&after=&limit=`                                 | `{items, next}`               |
 | `GET`    | `/v1/{ns}/edges`                      | `?label=&after=&limit=`                                 | `{items, next}`               |
+| `POST`   | `/v1/{ns}/nodes/find`                 | `{label?, where?, order_by?, descending?, limit?, after?}` | `{items, next, plan}`: nodes by their properties, sorted and paged (`read`) |
 | `POST`   | `/v1/{ns}/read-many`                  | `{nodes: [id], edges: [id]}` (512 at most together)     | `{nodes, edges}` in the order asked, `null` for missing ones, one snapshot (`read`) |
 | `GET`    | `/v1/{ns}/nodes/{id}`                 |                                                         | node with `text` and `memory` |
 | `PUT`    | `/v1/{ns}/nodes/{id}`                 | node                                                    | `{id, created}`               |
@@ -486,6 +487,24 @@ requests accept either that or an ISO 8601 string (`2024-05-01`,
   labels, name}`. With `write: "rank"` (or `"@embedding"`) the result is
   stored on each node instead, from `column` (the one after `node` by
   default), and the answer is the number of nodes written.
+- **Lookups** (`/nodes/find`) find nodes by their properties as rows of a
+  table. `where` maps each property to a value (equal to it: `7` equals
+  `7.0`) or to `{op: value}` with `eq`, `ne`, `lt`, `lte`, `gt`, `gte`,
+  `in` (a list), `prefix` (a string) or `exists` (`true` or `false`);
+  every condition must hold, and a range compares only values of the same
+  kind. Without `order_by` the nodes come in id order; with it, booleans,
+  then numbers, then strings, each in its order (reversed with
+  `descending`), and the nodes without a value an index can hold (missing,
+  `null`, a list or a map) after all of them; equal values go in id
+  order. A page holds up to `limit` (default 100, at most 1000); `next`,
+  passed as `after` with the same lookup, starts the next one right after
+  the last node, so pages neither skip nor repeat nodes while others
+  write. Indexes on the label do the work: one on the properties with
+  equal values then the one sorted by (`(country, name)` for every `PE`
+  person by name) reads the page in order and stops; otherwise the best
+  index for the conditions finds the candidates, which are sorted; `plan`
+  says which. `{"label": "Person", "where": {"country": "PE", "age":
+  {"gte": 18}}, "order_by": "name", "limit": 50}`.
 - **Listings** return up to `limit` items (default 100, at most 1000) in id
   order; when `next` is set, pass it as `after` to get the following page.
 - **node**: `{labels, props?, sources?, text?, embedding?}`. `PUT` and upserts

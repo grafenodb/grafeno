@@ -12,6 +12,33 @@ break a client of the previous one, and the database files' layout
 version (now 19 for a file that holds hyperedges, 18 otherwise) is
 upgraded in place, with a copy kept first.
 
+## Unreleased
+
+- **Added**: entities looked up as rows of a table. `POST
+  /v1/{ns}/nodes/find` (`ReadTx::find_nodes` in Rust) takes a label,
+  conditions on properties (`eq`, `ne`, `lt`, `lte`, `gt`, `gte`, `in`,
+  `prefix`, `exists`), one property to sort by and a page size, and pages
+  with a cursor that starts right after the last node, so pages neither
+  skip nor repeat nodes while others write; an index on the properties
+  with equal values and then the sorted one reads each page in order and
+  stops. On 1,000,000 people, every `PE` person by name took 0.56 ms a
+  page of 100.
+- **Changed**: `MATCH … RETURN … ORDER BY … LIMIT n` keeps only the best
+  rows while it matches: sorting a million nodes for the first 20 went
+  over `max_memory`, and now holds 20 rows (1.4 s without an index). A
+  `MATCH` of one node sorted by an indexed property (after equal values
+  for the index's first properties, such as `(country, name)` for every
+  `PE` person by name) reads the index in order and stops: 0.12 ms
+  against 182 on 1,000,000 people. It does so while the index holds every
+  node of its labels and when it reads fewer entries than sorting the
+  candidates of another index.
+- **Fixed**: an index on several properties served a lookup on its first
+  ones alone, and missed the nodes without the later ones: with an index
+  on `(last, first)`, `MATCH (p:Person) WHERE p.last = 'Ruiz'` did not
+  find a Ruiz without a first name. It now serves only conditions on
+  every one of its properties, or on a prefix when a key constraint
+  requires them all. Hyperedge and edge indexes the same.
+
 ## 0.5.3 (2026-11-24)
 
 Less disk and less CPU for catalogue workloads: vector indexes on the

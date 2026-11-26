@@ -555,6 +555,9 @@ pub(crate) struct Shared {
     /// Each full-text index's distinct terms, sorted, as of a commit: what
     /// fuzzy and prefix words of a query are matched against.
     fulltext_terms: Mutex<Vec<CachedTerms>>,
+    /// How many entries each property index held, as of a commit: whether
+    /// an index holds every node of its labels, for sorts that read it.
+    index_counts: Mutex<Vec<(u64, String, String, u64)>>,
     /// The bytes the cached projections may take.
     projection_budget: std::sync::atomic::AtomicUsize,
     /// The change log's window and commit listeners.
@@ -578,6 +581,7 @@ impl Default for Shared {
             generation: AtomicU64::new(0),
             projections: Mutex::default(),
             fulltext_terms: Mutex::default(),
+            index_counts: Mutex::default(),
             projection_budget: std::sync::atomic::AtomicUsize::new(DEFAULT_PROJECTION_CACHE),
             changes: crate::changes::Hub::default(),
             audit_retention: crate::audit::Retention::default(),
@@ -621,6 +625,26 @@ impl Shared {
     pub(crate) fn projection_bytes(&self) -> usize {
         let cached = self.projections.lock().unwrap_or_else(|e| e.into_inner());
         cached.iter().map(|c| c.projection.bytes()).sum()
+    }
+
+    /// How many entries index `index` of `ns` held as of commit
+    /// `generation`, if known.
+    pub(crate) fn index_count(&self, generation: u64, ns: &str, index: &str) -> Option<u64> {
+        let cached = self.index_counts.lock().unwrap_or_else(|e| e.into_inner());
+        cached
+            .iter()
+            .find(|(at, have_ns, have, _)| *at == generation && have_ns == ns && have == index)
+            .map(|(_, _, _, count)| *count)
+    }
+
+    pub(crate) fn keep_index_count(&self, generation: u64, ns: &str, index: &str, count: u64) {
+        let mut cached = self.index_counts.lock().unwrap_or_else(|e| e.into_inner());
+        // Older commits will not be asked for again by new readers.
+        cached.retain(|(at, ..)| *at >= generation);
+        if cached.len() >= 64 {
+            cached.remove(0);
+        }
+        cached.push((generation, ns.to_owned(), index.to_owned(), count));
     }
 
     /// Runs a commit, so that readers know the data changed.

@@ -246,7 +246,7 @@ pub fn execute_part(
         let before_return = index + 1 == last;
         if before_return && let Some(spec) = runner.folding_spec(clause, Some(ret), &flow)? {
             let mut groups = Groups::default();
-            flow = runner.apply_folding(clause, flow, None, Some((&spec, &mut groups)))?;
+            flow = runner.apply_folding(clause, flow, None, Some((&spec, &mut groups)), None)?;
             folded = Some(groups);
             continue;
         }

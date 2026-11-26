@@ -63,6 +63,7 @@ build unless the file says otherwise; on E1, runs vary by about ±20%.
 | `hyperedge_index.csv` | `MATCH HYPEREDGE` by a property on 100 000 hyperedges, without and with an index, beside event nodes | `crates/grafeno-query/examples/hyperedge_index_bench.rs` | E1-mem | 2026-11-21 | paired bars, log scale |
 | `hyperedge_recall.csv` | Recall strategies with and without hyperedges on 92 questions of six kinds, English and Spanish | `crates/grafeno-memory/examples/hyperedge_recall_eval.rs` | E1-mem | 2026-11-21 | grouped bars per kind: complete, answered in role, tokens |
 | `hyperedge_recall_latency.csv` | Latency of those strategies, 15 runs per question | `hyperedge_recall_eval.rs` | E1-mem | 2026-11-21 | bars, p50 / p95 / p99 |
+| `entity_search.csv` | GQ lookups, sorts and pages over 1 000 000 `Person` nodes, before and after the entity lookups | `crates/grafeno-query/examples/entity_search.rs` | E1-disk | 2026-11-26 | paired bars per query and indexes, log scale |
 
 `python docs/charts/build.py` draws the charts of
 [performance](../performance.md) from these files (light and dark SVG in

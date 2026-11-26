@@ -30,6 +30,7 @@ mod check;
 mod constraints;
 mod db;
 mod dump;
+mod find;
 mod fulltext;
 mod hyperedge;
 mod hyperedge_codec;
@@ -71,6 +72,7 @@ pub use db::{
     SCHEMA_VERSION, WriteTx, upgrade_copies, upgrade_copy_path,
 };
 pub use dump::{DumpStats, EXPORT_FORMAT, EXPORT_VERSION, ImportOptions, Record};
+pub use find::{Cmp, Filter, Find, FindPage, IndexPosition, MAX_FIND_LIMIT, OrderBy, ValueKind};
 pub use fulltext::{
     Analyzer, Fragment, Fulltext, FulltextHit, Fusion, SearchHit, SearchMode, SearchRequest, fuse,
 };

@@ -1087,9 +1087,11 @@ DROP CONSTRAINT Person_email_unique IF EXISTS;
 - An index on several properties holds the nodes that have all of them
   (each a number, a string or a boolean). The planner uses it for equal
   values on its first properties, in order, and then any of the lookups
-  below on the next one: one on `(last, first)` serves `last = 'Ruiz'`,
-  `last = 'Ruiz' AND first STARTS WITH 'A'` and both equal, not `first`
-  alone.
+  below on the last one: one on `(last, first)` serves `last = 'Ruiz' AND
+  first STARTS WITH 'A'` and both equal. It does not serve `last = 'Ruiz'`
+  alone, since a person without a first name is not in it (unless a key
+  constraint requires both), nor `first` alone; it still serves a sort by
+  `first` among one `last` (below).
 - An index over several labels (`(n:A|B)`) holds the nodes with any of
   them, and serves a pattern with either label; the pattern's labels
   still decide what matches.
@@ -1141,6 +1143,21 @@ DROP CONSTRAINT Person_email_unique IF EXISTS;
   free runs on its own.
 - `MATCH … RETURN … LIMIT n` without `ORDER BY`, `DISTINCT` or aggregates
   stops after the rows it needs.
+- `MATCH … RETURN … ORDER BY … LIMIT n` (no `DISTINCT` or aggregates)
+  keeps only the best `SKIP + LIMIT` rows while it matches, not every
+  match: sorting a million nodes for the first 20 holds 20 rows, within
+  `max_rows` and `max_memory`.
+- A `MATCH` of one node followed by `RETURN … ORDER BY n.key LIMIT k`
+  reads an index in its order and stops after the rows it needs: an index
+  on `(n.key)`, or on several properties ending with `key` whose others
+  have equal values in the pattern or its `WHERE` (`(country, name)` for
+  `MATCH (p:Person {country: 'PE'}) RETURN p ORDER BY p.name LIMIT 20`).
+  Descending reads it backwards; `SKIP` reads past the rows it skips. It
+  does so only while the index holds every node of its labels (each has a
+  number, a string or a boolean there): a node without one sorts last
+  (first when descending), or first if it holds a list, and the index
+  would miss it, so the label is scanned instead. Whether it holds them is
+  counted once per commit. `PROFILE` says `index … in order`.
 - A match grows from up to 64 starts at a time, one step at a time, and
   reads each node, edge list and edge record once for all the branches
   that reach it (so `PROFILE` counts fewer reads than rows); a step with

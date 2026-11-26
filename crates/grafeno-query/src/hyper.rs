@@ -75,6 +75,7 @@ pub(crate) fn index_seek<'q>(
             &pattern.props,
             pattern.var.as_deref(),
             &def.keys(),
+            def.required,
             bound,
             conditions,
         ) else {

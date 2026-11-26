@@ -402,6 +402,7 @@ Los ids son UUID. Los tiempos en las respuestas son microsegundos desde la
 | `POST`   | `/v1/{ns}/nodes`                      | nodo (con `id`: upsert)                                 | `{id, created}`               |
 | `GET`    | `/v1/{ns}/nodes`                      | `?label=&after=&limit=`                                 | `{items, next}`               |
 | `GET`    | `/v1/{ns}/edges`                      | `?label=&after=&limit=`                                 | `{items, next}`               |
+| `POST`   | `/v1/{ns}/nodes/find`                 | `{label?, where?, order_by?, descending?, limit?, after?}` | `{items, next, plan}`: nodos por sus propiedades, ordenados y por páginas (`read`) |
 | `POST`   | `/v1/{ns}/read-many`                  | `{nodes: [id], edges: [id]}` (512 como máximo en total) | `{nodes, edges}` en el orden pedido, `null` para los que faltan, un snapshot (`read`) |
 | `GET`    | `/v1/{ns}/nodes/{id}`                 |                                                         | nodo con `text` y `memory`    |
 | `PUT`    | `/v1/{ns}/nodes/{id}`                 | nodo                                                    | `{id, created}`               |
@@ -497,6 +498,25 @@ Los ids son UUID. Los tiempos en las respuestas son microsegundos desde la
   `"@embedding"`) el resultado se guarda en cada nodo, desde `column` (por
   defecto la que sigue a `node`), y la respuesta es el número de nodos
   escritos.
+- **Búsquedas** (`/nodes/find`): nodos por sus propiedades, como filas de
+  una tabla. `where` da a cada propiedad un valor (igual a él: `7` es igual
+  a `7.0`) o `{op: valor}` con `eq`, `ne`, `lt`, `lte`, `gt`, `gte`, `in`
+  (una lista), `prefix` (un texto) o `exists` (`true` o `false`); se
+  cumplen todas, y un rango compara solo valores del mismo tipo. Sin
+  `order_by`, los nodos van por id; con él, booleanos, luego números,
+  luego textos, cada uno en su orden (al revés con `descending`), y los
+  nodos sin un valor que un índice pueda guardar (ausente, `null`, una
+  lista o un mapa) detrás de todos; los valores iguales van por id. Una
+  página trae hasta `limit` (100 por defecto, 1000 como máximo); `next`,
+  pasado como `after` con la misma búsqueda, empieza la siguiente justo
+  después del último nodo, así que las páginas no saltan ni repiten nodos
+  aunque otros escriban. Los índices de la etiqueta hacen el trabajo: uno
+  sobre las propiedades con valores iguales y luego la ordenada
+  (`(country, name)` para cada persona de `PE` por nombre) lee la página
+  en orden y para; si no, el mejor índice para las condiciones encuentra
+  los candidatos, que se ordenan; `plan` dice cuál. `{"label": "Person",
+  "where": {"country": "PE", "age": {"gte": 18}}, "order_by": "name",
+  "limit": 50}`.
 - **Listados**: devuelven hasta `limit` elementos (100 por defecto, 1000
   como máximo) en orden de id; cuando hay `next`, pásalo como `after` para
   obtener la página siguiente.

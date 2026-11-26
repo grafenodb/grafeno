@@ -824,8 +824,10 @@ fn an_index_on_hyperedges_finds_what_a_scan_finds() {
         "{}",
         plan(QUERIES[2])
     );
+    // Its first property alone cannot: a hyperedge without a status is
+    // not in it.
     assert!(
-        plan(QUERIES[3]).contains("by index by_project"),
+        !plan(QUERIES[3]).contains("by index by_project"),
         "{}",
         plan(QUERIES[3])
     );

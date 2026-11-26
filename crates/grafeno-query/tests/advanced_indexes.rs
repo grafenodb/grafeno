@@ -91,10 +91,15 @@ fn composite_indexes_are_used_by_a_prefix_of_their_properties() {
     assert_eq!(rows(&db, query), expected);
     assert!(reads(&db, query) * 10 < scanned);
 
-    // The first property alone, and a range on the second after it.
+    // The first property alone cannot use it either: the index holds only
+    // the people with both, and one without a first name would be missed.
     let prefix = "MATCH (p:Person) WHERE p.last = 'L7' RETURN count(p)";
-    assert!(plan(&db, prefix).contains("Person_last_first: last = …"));
+    assert!(!plan(&db, prefix).contains("Person_last_first"));
     assert_eq!(rows(&db, prefix), json!([[50]]));
+    run(&db, "CREATE (:Person {last: 'L7', n: -1})");
+    assert_eq!(rows(&db, prefix), json!([[51]]));
+    run(&db, "MATCH (p:Person {n: -1}) DELETE p");
+    // A range on the second after an equal first.
     let ranged =
         "MATCH (p:Person) WHERE p.last = 'L7' AND p.first STARTS WITH 'F1' RETURN count(p)";
     assert!(plan(&db, ranged).contains("last = …, first STARTS WITH …"));

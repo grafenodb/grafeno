@@ -71,7 +71,7 @@ impl PlanInfo {
     }
 
     /// The records an index covers: nodes (or edges) with its labels.
-    fn covered(&self, def: &IndexDef) -> f64 {
+    pub(crate) fn covered(&self, def: &IndexDef) -> f64 {
         def.labels()
             .iter()
             .map(|label| {
@@ -442,9 +442,14 @@ fn source_for<'q>(
         def.by_value() && def.kind() == grafeno::RecordKind::Node && def.covers(&node.labels)
     }) {
         let var = node.var.as_deref();
-        if let Some((prefix, key, seek)) =
-            seek_for_keys(&node.props, var, &def.keys(), is_bound, conditions)
-        {
+        if let Some((prefix, key, seek)) = seek_for_keys(
+            &node.props,
+            var,
+            &def.keys(),
+            def.required,
+            is_bound,
+            conditions,
+        ) {
             consider(Source::Index {
                 name: def.name.clone(),
                 rows: info.seek_rows(def, &prefix, &seek, value_of),
@@ -506,6 +511,7 @@ fn edge_sources<'q>(
                 &rel.props,
                 rel.var.as_deref(),
                 &def.keys(),
+                def.required,
                 is_bound,
                 conditions,
             ) {
@@ -526,8 +532,29 @@ fn edge_sources<'q>(
 
 /// A way to read an index on `keys`: values equal for a prefix of them,
 /// then a seek on the next one (the prefix's last when nothing else).
+///
+/// An index on several properties holds only the records with a value for
+/// each, so it serves a lookup on fewer of them only when they are
+/// `required` (a key constraint): otherwise a record without the later
+/// ones would be missed.
 #[allow(clippy::type_complexity)]
 pub(crate) fn seek_for_keys<'q>(
+    props: &'q [(Key, Expr)],
+    var: Option<&str>,
+    keys: &[&str],
+    required: bool,
+    is_bound: &dyn Fn(&str) -> bool,
+    conditions: &[&'q Expr],
+) -> Option<(Vec<(String, &'q Expr)>, String, Seek<'q>)> {
+    let found = seek_for_prefix(props, var, keys, is_bound, conditions)?;
+    if !required && found.0.len() + 1 < keys.len() {
+        return None;
+    }
+    Some(found)
+}
+
+#[allow(clippy::type_complexity)]
+fn seek_for_prefix<'q>(
     props: &'q [(Key, Expr)],
     var: Option<&str>,
     keys: &[&str],
@@ -553,7 +580,7 @@ pub(crate) fn seek_for_keys<'q>(
 /// A way to read the index on `key`: the pattern's own `{key: value}`, or
 /// conditions such as `n.key = …`, `n.key IN …`, `n.key STARTS WITH …` and
 /// ranges, whose other side can be computed before matching.
-fn seek_for<'q>(
+pub(crate) fn seek_for<'q>(
     props: &'q [(Key, Expr)],
     var: Option<&str>,
     key: &str,

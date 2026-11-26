@@ -1586,3 +1586,40 @@ Single-word queries cost little once their entries are read: "sistema"
 proportional to the matches of common words, every one of which is
 scored; the other engine skips most of them with per-block bounds, which
 explains the gap with 64 users.
+
+## Entities by their properties (`crates/grafeno-query/examples/entity_search.rs`)
+
+1,000,000 `Person` nodes on a file (E1-disk), with `name` (strings),
+`country` (20 codes, `PE` one in 16) and `age`; each query through GQ
+under the server's limits, median of five runs, before and after the
+lookup work of this section (`docs/data/entity_search.csv`):
+
+| Query | Indexes | Before | After |
+| --- | --- | ---: | ---: |
+| `PE` by name, first 20 | none | 658 ms | 478 ms |
+| everyone by name, first 20 | none | fails (`max_memory`) | 1,418 ms |
+| `PE` by name, first 20 | `country` | 225 ms | 103 ms |
+| `PE` by name, first 20 | `country`, `name` | 327 ms | 1.4 ms |
+| `PE` by name, rows 10,001 to 10,020 | `country`, `name` | 275 ms | 150 ms |
+| everyone by name, first 20 | `name` | fails (`max_memory`) | 0.13 ms |
+| everyone by name descending, first 20 | `name` | fails (`max_memory`) | 0.15 ms |
+| `PE` by name, first 20 | `(country, name)` | 182 ms | 0.12 ms |
+| `PE` aged 30, by name | `(country, name)` | 40 ms | 2.5 ms |
+| `PE` by name, rows 10,001 to 10,020 | `(country, name)` | 193 ms | 57 ms |
+| `find_nodes`: every `PE` person, 100 a page (625 pages) | `(country, name)` | (no API) | 0.56 ms a page |
+
+What changed: a sort with a `LIMIT` keeps only the rows it returns while
+it matches (it held every match: a million rows went over `max_memory`);
+a sort by an indexed property, after equal values for the index's first
+ones, reads the index in order and stops; and `POST /v1/{ns}/nodes/find`
+(`ReadTx::find_nodes`) pages with a cursor, so the last page costs what
+the first does. Reading in order is chosen when it reads fewer entries
+than sorting the candidates of the best other index: with only `name` and
+`country` indexed, rows 10,001 to 10,020 of `PE` would read 160,000 name
+entries (763 ms), so the `country` index and a sort are used instead. A
+count of the `PE` people, which needs every match, is unchanged.
+
+While measuring, a planner fault came up: an index on `(last, first)`
+served `last = 'Ruiz'` alone and missed the nodes without a `first`.
+A composite index now serves only conditions on every one of its
+properties (or a key constraint's).

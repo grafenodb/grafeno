@@ -1231,15 +1231,44 @@ impl<'a> Runner<'a> {
                 self.record("RETURN", details.unwrap_or_default(), rows.len(), started);
                 return Ok((columns, rows));
             }
+            // A MATCH right before a RETURN … ORDER BY n.key LIMIT k may
+            // read an index in that order and stop.
+            if let Some((rows, how)) =
+                self.ordered_match(clause, query.clauses.get(index + 1), &flow)?
+            {
+                let vars = clause_variables(clause);
+                flow = Flow {
+                    rows,
+                    vars: flow.vars,
+                };
+                flow.bind(vars);
+                bound.extend(flow.vars.iter().cloned());
+                let details = details
+                    .map(|details| format!("{details}; {how}"))
+                    .unwrap_or_default();
+                self.record(clause.name(), details, flow.rows.len(), started);
+                continue;
+            }
             // A MATCH right before an aggregating RETURN or WITH folds its
             // rows as it makes them.
             if let Some(spec) = self.folding_spec(clause, query.clauses.get(index + 1), &flow)? {
                 let mut groups = Groups::default();
-                flow = self.apply_folding(clause, flow, None, Some((&spec, &mut groups)))?;
+                flow = self.apply_folding(clause, flow, None, Some((&spec, &mut groups)), None)?;
                 let rows = groups.rows as usize;
                 let edges = self.time.clone();
                 let ctx = self.ctx(&edges);
                 self.folded = Some(groups.finish(&spec, &ctx)?);
+                bound.extend(flow.vars.iter().cloned());
+                self.record(clause.name(), details.unwrap_or_default(), rows, started);
+                continue;
+            }
+            // A MATCH right before a RETURN … ORDER BY … LIMIT n keeps only
+            // the best rows as it makes them.
+            if let Some(spec) = self.top_spec(clause, query.clauses.get(index + 1), &flow)? {
+                let mut kept = TopRows::default();
+                flow = self.apply_folding(clause, flow, None, None, Some((&spec, &mut kept)))?;
+                let rows = kept.seen;
+                self.folded = Some(kept.finish(&spec));
                 bound.extend(flow.vars.iter().cloned());
                 self.record(clause.name(), details.unwrap_or_default(), rows, started);
                 continue;
@@ -1281,6 +1310,300 @@ impl<'a> Runner<'a> {
             return Ok((columns, rows));
         }
         Ok((Vec::new(), Vec::new()))
+    }
+
+    /// A `MATCH` of one node, right before a `RETURN … ORDER BY n.key
+    /// LIMIT k`, read from an index in its order: one whose last property is
+    /// the sorted one and whose others have equal values in the pattern or
+    /// its `WHERE`, and that holds every node of its labels (otherwise the
+    /// nodes without a value, which sort first or last, would be missed).
+    /// It stops after `SKIP + LIMIT` rows and those that tie with the last;
+    /// the `RETURN` still sorts them. `None` when it does not apply.
+    fn ordered_match(
+        &mut self,
+        clause: &Clause,
+        next: Option<&Clause>,
+        flow: &Flow,
+    ) -> Result<Option<(Vec<Row>, String)>, QueryError> {
+        let (
+            Clause::Match {
+                optional: false,
+                patterns,
+                filter,
+                ..
+            },
+            Some(Clause::Return(projection)),
+        ) = (clause, next)
+        else {
+            return Ok(None);
+        };
+        if self.tx.is_some()
+            || self.trace.is_some()
+            || self.slice.is_some()
+            || !flow.vars.is_empty()
+            || flow.rows.len() != 1
+            || self
+                .view
+                .as_ref()
+                .is_some_and(|view| view.per_record(self.ns) || !view.reads(self.ns))
+        {
+            return Ok(None);
+        }
+        let [pattern] = patterns.as_slice() else {
+            return Ok(None);
+        };
+        if !pattern.steps.is_empty() || pattern.path.is_some() || pattern.shortest.is_some() {
+            return Ok(None);
+        }
+        let node = &pattern.start;
+        let Some(var) = node.var.as_deref() else {
+            return Ok(None);
+        };
+        if projection.distinct
+            || projection.star
+            || projection.order.len() != 1
+            || projection.limit.is_none()
+            || projection
+                .items
+                .iter()
+                .any(|item| item.expr.has_aggregate() || item.alias == var)
+        {
+            return Ok(None);
+        }
+        let (order, descending) = &projection.order[0];
+        let Expr::Property(target, Key::Prop(key)) = order else {
+            return Ok(None);
+        };
+        if !matches!(target.as_ref(), Expr::Var(v) if v == var) {
+            return Ok(None);
+        }
+        let count = |runner: &Self, expr: &Option<Expr>| -> Result<Option<usize>, QueryError> {
+            let Some(expr) = expr else { return Ok(Some(0)) };
+            Ok(match runner.eval(&Row::new(), expr)? {
+                Value::Int(n) if n >= 0 => Some(n as usize),
+                _ => None,
+            })
+        };
+        let (Some(skip), Some(limit)) = (
+            count(self, &projection.skip)?,
+            count(self, &projection.limit)?,
+        ) else {
+            return Ok(None);
+        };
+        let wanted = skip.saturating_add(limit);
+        let conditions: Vec<&Expr> = filter.as_ref().map(conjuncts).unwrap_or_default();
+        let params = self.params;
+        let never = |_: &str| false;
+        // The index with the most equal values before the sorted property.
+        let mut best: Option<(&grafeno::IndexDef, Vec<serde_json::Value>)> = None;
+        for def in &self.info.indexes {
+            if !def.by_value() || def.edges || def.hyperedges || !def.covers(&node.labels) {
+                continue;
+            }
+            let keys = def.keys();
+            let (last, first) = keys.split_last().expect("an index has a property");
+            if last != key {
+                continue;
+            }
+            let mut prefix = Vec::new();
+            for key in first {
+                let value =
+                    match crate::plan::seek_for(&node.props, Some(var), key, &never, &conditions) {
+                        Some(crate::plan::Seek::Equal(expr)) => constant(expr, Some(params))
+                            .as_ref()
+                            .and_then(crate::plan::indexable),
+                        _ => None,
+                    };
+                match value {
+                    Some(value) => prefix.push(value),
+                    None => break,
+                }
+            }
+            if prefix.len() == first.len()
+                && best
+                    .as_ref()
+                    .is_none_or(|(_, have)| prefix.len() > have.len())
+            {
+                best = Some((def, prefix));
+            }
+        }
+        let Some((def, prefix)) = best else {
+            return Ok(None);
+        };
+        let def = def.clone();
+        // Reading in order pays when the rows it filters out are few. With
+        // every condition among the equal values before the sorted
+        // property, each entry read is a row; otherwise about `wanted / f`
+        // entries are read, `f` being the share of the nodes the best
+        // other start finds, against the rows that start reads to sort.
+        let covered = node
+            .props
+            .iter()
+            .all(|(key, _)| matches!(key, Key::Prop(k) if def.keys()[..prefix.len()].contains(&k.as_str())))
+            && conditions.iter().all(|condition| {
+                def.keys()[..prefix.len()].iter().any(|key| {
+                    matches!(
+                        crate::plan::seek_for(&[], Some(var), key, &never, &[condition]),
+                        Some(crate::plan::Seek::Equal(_))
+                    )
+                })
+            });
+        if !covered {
+            let value_of = |expr: &Expr| constant(expr, Some(params));
+            let (_, source, _) = plan_anchor(pattern, &never, &conditions, &self.info, &value_of);
+            let found = source.rows().max(1.0);
+            let entries = self.info.covered(&def).max(1.0);
+            let reads = wanted as f64 * entries / found.min(entries);
+            if reads > found {
+                return Ok(None);
+            }
+        }
+        if !self.read.index_holds_every_node(self.ns, &def.name)? {
+            return Ok(None);
+        }
+        // `ORDER BY`'s order of kinds: strings, booleans, numbers.
+        let mut kinds = [
+            grafeno::ValueKind::String,
+            grafeno::ValueKind::Bool,
+            grafeno::ValueKind::Number,
+        ];
+        if *descending {
+            kinds.reverse();
+        }
+        let edges = self.time.clone();
+        let ctx = self.ctx(&edges);
+        let empty = Row::new();
+        let mut rows: Vec<Row> = Vec::new();
+        let mut last: Option<grafeno::IndexPosition> = None;
+        // Pages grow from what the rows need, so a small LIMIT reads little.
+        let mut page_size = wanted.saturating_add(8).min(INDEX_ORDER_PAGE);
+        'kinds: for kind in kinds {
+            let mut after: Option<grafeno::IndexPosition> = None;
+            loop {
+                let page = self
+                    .read
+                    .index_scan_nodes(
+                        self.ns,
+                        &def.name,
+                        &prefix,
+                        Some(kind),
+                        *descending,
+                        after.as_ref(),
+                        page_size,
+                    )
+                    .map_err(QueryError::from)?;
+                ctx.budget.read(page.len().max(1))?;
+                let done = page.len() < page_size;
+                page_size = (page_size * 2).min(INDEX_ORDER_PAGE);
+                for position in page {
+                    // Past the rows needed, only those that tie with the
+                    // last one may still come before it once sorted.
+                    if rows.len() >= wanted
+                        && last
+                            .as_ref()
+                            .is_none_or(|last| !last.same_values(&position))
+                    {
+                        break 'kinds;
+                    }
+                    if let Some(found) = ctx.node(position.id)? {
+                        let found = Arc::new(found);
+                        if node_fits(&ctx, &found, node, &empty)? {
+                            let mut row = Row::new();
+                            row.insert(var.to_owned(), Value::Node(found));
+                            if all_true(&ctx, &conditions, &row)? {
+                                rows.push(row);
+                                last = Some(position.clone());
+                                ctx.budget.rows(rows.len())?;
+                            }
+                        }
+                    }
+                    after = Some(position);
+                }
+                if done {
+                    break;
+                }
+            }
+        }
+        // Equal values in id order, as a scan of the label finds them (the
+        // RETURN's sort keeps that order among them).
+        if *descending {
+            rows.sort_by_key(|row| match row.get(var) {
+                Some(Value::Node(node)) => node.id,
+                _ => NodeId::from_u128(0),
+            });
+        }
+        Ok(Some((
+            rows,
+            format!(
+                "index {} in order ({}), {wanted} rows wanted",
+                def.name,
+                if *descending {
+                    "descending"
+                } else {
+                    "ascending"
+                }
+            ),
+        )))
+    }
+
+    /// What a `MATCH` right before a `RETURN … ORDER BY … LIMIT n` keeps:
+    /// the best `SKIP + LIMIT` rows by the sort, when the `RETURN` neither
+    /// groups nor drops duplicates.
+    fn top_spec(
+        &self,
+        clause: &Clause,
+        next: Option<&Clause>,
+        flow: &Flow,
+    ) -> Result<Option<TopSpec>, QueryError> {
+        let (
+            Clause::Match {
+                optional: false,
+                patterns,
+                ..
+            },
+            Some(Clause::Return(projection)),
+        ) = (clause, next)
+        else {
+            return Ok(None);
+        };
+        if self.trace.is_some()
+            || projection.order.is_empty()
+            || projection.distinct
+            || projection.limit.is_none()
+            || projection
+                .items
+                .iter()
+                .any(|item| item.expr.has_aggregate())
+        {
+            return Ok(None);
+        }
+        let count = |expr: &Expr| -> Result<Option<usize>, QueryError> {
+            Ok(match self.eval(&Row::new(), expr)? {
+                Value::Int(n) if n >= 0 => Some(n as usize),
+                _ => None,
+            })
+        };
+        let skip = match &projection.skip {
+            Some(skip) => count(skip)?,
+            None => Some(0),
+        };
+        let limit = projection.limit.as_ref().map(count).transpose()?.flatten();
+        let (Some(skip), Some(limit)) = (skip, limit) else {
+            return Ok(None);
+        };
+        let mut vars = flow.vars.clone();
+        for var in patterns.iter().flat_map(Pattern::variables) {
+            if !vars.iter().any(|known| known == var) {
+                vars.push(var.to_owned());
+            }
+        }
+        let (items, columns) = projection_items(projection, &vars)?;
+        Ok(Some(TopSpec {
+            items,
+            columns,
+            projection: projection.clone(),
+            keep: skip.saturating_add(limit),
+        }))
     }
 
     /// What to fold while matching, when `clause` is a (non-optional)
@@ -1359,7 +1682,7 @@ impl<'a> Runner<'a> {
         flow: Flow,
         cap: Option<usize>,
     ) -> Result<Flow, QueryError> {
-        self.apply_folding(clause, flow, cap, None)
+        self.apply_folding(clause, flow, cap, None, None)
     }
 
     /// [`Runner::apply`]; a `MATCH` given `fold` folds its rows into those
@@ -1371,6 +1694,7 @@ impl<'a> Runner<'a> {
         mut flow: Flow,
         cap: Option<usize>,
         mut fold: Option<(&Spec, &mut Groups)>,
+        mut top: Option<(&TopSpec, &mut TopRows)>,
     ) -> Result<Flow, QueryError> {
         match clause {
             Clause::Match {
@@ -1454,6 +1778,26 @@ impl<'a> Runner<'a> {
                                     prepare: &|ctx, rows| spec.columns(ctx, rows),
                                 },
                                 &mut |columns| groups.fold(spec, columns),
+                            )?;
+                            rows = Vec::new();
+                        } else if last
+                            && !*optional
+                            && let Some((spec, kept)) = &mut top
+                        {
+                            let spec: &TopSpec = spec;
+                            match_pattern_into(
+                                &ctx,
+                                rows,
+                                pattern,
+                                &matcher,
+                                &Emit {
+                                    prepare: &|ctx, rows| spec.keyed(ctx, rows),
+                                },
+                                &mut |keyed| {
+                                    kept.add(spec, keyed)?;
+                                    // What stays once cut back.
+                                    ctx.budget.rows(kept.rows.len().min(spec.keep))
+                                },
                             )?;
                             rows = Vec::new();
                         } else {
@@ -2505,6 +2849,9 @@ enum Cursor {
     Ids(Vec<NodeId>, usize),
 }
 
+/// Entries read at a time from an index in order (ORDER BY … LIMIT).
+const INDEX_ORDER_PAGE: usize = 1024;
+
 /// Nodes found through an index are loaded this many at a time.
 const INDEX_PAGE: usize = 64;
 
@@ -3341,6 +3688,114 @@ fn project_folded(
         .map(|(values, _)| values)
         .collect();
     Ok((columns, rows))
+}
+
+/// What a match right before `RETURN … ORDER BY … LIMIT n` keeps of its
+/// rows: their values and sort keys, computed on the thread that matched
+/// them.
+pub(crate) struct TopSpec {
+    items: Vec<Item>,
+    columns: Vec<String>,
+    projection: Projection,
+    /// `SKIP + LIMIT`.
+    keep: usize,
+}
+
+/// One kept row: its sort keys, its place among the matches, its values
+/// and its variables (the RETURN sorts again by them).
+struct TopRow {
+    keys: Vec<Value>,
+    seq: u64,
+    values: Vec<Value>,
+    row: Row,
+}
+
+impl TopSpec {
+    /// Each row's values and ORDER BY keys.
+    fn keyed(
+        &self,
+        ctx: &Context,
+        rows: Vec<Row>,
+    ) -> Result<Vec<(Vec<Value>, Vec<Value>, Row)>, QueryError> {
+        let mut out = Vec::with_capacity(rows.len());
+        for row in rows {
+            let values = self
+                .items
+                .iter()
+                .map(|(expr, _)| eval(ctx, expr, Scope::Row(&row)))
+                .collect::<Result<Vec<_>, _>>()?;
+            let mut source = row.clone();
+            for (column, value) in self.columns.iter().zip(&values) {
+                source.insert(column.clone(), value.clone());
+            }
+            let mut keys = Vec::with_capacity(self.projection.order.len());
+            for (expr, _) in &self.projection.order {
+                let key = match self.items.iter().position(|(item, _)| item == expr) {
+                    Some(at) => values[at].clone(),
+                    None => eval(ctx, expr, Scope::Row(&source))?,
+                };
+                keys.push(key);
+            }
+            out.push((keys, values, row));
+        }
+        Ok(out)
+    }
+
+    fn compare(&self, a: &TopRow, b: &TopRow) -> std::cmp::Ordering {
+        compare_keys(&a.keys, &b.keys, &self.projection.order).then(a.seq.cmp(&b.seq))
+    }
+}
+
+/// The best rows so far of a match being sorted: at most twice what the
+/// RETURN keeps, cut back to it when full.
+#[derive(Default)]
+pub(crate) struct TopRows {
+    rows: Vec<TopRow>,
+    /// Rows matched, kept or not.
+    seen: usize,
+}
+
+impl TopRows {
+    fn add(
+        &mut self,
+        spec: &TopSpec,
+        keyed: Vec<(Vec<Value>, Vec<Value>, Row)>,
+    ) -> Result<(), QueryError> {
+        for (keys, values, row) in keyed {
+            let seq = self.seen as u64;
+            self.seen += 1;
+            self.rows.push(TopRow {
+                keys,
+                seq,
+                values,
+                row,
+            });
+            if self.rows.len() >= spec.keep.saturating_add(spec.keep.max(1024)) {
+                self.cut(spec);
+            }
+        }
+        Ok(())
+    }
+
+    fn cut(&mut self, spec: &TopSpec) {
+        if self.rows.len() <= spec.keep {
+            return;
+        }
+        self.rows
+            .select_nth_unstable_by(spec.keep, |a, b| spec.compare(a, b));
+        self.rows.truncate(spec.keep);
+    }
+
+    /// The kept rows in the order they were matched (the RETURN's stable
+    /// sort then puts them as a sort of every row would).
+    fn finish(mut self, spec: &TopSpec) -> Vec<(Vec<Value>, Row)> {
+        self.cut(spec);
+        self.rows.sort_by_key(|row| row.seq);
+        self.rows
+            .into_iter()
+            .map(|row| (row.values, row.row))
+            .collect()
+    }
 }
 
 /// An output row's ORDER BY keys, then its values.
