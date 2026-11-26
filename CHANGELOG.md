@@ -23,6 +23,18 @@ upgraded in place, with a copy kept first.
   with equal values and then the sorted one reads each page in order and
   stops. On 1,000,000 people, every `PE` person by name took 0.56 ms a
   page of 100.
+- **Fixed**: under many clients, the writes waiting for the writer each
+  held one of the `max_requests` turns and a thread, and the reads queued
+  behind them or got 503. A write now gives its turn back while it waits,
+  and waits without a thread. With 2,000 connections at once (a fifth
+  writing), the server answered 3,342 requests a second with no 503,
+  where it answered 1,791 and refused 40,891; reads took 55 to 74 ms at
+  the median instead of 673 to 704.
+- **Fixed**: on Linux, past about a thousand connections the server ran
+  out of file descriptors (the soft limit a shell or systemd leaves is
+  1,024; 756 of 1,500 connections failed). It raises the soft limit to
+  the hard one, up to 65,536, when it starts, and the systemd units set
+  `LimitNOFILE=65536`.
 - **Added**: `CALL { … } IN TRANSACTIONS [OF n ROWS]` in GQ: a large
   write in batches, each a transaction of its own, through the writer's
   bulk lane over HTTP, so interactive writes run between them; a `MATCH`

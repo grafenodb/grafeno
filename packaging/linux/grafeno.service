@@ -9,6 +9,9 @@ User=grafeno
 Group=grafeno
 ExecStart=/usr/bin/grafeno serve --config /etc/grafeno/grafeno.toml
 Restart=on-failure
+# One file descriptor per connection: systemd's default soft limit (1024)
+# would refuse connections past about a thousand clients at once.
+LimitNOFILE=65536
 RestartSec=2
 # /var/lib/grafeno, owned by the grafeno user.
 StateDirectory=grafeno

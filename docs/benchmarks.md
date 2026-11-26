@@ -1654,3 +1654,47 @@ are now read first and wait as ids, the snapshot goes before the first
 commit, and the worst wait is one batch. Smaller batches shorten that
 wait but cost more per row (each commit writes the pages it touched):
 5,000 rows a batch moved twice as many edges a second as 1,000.
+
+## A thousand connections and more (`crates/grafeno-server/examples/many_connections.rs`)
+
+A server and its clients in one process, on Linux (the musl and mimalloc
+build of the release, in a container: E2 without a memory limit): 100,000
+`Person` nodes with five `knows` edges each, then 1,000, 2,000 and 4,000
+HTTP/1.1 keep-alive connections at once, each sending its next request as
+soon as the answer arrives, for 15 s: 35% a node by id, 25% a GQ lookup
+through an index, 20% a GQ hop with an aggregate, 20% writes (a new node,
+a property set). Requests per second and latency of every request
+answered (`docs/data/many_connections.csv`):
+
+| Connections | Before: req/s | p50 / p99 | 503s | After: req/s | p50 / p99 | 503s |
+| ---: | ---: | --- | ---: | ---: | --- | ---: |
+| 1,000 | 3,260 | 193 ms / 1.0 s | 0 | 3,936 | 57 ms / 1.3 s | 0 |
+| 2,000 | 1,791 | 770 ms / 2.5 s | 40,891 | 3,342 | 84 ms / 3.0 s | 0 |
+| 4,000 | 953 | 2.3 s / 3.9 s | 40,326 | 2,570 | 538 ms / 7.6 s | 3,217 |
+
+Reads alone after the change, at 2,000 connections: a node by id 55 ms
+at the median, a lookup 72 ms (before: 673 and 704 ms).
+
+What broke:
+
+- **Waiting writes held the turns.** The writer commits one group at a
+  time (here about 700 writes a second for this mix); the writes waiting
+  for it each held one of the `max_requests` turns (512) and a blocking
+  thread. With a fifth of a thousand clients writing, the waiting writes
+  held almost every turn: reads queued behind them and, past 1,536
+  requests, got 503. A write now gives its turn back while it waits for
+  the writer (its own queue, `[writer] queue`, bounds it), and waits
+  without a thread. At 4,000 connections the 503s that remain are reads
+  past `max_requests` + `queue_requests`; raise `queue_requests` for more
+  clients than that.
+- **Open files.** Each connection holds a file descriptor, and on Linux a
+  shell or systemd leaves the soft limit at 1,024: with it, 756 of 1,500
+  connections failed. The server raises the soft limit to the hard one
+  (up to 65,536) when it starts, and the systemd units set
+  `LimitNOFILE=65536` (their system call filter does not allow changing
+  it from inside).
+
+The writes' latency is the writer's queue: one writer, as many groups a
+second as it can commit. On Windows the same load is bound by the
+loopback network (8,000 `GET /health` a second, and the same uneven
+tail), not by the engine, so these numbers are from Linux.

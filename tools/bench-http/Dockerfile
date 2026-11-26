@@ -1,4 +1,5 @@
-# The engine and the load tool (crates/grafeno-server/examples/http_load.rs)
+# The engine and the load tools (crates/grafeno-server/examples/http_load.rs,
+# and many_connections.rs, a server and thousands of connections in one process)
 # for tools/bench-http/run.sh: one image per C library and allocator, so
 # that the same load can be measured on each. From the repository's root:
 #
@@ -20,11 +21,12 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,id=grafeno-bench-target,target=/src/target \
     find crates -name '*.rs' -exec touch {} + \
     && cargo build --release --locked --target "$TARGET" -p grafeno-server \
-        ${FEATURES:+--features "$FEATURES"} --bin grafeno --example http_load \
+        ${FEATURES:+--features "$FEATURES"} --bin grafeno --example http_load --example many_connections \
     && cp "target/$TARGET/release/grafeno" /grafeno \
-    && cp "target/$TARGET/release/examples/http_load" /http_load
+    && cp "target/$TARGET/release/examples/http_load" /http_load     && cp "target/$TARGET/release/examples/many_connections" /many_connections
 
 FROM debian:trixie-slim@sha256:a72b4433de1cf7d6bae0c4cee74d0547f58601a643b3375f070c51600d63b6b2
 COPY --from=build /grafeno /usr/local/bin/grafeno
 COPY --from=build /http_load /usr/local/bin/http_load
+COPY --from=build /many_connections /usr/local/bin/many_connections
 ENTRYPOINT ["grafeno"]

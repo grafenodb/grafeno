@@ -111,6 +111,27 @@ impl Writes {
         }
     }
 
+    /// [`Writes::write`] without holding a thread while the write waits for
+    /// its group's commit (a cluster member still waits on one).
+    pub async fn write_async<T: Send + 'static>(
+        self: &Arc<Self>,
+        f: impl Fn(&mut WriteTx) -> grafeno::Result<T> + Send + 'static,
+    ) -> grafeno::Result<T> {
+        if self.cluster.is_some() {
+            let writes = self.clone();
+            return tokio::task::spawn_blocking(move || writes.write(f))
+                .await
+                .map_err(|error| Error::Storage(format!("the write stopped: {error}")))?;
+        }
+        let (sender, receiver) = tokio::sync::oneshot::channel();
+        self.local.write_then(f, move |result| {
+            let _ = sender.send(result);
+        })?;
+        receiver
+            .await
+            .unwrap_or_else(|_| Err(Error::Storage("the writer stopped".into())))
+    }
+
     pub fn write_bulk<T: Send + 'static>(
         &self,
         f: impl Fn(&mut WriteTx) -> grafeno::Result<T> + Send + 'static,
@@ -377,6 +398,47 @@ pub async fn serve_until(
 }
 
 /// [`serve_until`] on a listener already bound.
+/// Each connection holds a file descriptor. Where the soft limit is low
+/// (1024 on most Linux shells), it is raised to the hard limit, up to
+/// 65,536, so that a thousand clients and more are not refused. Under
+/// systemd it is left to `LimitNOFILE` (the units set it): the service's
+/// system call filter does not allow changing it.
+pub fn open_files_for_connections() {
+    #[cfg(unix)]
+    {
+        const WANTED: libc::rlim_t = 65_536;
+        let mut limit = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
+        // SAFETY: getrlimit writes the limit it is given a pointer to.
+        if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) } != 0 {
+            return;
+        }
+        if limit.rlim_cur >= WANTED.min(limit.rlim_max) {
+            return;
+        }
+        if std::env::var_os("INVOCATION_ID").is_some() {
+            eprintln!(
+                "warning: at most {} open files (LimitNOFILE): about as many clients at once",
+                limit.rlim_cur
+            );
+            return;
+        }
+        let raised = libc::rlimit {
+            rlim_cur: WANTED.min(limit.rlim_max),
+            rlim_max: limit.rlim_max,
+        };
+        // SAFETY: setrlimit reads the limit it is given a pointer to.
+        if unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &raised) } != 0 {
+            eprintln!(
+                "warning: at most {} open files: about as many clients at once",
+                limit.rlim_cur
+            );
+        }
+    }
+}
+
 pub async fn serve_on(
     state: AppState,
     listener: tokio::net::TcpListener,
@@ -390,6 +452,7 @@ pub async fn serve_on(
             "warning: this server has no token and no account, and listens on {local}:              anyone who reaches it may do anything, and make its first superuser. Set a              token (grafeno config init) or create the first account before it is reachable              from a network."
         );
     }
+    open_files_for_connections();
     crate::events::start(&state);
     // Explicit transactions past their time give the writer back.
     {
@@ -933,10 +996,21 @@ pub(crate) async fn write<T: Send + 'static>(
         tx.set_origin(None);
         result
     };
-    tokio::task::spawn_blocking(move || writer.write(work))
-        .await
-        .map_err(crate::http::joined)?
-        .map_err(ApiError::from)
+    // Waiting for the writer is not being served: the request gives its
+    // turn back, so that writes queued behind a busy writer do not keep
+    // the reads out (its writer queue bounds them).
+    give_back_turn();
+    writer.write_async(work).await.map_err(ApiError::from)
+}
+
+tokio::task_local! {
+    /// The turn `admit` gave the request being served, while it holds one.
+    static TURN: std::cell::RefCell<Option<tokio::sync::OwnedSemaphorePermit>>;
+}
+
+/// Gives back the request's turn, if it holds one.
+pub(crate) fn give_back_turn() {
+    let _ = TURN.try_with(|turn| turn.borrow_mut().take());
 }
 
 /// Runs a long write (a rebuild, a compaction) in the writer's bulk lane:
@@ -1318,8 +1392,10 @@ async fn metrics(State(state): State<AppState>) -> Response {
 
 async fn admit(State(state): State<AppState>, request: Request, next: Next) -> Response {
     use std::sync::atomic::Ordering;
-    if let Ok(_permit) = state.in_flight.clone().try_acquire_owned() {
-        return next.run(request).await;
+    if let Ok(permit) = state.in_flight.clone().try_acquire_owned() {
+        return TURN
+            .scope(std::cell::RefCell::new(Some(permit)), next.run(request))
+            .await;
     }
     // Every turn is taken: wait for one, if the queue has room.
     let waiting = state.queued.fetch_add(1, Ordering::AcqRel);
@@ -1333,7 +1409,10 @@ async fn admit(State(state): State<AppState>, request: Request, next: Next) -> R
         tokio::time::timeout(state.queue_wait, state.in_flight.clone().acquire_owned()).await;
     state.queued.fetch_sub(1, Ordering::AcqRel);
     match turn {
-        Ok(Ok(_permit)) => next.run(request).await,
+        Ok(Ok(permit)) => {
+            TURN.scope(std::cell::RefCell::new(Some(permit)), next.run(request))
+                .await
+        }
         _ => {
             state.metrics.busy();
             busy_response()

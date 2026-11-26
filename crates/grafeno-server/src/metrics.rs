@@ -60,6 +60,11 @@ impl ServerMetrics {
     }
 
     /// A request waited for a turn.
+    /// Requests that waited for a turn since the server started.
+    pub fn queued_total(&self) -> u64 {
+        self.queued.load(Ordering::Relaxed)
+    }
+
     pub fn queued(&self) {
         self.queued.fetch_add(1, Ordering::Relaxed);
     }

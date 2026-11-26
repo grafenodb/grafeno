@@ -156,6 +156,32 @@ impl Writer {
         self.submit(Lane::Bulk, f)
     }
 
+    /// Queues `f` for the next interactive group and returns at once:
+    /// `then` gets its result on the writer's thread once its group is
+    /// committed (or failed). Nobody waits on a thread meanwhile, so many
+    /// writes may wait without holding as many threads. Fails at once,
+    /// without calling `then`, when too many writes are waiting.
+    pub fn write_then<T: Send + 'static>(
+        &self,
+        f: impl Fn(&mut WriteTx) -> Result<T> + Send + 'static,
+        then: impl FnOnce(Result<T>) + Send + 'static,
+    ) -> Result<()> {
+        let job = job(f, then);
+        {
+            let mut queues = self.shared.queues.lock().unwrap_or_else(|e| e.into_inner());
+            if queues.closed {
+                return Err(Error::Storage("the writer stopped".into()));
+            }
+            if queues.interactive.len() >= self.options.queue.max(1) {
+                self.shared.metrics.rejected.fetch_add(1, Ordering::Relaxed);
+                return Err(Error::Busy("too many writes are waiting".into()));
+            }
+            queues.interactive.push_back(job);
+        }
+        self.shared.ready.notify_one();
+        Ok(())
+    }
+
     /// Makes every commit so far durable.
     pub fn flush(&self) -> Result<()> {
         self.db.flush()
@@ -166,26 +192,10 @@ impl Writer {
         lane: Lane,
         f: impl Fn(&mut WriteTx) -> Result<T> + Send + 'static,
     ) -> Result<T> {
-        let slot = Arc::new(Mutex::new(None));
-        let kept = slot.clone();
         let (sender, receiver) = mpsc::sync_channel(1);
-        let job = Job {
-            attempt: Box::new(move |tx| {
-                let value = f(tx)?;
-                *kept.lock().expect("not poisoned") = Some(value);
-                Ok(())
-            }),
-            done: Box::new(move |outcome| {
-                let result = outcome.map(|()| {
-                    slot.lock()
-                        .expect("not poisoned")
-                        .take()
-                        .expect("a committed write has a value")
-                });
-                let _ = sender.send(result);
-            }),
-            queued: Instant::now(),
-        };
+        let job = job(f, move |result| {
+            let _ = sender.send(result);
+        });
         {
             let mut queues = self.shared.queues.lock().unwrap_or_else(|e| e.into_inner());
             if queues.closed {
@@ -215,6 +225,32 @@ impl Writer {
         receiver
             .recv()
             .unwrap_or_else(|_| Err(Error::Storage("the writer stopped".into())))
+    }
+}
+
+/// A queued write: `f`, whose last successful run's value goes to `then`.
+fn job<T: Send + 'static>(
+    f: impl Fn(&mut WriteTx) -> Result<T> + Send + 'static,
+    then: impl FnOnce(Result<T>) + Send + 'static,
+) -> Job {
+    let slot = Arc::new(Mutex::new(None));
+    let kept = slot.clone();
+    Job {
+        attempt: Box::new(move |tx| {
+            let value = f(tx)?;
+            *kept.lock().expect("not poisoned") = Some(value);
+            Ok(())
+        }),
+        done: Box::new(move |outcome| {
+            let result = outcome.map(|()| {
+                slot.lock()
+                    .expect("not poisoned")
+                    .take()
+                    .expect("a committed write has a value")
+            });
+            then(result);
+        }),
+        queued: Instant::now(),
     }
 }
 

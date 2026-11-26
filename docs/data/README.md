@@ -65,6 +65,7 @@ build unless the file says otherwise; on E1, runs vary by about ±20%.
 | `hyperedge_recall_latency.csv` | Latency of those strategies, 15 runs per question | `hyperedge_recall_eval.rs` | E1-mem | 2026-11-21 | bars, p50 / p95 / p99 |
 | `entity_search.csv` | GQ lookups, sorts and pages over 1 000 000 `Person` nodes, before and after the entity lookups | `crates/grafeno-query/examples/entity_search.rs` | E1-disk | 2026-11-26 | paired bars per query and indexes, log scale |
 | `rewire.csv` | Rewiring 1 000 000 edges with `CALL { … } IN TRANSACTIONS` against one transaction, with an agent's write latency and a reader's | `crates/grafeno-query/examples/rewire.rs` | E1-disk | 2026-11-26 | bars of agent p99 and max per mode, log scale |
+| `many_connections.csv` | 1 000 to 4 000 HTTP connections at once, reads, GQ and writes mixed, before and after writes give their turn back; and with 1 024 open files | `crates/grafeno-server/examples/many_connections.rs` (`tools/bench-http/Dockerfile`) | E2 (musl, mimalloc, no memory limit) | 2026-11-26 | requests per second and p99 per connections, before / after |
 
 `python docs/charts/build.py` draws the charts of
 [performance](../performance.md) from these files (light and dark SVG in
