@@ -430,7 +430,7 @@ requests accept either that or an ISO 8601 string (`2024-05-01`,
 | `GET`    | `/v1/{ns}/tools`                      | — | `{tools}`: the memory tools the caller may use in the namespace (those that write only with a right to write) |
 | `POST`   | `/v1/{ns}/tools/{name}`               | the tool's arguments, an object | what MCP answers: `{content, structuredContent, isError}`; run as the caller, in this namespace; rights by namespace only, not on a cluster |
 | `POST`   | `/v1/{ns}/batch`                      | `{ops}`                                                 | `{results, refs}`             |
-| `POST`   | `/v1/{ns}/query`                      | `{query, params?, trace?}` ([GQ](../../docs/query-language.md)) | `{columns, rows, stats}`, and `trace` with `trace: true` (16.9) |
+| `POST`   | `/v1/{ns}/query`                      | `{query, params?, trace?}` ([GQ](../../docs/query-language.md)) | `{columns, rows, stats}`, and `trace` with `trace: true` (16.9); a `CALL { … } IN TRANSACTIONS` commits each batch in the writer's bulk lane |
 | `POST`   | `/v1/{ns}/transactions`               | `{read_only?, timeout_secs?}`                           | 201 `{id, read_only, started_at, timeout_secs, statements, failed}`: an explicit transaction (16.4) |
 | `GET`    | `/v1/{ns}/transactions/{id}`          |                                                         | its state |
 | `POST`   | `/v1/{ns}/transactions/{id}/query`    | `{query, params?}`                                      | a statement in it: `{columns, rows, stats}` |

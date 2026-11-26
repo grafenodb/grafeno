@@ -1,0 +1,6 @@
+rewiring,people,seconds,edges_per_second,agent_p50_ms,agent_p99_ms,agent_max_ms,reader_p50_ms,reader_p99_ms,reader_max_ms
+"none (agent and reader alone)",0,5.00,0,2.39,3.75,4.5,0.14,0.33,518.9
+"IN TRANSACTIONS OF 5000 ROWS, bulk lane",1000000,185.61,5388,1.87,1543.48,1711.9,0.14,112.11,2694.4
+"one statement, one transaction",200000,19.68,10165,2.34,19662.12,19662.1,0.14,0.27,289.2
+"IN TRANSACTIONS OF 1000 ROWS, bulk lane",1000000,346.58,2885,272.58,802.34,1077.1,0.15,132.71,3474.3
+"before the fix: IN TRANSACTIONS OF 5000 ROWS with the snapshot open throughout",1000000,143.50,6971,1.90,888.30,14323.0,0.10,0.70,15343.0

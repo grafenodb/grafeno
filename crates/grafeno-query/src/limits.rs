@@ -117,6 +117,11 @@ impl Budget {
         self.memory(total, "built rows")
     }
 
+    /// The limits it counts against.
+    pub(crate) fn limits(&self) -> &Limits {
+        &self.limits
+    }
+
     pub(crate) fn max_cost(&self) -> Option<f64> {
         self.limits.max_cost
     }

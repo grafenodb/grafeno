@@ -23,6 +23,17 @@ upgraded in place, with a copy kept first.
   with equal values and then the sorted one reads each page in order and
   stops. On 1,000,000 people, every `PE` person by name took 0.56 ms a
   page of 100.
+- **Added**: `CALL { … } IN TRANSACTIONS [OF n ROWS]` in GQ: a large
+  write in batches, each a transaction of its own, through the writer's
+  bulk lane over HTTP, so interactive writes run between them; a `MATCH`
+  right before it hands its rows over as it finds them instead of holding
+  them all. It rewires edges in bulk keeping their history (a new edge to
+  the new end, the old one ended): 1,000,000 edges in 186 s through
+  batches of 5,000, while an agent's writes waited at most 1.7 s (a
+  batch), where one transaction of 200,000 held them for 20 s. The rows
+  are read first and wait as ids, and the snapshot goes before the first
+  commit: kept open across the commits, it stalled every reader and
+  writer for up to 23 s. A query's limits bound each batch.
 - **Added**: namespace aliases. An alias stands for one namespace in
   every route under `/v1/{alias}/…`, in GQ, MCP and the shell, and moves
   to another namespace in one commit (`PUT /v1/aliases/{name}`, `ALTER

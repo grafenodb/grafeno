@@ -69,9 +69,9 @@ pub use cache::{
 pub use eval::Params;
 pub use exec::split::{Partial, SplitPlan, execute_part, merge_parts, split_plan};
 pub use exec::{
-    MAX_PATH_LENGTH, PlanStep, QueryResult, Requirements, StatementKind, WriteStats, execute,
-    execute_in, execute_read, execute_read_with, execute_with, is_write, requirements,
-    statement_kind,
+    Batch, Committer, DEFAULT_BATCH_ROWS, MAX_PATH_LENGTH, PlanStep, QueryResult, Requirements,
+    StatementKind, WriteStats, execute, execute_in, execute_in_transactions, execute_read,
+    execute_read_with, execute_with, in_transactions, is_write, requirements, statement_kind,
 };
 pub use limits::{Limits, NamespaceFilter};
 pub use parallel::{MIN_CANDIDATES, parallelism, set_parallelism};

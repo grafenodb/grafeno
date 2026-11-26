@@ -232,6 +232,13 @@ pub(crate) enum Clause {
     /// variables; what the inner RETURN gives is added to it (a subquery
     /// without RETURN keeps the rows as they were).
     Subquery(Query),
+    /// `CALL { … } IN TRANSACTIONS [OF n ROWS]`: the subquery runs on the
+    /// rows a batch at a time, each batch in a transaction of its own
+    /// (the last clause of a statement).
+    InTransactions {
+        query: Query,
+        rows: Option<Expr>,
+    },
 }
 
 impl Clause {
@@ -248,6 +255,7 @@ impl Clause {
                 | Clause::Retract(_)
                 | Clause::Foreach { .. }
         ) || matches!(self, Clause::Subquery(query) if query.clauses.iter().any(Clause::writes))
+            || matches!(self, Clause::InTransactions { .. })
             || matches!(self, Clause::Call(call) if call.writes())
     }
 
@@ -273,6 +281,7 @@ impl Clause {
             Clause::Foreach { .. } => "FOREACH",
             Clause::Return(_) => "RETURN",
             Clause::Subquery(_) => "CALL { }",
+            Clause::InTransactions { .. } => "CALL { } IN TRANSACTIONS",
         }
     }
 }

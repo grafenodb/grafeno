@@ -232,7 +232,7 @@ impl<'i> Model<'i> {
                     self.bound.insert(var.to_owned());
                 }
             }
-            Clause::Subquery(query) => {
+            Clause::Subquery(query) | Clause::InTransactions { query, .. } => {
                 let mut inner = Model::new(self.info, self.value_of);
                 inner.bound = self.bound.clone();
                 for clause in &query.clauses {

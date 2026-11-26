@@ -62,6 +62,33 @@ pub struct WriteStats {
     pub aliases_set: u64,
     #[serde(skip_serializing_if = "is_zero")]
     pub aliases_dropped: u64,
+    /// Transactions a `CALL { … } IN TRANSACTIONS` committed.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub transactions: u64,
+}
+
+impl WriteStats {
+    /// Adds what `other` changed.
+    pub fn add(&mut self, other: &WriteStats) {
+        self.nodes_created += other.nodes_created;
+        self.nodes_deleted += other.nodes_deleted;
+        self.edges_created += other.edges_created;
+        self.edges_deleted += other.edges_deleted;
+        self.edges_retracted += other.edges_retracted;
+        self.hyperedges_created += other.hyperedges_created;
+        self.hyperedges_deleted += other.hyperedges_deleted;
+        self.hyperedges_retracted += other.hyperedges_retracted;
+        self.facts_invalidated += other.facts_invalidated;
+        self.conflicts_flagged += other.conflicts_flagged;
+        self.properties_set += other.properties_set;
+        self.labels_added += other.labels_added;
+        self.labels_removed += other.labels_removed;
+        self.namespaces_created += other.namespaces_created;
+        self.namespaces_dropped += other.namespaces_dropped;
+        self.aliases_set += other.aliases_set;
+        self.aliases_dropped += other.aliases_dropped;
+        self.transactions += other.transactions;
+    }
 }
 
 fn is_zero(value: &u64) -> bool {
@@ -157,6 +184,24 @@ pub fn execute_with(
             params,
             hides(limits, ns),
         );
+    }
+    if in_transactions(query)? {
+        let read = db.begin_read()?;
+        let mut commit = |batch: Batch| -> Result<WriteStats, QueryError> {
+            let mut tx = db.begin_write()?;
+            let read = db.begin_read()?;
+            match batch.run(&mut tx, &read) {
+                Ok(stats) => {
+                    tx.commit()?;
+                    Ok(stats)
+                }
+                Err(error) => {
+                    tx.abort()?;
+                    Err(error)
+                }
+            }
+        };
+        return execute_in_transactions(read, ns, query, params, limits, &mut commit);
     }
     if statement.writes() {
         // Holding the write lock first makes the snapshot the latest state.
@@ -1045,6 +1090,29 @@ fn validate(statement: &Statement) -> Result<(), QueryError> {
                     ));
                 }
                 Clause::Subquery(query) => validate_subquery(query)?,
+                Clause::InTransactions { query, .. } => {
+                    if index != last || statement.parts.len() > 1 {
+                        return Err(QueryError::runtime(
+                            "CALL { … } IN TRANSACTIONS must be the last clause of a statement, without UNION",
+                        ));
+                    }
+                    if part.clauses[..index].iter().any(Clause::writes) {
+                        return Err(QueryError::runtime(
+                            "the clauses before CALL { … } IN TRANSACTIONS only read: put the writes inside it",
+                        ));
+                    }
+                    if !matches!(statement.mode, Mode::Run | Mode::Explain) {
+                        return Err(QueryError::runtime(
+                            "CALL { … } IN TRANSACTIONS cannot be profiled or traced",
+                        ));
+                    }
+                    validate_subquery(query)?;
+                    if matches!(query.clauses.last(), Some(Clause::Return(_))) {
+                        return Err(QueryError::runtime(
+                            "a CALL { … } IN TRANSACTIONS subquery writes and returns nothing: leave out its RETURN",
+                        ));
+                    }
+                }
                 Clause::With(projection) => {
                     for item in &projection.items {
                         if !item.aliased && !matches!(item.expr, Expr::Var(_)) {
@@ -1085,6 +1153,11 @@ fn validate_subquery(query: &Query) -> Result<(), QueryError> {
                 ));
             }
             Clause::Subquery(inner) => validate_subquery(inner)?,
+            Clause::InTransactions { .. } => {
+                return Err(QueryError::runtime(
+                    "CALL { … } IN TRANSACTIONS cannot be inside another subquery",
+                ));
+            }
             _ => {}
         }
     }
@@ -1125,6 +1198,11 @@ struct Runner<'a> {
     view: Option<std::sync::Arc<grafeno::View>>,
     /// Whether the caller may read the audit log (14.5).
     may_audit: bool,
+    /// Where the batches of a `CALL { … } IN TRANSACTIONS` go to be
+    /// committed, each in a transaction of its own.
+    commit: Option<&'a mut Committer<'a>>,
+    /// The limits each of those batches runs under.
+    batch_limits: Option<Limits>,
     /// The time of the latest MATCH (its `VALID AT` and `KNOWN AT`), which
     /// the patterns inside expressions after it (`COUNT { … }`, `EXISTS
     /// { … }`, a pattern in `WHERE` or `RETURN`) follow as well. Any time
@@ -1178,6 +1256,8 @@ impl<'a> Runner<'a> {
             folded: None,
             reads_seen: 0,
             slice: None,
+            commit: None,
+            batch_limits: None,
             time: EdgeFilter::any(),
             view: limits.view.clone(),
             may_audit: limits
@@ -1213,6 +1293,8 @@ impl<'a> Runner<'a> {
             folded: None,
             reads_seen: 0,
             slice: None,
+            commit: None,
+            batch_limits: None,
             time: EdgeFilter::any(),
             view: limits.view.clone(),
             may_audit: limits
@@ -1342,6 +1424,66 @@ impl<'a> Runner<'a> {
                     project_folded(&ctx, flow.rows, projection, &flow.vars, folded)?;
                 self.record("RETURN", details.unwrap_or_default(), rows.len(), started);
                 return Ok((columns, rows));
+            }
+            if let Clause::InTransactions { query: inner, rows } = clause {
+                let size = self.batch_size(rows.as_ref())?;
+                let stats = self.commit_batches(inner, size, flow.rows, &flow.vars)?;
+                self.stats.add(&stats);
+                self.record(clause.name(), details.unwrap_or_default(), 0, started);
+                return Ok((Vec::new(), Vec::new()));
+            }
+            // A MATCH right before CALL { … } IN TRANSACTIONS hands its rows
+            // over in batches as it finds them, instead of holding them all.
+            if let (
+                Clause::Match {
+                    optional: false,
+                    patterns,
+                    ..
+                },
+                Some(Clause::InTransactions { query: inner, rows }),
+            ) = (clause, query.clauses.get(index + 1))
+                && self.commit.is_some()
+            {
+                let size = self.batch_size(rows.as_ref())?;
+                let mut vars = flow.vars.clone();
+                for var in patterns.iter().flat_map(Pattern::variables) {
+                    if !vars.iter().any(|known| known == var) {
+                        vars.push(var.to_owned());
+                    }
+                }
+                let mut commit = self.commit.take();
+                let mut pending: Vec<Row> = Vec::new();
+                let mut stats = WriteStats::default();
+                let mut matched = 0usize;
+                let outcome = {
+                    let ns = self.ns;
+                    let params = self.params;
+                    let limits = self.batch_limits();
+                    let committer = commit.as_deref_mut().expect("checked above");
+                    let mut sink = |rows: Vec<Row>| -> Result<(), QueryError> {
+                        matched += rows.len();
+                        pending.extend(rows);
+                        while pending.len() >= size {
+                            let rows: Vec<Row> = pending.drain(..size).collect();
+                            let batch = Batch::new(inner, rows, &vars, ns, params, &limits);
+                            stats.add(&committer(batch)?);
+                        }
+                        Ok(())
+                    };
+                    self.apply_streaming(clause, flow, &mut sink)
+                };
+                self.commit = commit;
+                let flow_after = outcome?;
+                if !pending.is_empty() {
+                    let limits = self.batch_limits();
+                    let batch = Batch::new(inner, pending, &vars, self.ns, self.params, &limits);
+                    let committer = self.commit.as_deref_mut().expect("put back");
+                    stats.add(&committer(batch)?);
+                }
+                self.stats.add(&stats);
+                self.record(clause.name(), details.unwrap_or_default(), matched, started);
+                let _ = flow_after;
+                return Ok((Vec::new(), Vec::new()));
             }
             // A MATCH right before a RETURN … ORDER BY n.key LIMIT k may
             // read an index in that order and stop.
@@ -1658,6 +1800,62 @@ impl<'a> Runner<'a> {
         )))
     }
 
+    /// `OF n ROWS`: a positive integer (1,000 without it).
+    fn batch_size(&self, rows: Option<&Expr>) -> Result<usize, QueryError> {
+        let Some(rows) = rows else {
+            return Ok(DEFAULT_BATCH_ROWS);
+        };
+        match self.eval(&Row::new(), rows)? {
+            Value::Int(n) if n > 0 => Ok(n as usize),
+            other => Err(QueryError::runtime(format!(
+                "IN TRANSACTIONS OF n ROWS needs a positive integer, got {}",
+                other.to_json()
+            ))),
+        }
+    }
+
+    /// The limits each batch runs under: the statement's own (its timeout
+    /// counts for each batch).
+    fn batch_limits(&self) -> Limits {
+        self.batch_limits
+            .clone()
+            .unwrap_or_else(|| self.budget.limits().clone())
+    }
+
+    /// Commits the subquery over `rows`, `size` at a time.
+    fn commit_batches(
+        &mut self,
+        inner: &Query,
+        size: usize,
+        rows: Vec<Row>,
+        vars: &[String],
+    ) -> Result<WriteStats, QueryError> {
+        let limits = self.batch_limits();
+        let Some(committer) = self.commit.as_deref_mut() else {
+            return Err(QueryError::runtime(
+                "CALL { … } IN TRANSACTIONS commits batches of its own: it cannot run inside a transaction (send it on its own)",
+            ));
+        };
+        let mut stats = WriteStats::default();
+        let mut rows = rows.into_iter().peekable();
+        while rows.peek().is_some() {
+            let chunk: Vec<Row> = rows.by_ref().take(size).collect();
+            let batch = Batch::new(inner, chunk, vars, self.ns, self.params, &limits);
+            stats.add(&committer(batch)?);
+        }
+        Ok(stats)
+    }
+
+    /// Runs a `MATCH`, handing each batch of rows it finds to `sink`.
+    fn apply_streaming(
+        &mut self,
+        clause: &Clause,
+        flow: Flow,
+        sink: &mut (dyn FnMut(Vec<Row>) -> Result<(), QueryError> + Send),
+    ) -> Result<Flow, QueryError> {
+        self.apply_folding_into(clause, flow, None, None, None, Some(sink))
+    }
+
     /// What a `MATCH` right before a `RETURN … ORDER BY … LIMIT n` keeps:
     /// the best `SKIP + LIMIT` rows by the sort, when the `RETURN` neither
     /// groups nor drops duplicates.
@@ -1803,10 +2001,24 @@ impl<'a> Runner<'a> {
     fn apply_folding(
         &mut self,
         clause: &Clause,
+        flow: Flow,
+        cap: Option<usize>,
+        fold: Option<(&Spec, &mut Groups)>,
+        top: Option<(&TopSpec, &mut TopRows)>,
+    ) -> Result<Flow, QueryError> {
+        self.apply_folding_into(clause, flow, cap, fold, top, None)
+    }
+
+    /// [`Runner::apply_folding`]; a `MATCH` given `sink` hands it its rows
+    /// in batches instead of keeping them.
+    fn apply_folding_into(
+        &mut self,
+        clause: &Clause,
         mut flow: Flow,
         cap: Option<usize>,
         mut fold: Option<(&Spec, &mut Groups)>,
         mut top: Option<(&TopSpec, &mut TopRows)>,
+        mut sink: Option<&mut (dyn FnMut(Vec<Row>) -> Result<(), QueryError> + Send)>,
     ) -> Result<Flow, QueryError> {
         match clause {
             Clause::Match {
@@ -1890,6 +2102,21 @@ impl<'a> Runner<'a> {
                                     prepare: &|ctx, rows| spec.columns(ctx, rows),
                                 },
                                 &mut |columns| groups.fold(spec, columns),
+                            )?;
+                            rows = Vec::new();
+                        } else if last
+                            && !*optional
+                            && let Some(sink) = sink.as_deref_mut()
+                        {
+                            match_pattern_into(
+                                &ctx,
+                                rows,
+                                pattern,
+                                &matcher,
+                                &Emit {
+                                    prepare: &|_, rows| Ok(rows),
+                                },
+                                &mut |rows| sink(rows),
                             )?;
                             rows = Vec::new();
                         } else if last
@@ -2322,6 +2549,11 @@ impl<'a> Runner<'a> {
                         self.retract(row, expr)?;
                     }
                 }
+            }
+            Clause::InTransactions { .. } => {
+                return Err(QueryError::runtime(
+                    "CALL { … } IN TRANSACTIONS must be the last clause",
+                ));
             }
             Clause::Subquery(query) => {
                 let mut out = Vec::new();
@@ -3802,6 +4034,204 @@ fn project_folded(
     Ok((columns, rows))
 }
 
+/// Rows per transaction of `CALL { … } IN TRANSACTIONS` without `OF n ROWS`.
+pub const DEFAULT_BATCH_ROWS: usize = 1_000;
+
+/// Where batches of `CALL { … } IN TRANSACTIONS` are committed: runs each
+/// in a write transaction of its own ([`Batch::run`]) and says what it
+/// changed. A writer that retries may run a batch more than once.
+pub type Committer<'a> = dyn FnMut(Batch) -> Result<WriteStats, QueryError> + Send + 'a;
+
+/// One batch of `CALL { … } IN TRANSACTIONS`: the subquery and the rows it
+/// runs on, owned, so that a writer thread may run it (again, if its
+/// transaction has to be redone).
+#[derive(Clone)]
+pub struct Batch {
+    inner: Arc<BatchInner>,
+}
+
+struct BatchInner {
+    query: Query,
+    rows: Vec<Vec<(String, Slot)>>,
+    vars: Vec<String>,
+    ns: String,
+    params: Params,
+    limits: Limits,
+}
+
+/// A variable of a batch's row as it waits: a node or an edge by its id
+/// (read again in the batch's own transaction, as it is then), anything
+/// else as it is.
+enum Slot {
+    Node(NodeId),
+    Edge(EdgeId),
+    Value(Value),
+}
+
+impl Slot {
+    fn of(value: Value) -> Self {
+        match value {
+            Value::Node(node) => Slot::Node(node.id),
+            Value::Edge(edge) => Slot::Edge(edge.id),
+            other => Slot::Value(other),
+        }
+    }
+}
+
+impl Batch {
+    fn new(
+        query: &Query,
+        rows: Vec<Row>,
+        vars: &[String],
+        ns: &str,
+        params: &Params,
+        limits: &Limits,
+    ) -> Self {
+        let rows = rows
+            .into_iter()
+            .map(|row| {
+                row.into_iter()
+                    .map(|(name, value)| (name, Slot::of(value)))
+                    .collect()
+            })
+            .collect();
+        Self {
+            inner: Arc::new(BatchInner {
+                query: query.clone(),
+                rows,
+                vars: vars.to_vec(),
+                ns: ns.to_owned(),
+                params: params.clone(),
+                limits: limits.clone(),
+            }),
+        }
+    }
+
+    /// The rows it runs the subquery on.
+    pub fn len(&self) -> usize {
+        self.inner.rows.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.inner.rows.is_empty()
+    }
+
+    /// Runs the subquery once per row in `tx` (the caller commits it);
+    /// `read` is a recent snapshot for planning. On an error the caller
+    /// must discard the transaction.
+    pub fn run(&self, tx: &mut WriteTx, read: &ReadTx) -> Result<WriteStats, QueryError> {
+        let inner = &self.inner;
+        // Each node and edge as this transaction sees it; a row whose node
+        // or edge went meanwhile is left out.
+        let mut rows = Vec::with_capacity(inner.rows.len());
+        'rows: for slots in &inner.rows {
+            let mut row = Row::new();
+            for (name, slot) in slots {
+                let value = match slot {
+                    Slot::Value(value) => value.clone(),
+                    Slot::Node(id) => match tx.node(&inner.ns, *id)? {
+                        Some(node) => Value::Node(Arc::new(node)),
+                        None => continue 'rows,
+                    },
+                    Slot::Edge(id) => match tx.edge(&inner.ns, *id)? {
+                        Some(edge) => Value::Edge(Arc::new(edge)),
+                        None => continue 'rows,
+                    },
+                };
+                row.insert(name.clone(), value);
+            }
+            rows.push(row);
+        }
+        tx.defer_checks();
+        let mut runner = Runner::new(
+            read,
+            Some(tx),
+            &inner.ns,
+            &inner.params,
+            Mode::Run,
+            &inner.limits,
+        )?;
+        runner.apply(
+            &Clause::Subquery(inner.query.clone()),
+            Flow {
+                rows,
+                vars: inner.vars.clone(),
+            },
+            None,
+        )?;
+        let mut stats = runner.stats;
+        drop(runner);
+        tx.check_deferred()?;
+        stats.transactions += 1;
+        Ok(stats)
+    }
+}
+
+/// Whether a statement is a `CALL { … } IN TRANSACTIONS`, which commits
+/// batches of its own (run it with [`execute_in_transactions`]).
+pub fn in_transactions(query: &str) -> Result<bool, QueryError> {
+    let statement = crate::cache::parsed(query)?;
+    Ok(statement.mode != Mode::Explain
+        && statement
+            .parts
+            .iter()
+            .any(|part| matches!(part.clauses.last(), Some(Clause::InTransactions { .. }))))
+}
+
+/// Runs a `CALL { … } IN TRANSACTIONS` statement: the clauses before it
+/// read `read` (a `MATCH` right before it hands its rows over as it finds
+/// them), and each batch of rows goes to `commit`, which runs it in a
+/// transaction of its own and commits it before the next. A failure stops
+/// the statement; the batches before it stay committed. The result has no
+/// rows; its stats add up every batch's (`transactions` counts them).
+pub fn execute_in_transactions(
+    read: ReadTx,
+    ns: &str,
+    query: &str,
+    params: &Params,
+    limits: &Limits,
+    commit: &mut Committer<'_>,
+) -> Result<QueryResult, QueryError> {
+    let statement = crate::cache::parsed(query)?;
+    validate(&statement)?;
+    if statement.mode == Mode::Explain {
+        return explain(
+            &statement,
+            &plan_info(&read, ns)?,
+            params,
+            hides(limits, ns),
+        );
+    }
+    // The rows are read first, from `read`, and kept as batches of ids;
+    // the snapshot goes before the first commit. Commits while a snapshot
+    // stays open cannot reuse the pages it still sees: on a million rows
+    // that stalled every reader and writer for seconds.
+    let mut batches: Vec<Batch> = Vec::new();
+    let mut keep = |batch: Batch| -> Result<WriteStats, QueryError> {
+        batches.push(batch);
+        Ok(WriteStats::default())
+    };
+    let result = {
+        let mut runner = Runner::new(&read, None, ns, params, statement.mode, limits)?;
+        runner.commit = Some(&mut keep);
+        runner.batch_limits = Some(limits.clone());
+        runner.run(&statement)?
+    };
+    drop(read);
+    let mut stats = result.stats;
+    for batch in batches {
+        if limits
+            .cancel
+            .as_ref()
+            .is_some_and(|cancel| cancel.load(std::sync::atomic::Ordering::Relaxed))
+        {
+            return Err(QueryError::limit("the query was cancelled"));
+        }
+        stats.add(&commit(batch)?);
+    }
+    Ok(QueryResult { stats, ..result })
+}
+
 /// What a match right before `RETURN … ORDER BY … LIMIT n` keeps of its
 /// rows: their values and sort keys, computed on the thread that matched
 /// them.
@@ -4436,6 +4866,15 @@ fn describe(
         Clause::Foreach { var, body, .. } => format!(
             "for each {var}: {}",
             body.iter().map(Clause::name).collect::<Vec<_>>().join(", ")
+        ),
+        Clause::InTransactions { query, .. } => format!(
+            "in batches of rows, each in its own transaction: {}",
+            query
+                .clauses
+                .iter()
+                .map(Clause::name)
+                .collect::<Vec<_>>()
+                .join(", ")
         ),
         Clause::Subquery(query) => format!(
             "once per row: {}",

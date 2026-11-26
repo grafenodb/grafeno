@@ -172,8 +172,68 @@ CALL { WITH p MATCH (p)-[:knows]->(f) RETURN count(f) AS friends }
 RETURN p.name, friends;
 ```
 
-A name returned may not already exist outside. `UNION` inside and `IN
-TRANSACTIONS` are not supported: a query is one transaction.
+A name returned may not already exist outside. `UNION` inside is not
+supported.
+
+### `CALL { … } IN TRANSACTIONS`: a large write in batches
+
+A statement is one transaction, and a writing one holds the writer until
+it ends: a write over a million rows makes every other write wait, and
+holds every row at once. `IN TRANSACTIONS` runs the subquery on the rows a
+batch at a time, each batch in a transaction of its own:
+
+```text
+UNWIND range(1, 2000000) AS i
+CALL { WITH i CREATE (:Reading {i: i}) } IN TRANSACTIONS OF 10000 ROWS;
+
+MATCH (n:Reading) WHERE n.i % 2 = 0
+CALL { WITH n SET n.even = true } IN TRANSACTIONS;   // 1,000 rows a batch
+```
+
+- It is the last clause of the statement, and the clauses before it only
+  read; its subquery writes and has no `RETURN`.
+- The clauses before it read one snapshot first. The rows wait as the ids
+  of their nodes and edges (and the other values as they are), not as
+  whole records: a `MATCH` right before it hands its rows over a batch at
+  a time, so `max_rows` counts a batch, and a million rows of three
+  variables take about 150 MB. The snapshot is let go before the first
+  batch commits (commits while one stays open cannot reuse the pages it
+  sees: on a million rows that stalled every reader and writer for
+  seconds). Each batch then reads its nodes and edges as they are in its
+  own transaction, so it sees what the batches before it wrote; a row
+  whose node or edge was deleted meanwhile is left out.
+- Over HTTP the batches go through the writer's bulk lane, one at a time:
+  interactive writes (an agent's `remember`, a `POST /nodes`) run between
+  them, so they wait at most for one batch. Bulk commits reach the disk
+  together at the end, as an import's do.
+- The limits of a query (`timeout_secs`, `max_reads`, …) bound each
+  batch; the reading before them runs as long as the batches take, until
+  they end or the client goes away.
+- A batch that fails stops the statement with its error; the batches
+  before it stay committed. The result has no rows; its stats add up every
+  batch's, and `transactions` counts them.
+- It cannot run inside `BEGIN … COMMIT`, with an idempotency key, or under
+  `PROFILE` or `TRACE`; `EXPLAIN` describes it.
+
+**Rewiring edges.** An edge's ends do not change: moving edges from one
+node to another is a new edge to the new end and the end of the old one,
+which keeps the history (`VALID AT` before the move still finds it) and
+records both in the change log. For a million `Person` nodes whose
+`visits` edges point at a `Paciente`, to the `Prueba` with the same code:
+
+```text
+MATCH (p:Person)-[r:visits]->(x:Paciente)
+CALL { WITH p, r, x
+       MATCH (t:Prueba {code: x.code})
+       CREATE (p)-[:visits {since: r.since}]->(t)
+       SET r.@valid_to = datetime() }
+IN TRANSACTIONS OF 5000 ROWS;
+```
+
+`DELETE r` instead of `SET r.@valid_to` moves them without history, and
+`RETRACT r` marks the old ones as mistakes. A `MATCH` after the move sees
+the ended edges too (current knowledge, any valid time); `VALID AT
+datetime()` keeps the edges that hold now.
 
 ### `CALL`: procedures
 
@@ -1427,8 +1487,8 @@ the language's conformance scenarios.
 
 ## Not supported (yet)
 
-- `UNION` inside `CALL { … }`, `IN TRANSACTIONS`, and path variables in
-  `CREATE` and `MERGE`.
+- `UNION` inside `CALL { … }`, and path variables in `CREATE` and
+  `MERGE`.
 - A binary wire protocol: clients use the HTTP API or MCP.
 - Graph algorithms over several namespaces at once. Recall with graph
   expansion and memory ranking is in the shell's `\recall` and

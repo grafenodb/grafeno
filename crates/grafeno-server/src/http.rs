@@ -3647,6 +3647,64 @@ async fn run_query_counted(
         .await
         .map_err(crate::http::joined)?;
     }
+    // CALL { … } IN TRANSACTIONS: its batches go one by one through the
+    // writer's bulk lane, each a transaction of its own, so a long load
+    // lets interactive writes in between instead of holding the writer.
+    if grafeno_query::in_transactions(&query)? {
+        if key.is_some() {
+            return Err(ApiError::bad_request(
+                "an idempotency key needs one transaction; CALL { … } IN TRANSACTIONS commits several",
+            ));
+        }
+        let writer = state.writer.clone();
+        let actor = auth::current().actor();
+        let origin = crate::audit::origin();
+        return tokio::task::spawn_blocking(move || -> ApiResult<Value> {
+            let read = db.begin_read()?;
+            let mut commit = |batch: grafeno_query::Batch| -> Result<
+                grafeno_query::WriteStats,
+                grafeno_query::QueryError,
+            > {
+                let failure: Arc<std::sync::Mutex<Option<grafeno_query::QueryError>>> =
+                    Arc::default();
+                let kept = failure.clone();
+                let (db, actor, origin) = (db.clone(), actor.clone(), origin.clone());
+                let outcome = writer.write_bulk(move |tx| {
+                    tx.act_as(actor.clone());
+                    tx.set_origin(origin.clone());
+                    let read = db.begin_read()?;
+                    let result = batch.run(tx, &read).map_err(|error| {
+                        let message = error.to_string();
+                        *kept.lock().expect("not poisoned") = Some(error);
+                        Error::Invalid(message)
+                    });
+                    tx.act_as(None);
+                    tx.set_origin(None);
+                    result
+                });
+                match outcome {
+                    Ok(stats) => Ok(stats),
+                    Err(error) => Err(match failure.lock().expect("not poisoned").take() {
+                        Some(query_error) => query_error,
+                        None => grafeno_query::QueryError::from(error),
+                    }),
+                }
+            };
+            let result = grafeno_query::execute_in_transactions(
+                read,
+                &ns,
+                &query,
+                &params,
+                &limits,
+                &mut commit,
+            );
+            // Bulk commits wait for the disk at the end, as an import does.
+            writer.flush()?;
+            Ok(result?.to_json())
+        })
+        .await
+        .map_err(crate::http::joined)?;
+    }
     // Writes join the next group commit. A failing query must make the
     // writer discard the group's transaction, so its error travels as an
     // engine error and the query error itself is kept aside.

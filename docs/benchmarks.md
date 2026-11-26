@@ -1623,3 +1623,34 @@ While measuring, a planner fault came up: an index on `(last, first)`
 served `last = 'Ruiz'` alone and missed the nodes without a `first`.
 A composite index now serves only conditions on every one of its
 properties (or a key constraint's).
+
+## Rewiring edges in bulk (`crates/grafeno-query/examples/rewire.rs`)
+
+1,000,000 `Person` nodes each with a `visits` edge to one of 1,000
+`Paciente` nodes, on a file (E1-disk); every edge is moved to the `Prueba`
+of the same code, keeping the old one as history (a new edge, the old one
+ended with `SET r.@valid_to`), through the writer as the server runs it.
+Meanwhile an agent writes a memory every 20 ms (interactive lane) and a
+reader looks a node up through an index every 20 ms
+(`docs/data/rewire.csv`):
+
+| Rewiring | People | Seconds | Edges/s | Agent p50 / p99 / max | Reader p99 / max |
+| --- | ---: | ---: | ---: | --- | --- |
+| none (agent and reader alone) | | | | 2.4 / 3.8 / 4.5 ms | 0.3 / 519 ms |
+| one statement, one transaction | 200,000 | 19.7 | 10,165 | 2.3 ms / 19.7 s / 19.7 s | 0.3 / 289 ms |
+| `IN TRANSACTIONS OF 5000 ROWS`, snapshot open throughout (first version) | 1,000,000 | 143.5 | 6,971 | 1.9 ms / 888 ms / 14.3 s | 0.7 ms / 15.3 s |
+| `IN TRANSACTIONS OF 5000 ROWS` | 1,000,000 | 185.6 | 5,388 | 1.9 ms / 1.5 s / 1.7 s | 112 ms / 2.7 s |
+| `IN TRANSACTIONS OF 1000 ROWS` | 1,000,000 | 346.6 | 2,885 | 273 / 802 / 1,077 ms | 133 ms / 3.5 s |
+
+One transaction holds the writer for the whole run: every interactive
+write waits until it ends (19.7 s for 200,000 people; a million would
+also hold every row in memory). In batches, an interactive write waits
+at most for the batch being committed. The first version kept the outer
+snapshot open while the batches committed; redb cannot reuse the pages a
+snapshot still sees, and once in each run every reader and writer stalled
+for 14 to 23 s (reproduced with plain bulk commits and a snapshot held
+throughout: the agent's worst write went from 1.1 s to 15.5 s). The rows
+are now read first and wait as ids, the snapshot goes before the first
+commit, and the worst wait is one batch. Smaller batches shorten that
+wait but cost more per row (each commit writes the pages it touched):
+5,000 rows a batch moved twice as many edges a second as 1,000.

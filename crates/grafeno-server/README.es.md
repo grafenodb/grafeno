@@ -440,7 +440,7 @@ Los ids son UUID. Los tiempos en las respuestas son microsegundos desde la
 | `GET`    | `/v1/{ns}/tools`                      | — | `{tools}`: las herramientas de memoria que quien llama puede usar en el namespace (las que escriben solo con derecho a escribir) |
 | `POST`   | `/v1/{ns}/tools/{name}`               | los argumentos de la herramienta, un objeto | lo que responde MCP: `{content, structuredContent, isError}`; como quien llama, en este namespace; derechos solo por namespace, no en un clúster |
 | `POST`   | `/v1/{ns}/batch`                      | `{ops}`                                                 | `{results, refs}`             |
-| `POST`   | `/v1/{ns}/query`                      | `{query, params?, trace?}` ([GQ](../../docs/query-language.md)) | `{columns, rows, stats}`, y `trace` con `trace: true` (16.9) |
+| `POST`   | `/v1/{ns}/query`                      | `{query, params?, trace?}` ([GQ](../../docs/query-language.md)) | `{columns, rows, stats}`, y `trace` con `trace: true` (16.9); un `CALL { … } IN TRANSACTIONS` confirma cada lote en la vía bulk del escritor |
 | `POST`   | `/v1/{ns}/transactions`               | `{read_only?, timeout_secs?}`                           | 201 `{id, read_only, started_at, timeout_secs, statements, failed}`: una transacción explícita (16.4) |
 | `GET`    | `/v1/{ns}/transactions/{id}`          |                                                         | su estado |
 | `POST`   | `/v1/{ns}/transactions/{id}/query`    | `{query, params?}`                                      | una sentencia dentro de ella: `{columns, rows, stats}` |

@@ -1440,9 +1440,20 @@ impl Parser<'_> {
                 return Err(self.error("CALL { } needs at least one clause"));
             }
             if self.at_keyword("IN") && self.keyword_at(1, "TRANSACTIONS") {
-                return Err(self.error(
-                    "CALL { … } IN TRANSACTIONS is not supported: a query is one transaction",
-                ));
+                self.position += 2;
+                let rows = if self.eat_keyword("OF") {
+                    let rows = self.expr()?;
+                    if !(self.eat_keyword("ROWS") || self.eat_keyword("ROW")) {
+                        return Err(self.unexpected("ROWS"));
+                    }
+                    Some(rows)
+                } else {
+                    None
+                };
+                return Ok(Clause::InTransactions {
+                    query: Query { clauses },
+                    rows,
+                });
             }
             return Ok(Clause::Subquery(Query { clauses }));
         }
@@ -2699,10 +2710,10 @@ mod tests {
                 .contains("both ways")
         );
         assert!(
-            parse("CALL { MATCH (n) RETURN n } IN TRANSACTIONS RETURN 1")
+            parse("UNWIND [1] AS i CALL { WITH i CREATE (:N) } IN TRANSACTIONS OF 10")
                 .unwrap_err()
                 .to_string()
-                .contains("not supported")
+                .contains("ROWS")
         );
         assert!(
             parse("FOREACH (x IN [1] | MATCH (n))")
