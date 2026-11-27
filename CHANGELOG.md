@@ -16,9 +16,10 @@ upgraded in place, with a copy kept first.
 
 - **Added**: storage migrations. `grafeno storage status`, `plan`,
   `apply`, `resume` and `verify` (the server stopped) rebuild indexes
-  (`--reindex-existing`), rewrite records into another encoding
-  (`--encoding`), check every namespace and that every record reads as
-  before (`--verify`) and compact (`--compact`), in batches whose
+  (`--reindex-existing`), rewrite records, texts and logs into another
+  encoding (`--encoding compressed|json|envelope`), check every
+  namespace and that every record reads as before (`--verify`) and
+  compact (`--compact`), in batches whose
   checkpoint is saved with them: a migration killed at any point resumes
   and ends with the same data, and running it again changes nothing.
   `apply` copies the file first and checks the copy. Migrations are
@@ -26,17 +27,42 @@ upgraded in place, with a copy kept first.
   server lists them and runs one through its writer at
   `/v1/storage/migrations` (owners), and logs at start, and reports in
   `GET /v1/storage` (`pending`), the work waiting: free pages, space lost
-  inside pages, a migration. On 100,000 catalogue entities, `apply
-  --reindex-existing --encoding envelope --verify --compact` took the file
-  from 1,028 MiB to 403 MiB in 66 s, every record read back as before
-  (`vacuum --maximum` alone: 403 MiB, the records left as JSON).
-- **Added**: records may be stored in a versioned envelope (a tag byte,
-  its version, a codec, the length, then the JSON), what later releases
-  will compress. This release reads records in either form and still
-  writes JSON; only `grafeno storage apply --encoding envelope` writes
-  envelopes, and earlier releases refuse such a file (`--encoding json`
-  turns it back). An envelope from a newer release, or with an unknown
-  codec or a wrong length, is an error, never misread.
+  inside pages, a migration, namespaces without compression
+  dictionaries.
+- **Added**: lossless compression of stored values, on by default
+  (`[storage] compression = "auto"`; `"off"` writes values as they are).
+  Node, edge and hyperedge records, texts, the change log, the audit log
+  and the replication log are compressed with Zstandard and a dictionary
+  trained per namespace and kind of value; a value is kept compressed
+  only when it saves 12%, values under 1 KiB wait for their dictionary,
+  and every compressed value is decompressed and compared before it is
+  written. The server trains the dictionaries that namespaces with 1,000
+  values or more lack, in the background
+  (`[background] train_dictionaries_every_secs`, 600; each member its
+  own), and `grafeno storage apply --encoding compressed` trains them and
+  rewrites what is already stored. On 100,000 catalogue entities: nodes
+  49.2 → 10.3 MiB, edges 28.4 → 11.0, the change log 52.4 → 26.2; with
+  `--reindex-existing --verify --compact`, the file went from 1,028 MiB
+  to 311 MiB in 67 s, every record read back as before (`vacuum
+  --maximum` alone: 403 MiB). Across the six datasets of the storage
+  suite, stored bytes are 13–45% lower and every result is unchanged;
+  writes and lookups take as long as before, reads that go through many
+  records (scans, traversals) 8–12% longer. `GET /v1/storage` and `grafeno storage status`
+  list the dictionaries.
+- **Changed**: layout 20. A file becomes layout 20 with its first
+  compressed value (or dictionary): earlier releases refuse it, with a
+  message, instead of misreading it. A file never compressed stays 18 or
+  19 and earlier releases keep opening it. To go back to an earlier
+  release, `grafeno storage apply --encoding json` over the whole file
+  (with compression off) rewrites every value as JSON and gives the file
+  its earlier layout back. On a cluster, keep compression off until
+  every member runs this release: a snapshot of a compressed member is
+  layout 20, which a member of an earlier release refuses. Values are
+  stored in a versioned envelope (a
+  tag byte, its version, the codec, the length, the dictionary): an
+  envelope from a newer release, an unknown codec or dictionary, or a
+  wrong length is an error, never misread, and `grafeno check` reports
+  values that do not decode.
 - **Fixed**: rebuilding indexes (`grafeno rebuild`, `POST
   /v1/{ns}/rebuild`, a migration) wrote every node and edge to the change
   log as updated, a change event each; it writes nothing there now.

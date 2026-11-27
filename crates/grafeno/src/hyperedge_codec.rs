@@ -133,6 +133,9 @@ impl Reader<'_> {
 
 /// The hyperedge `bytes` hold (binary, or JSON from before the format).
 pub(crate) fn decode(bytes: &[u8]) -> Result<HyperEdge> {
+    if crate::store::is_enveloped(bytes) {
+        return decode(&crate::store::unwrap_envelope(bytes)?);
+    }
     match bytes.first() {
         Some(b'{') => {
             return serde_json::from_slice(bytes).map_err(|e| Error::Serialization(e.to_string()));

@@ -638,12 +638,13 @@ grafeno storage plan --config /etc/grafeno/grafeno.toml --reindex-existing --ver
 ```
 
 ```bash
-grafeno storage apply --config /etc/grafeno/grafeno.toml --reindex-existing --verify --compact
+grafeno storage apply --config /etc/grafeno/grafeno.toml --encoding compressed --reindex-existing --verify --compact
 ```
 
 `status` muestra el archivo, lo pendiente (páginas libres que una
 compactación devolvería, espacio perdido dentro de las páginas, una
-migración en espera) y cada migración registrada; un servidor al arrancar
+migración en espera, namespaces sin diccionarios de compresión), los
+diccionarios y cada migración registrada; un servidor al arrancar
 registra lo mismo pendiente en su log. `plan` dice qué haría `apply` y no
 cambia nada. `apply` primero copia el archivo a su lado
 (`<archivo>.before-<id>.redb`, comprobado antes de cambiar nada;
@@ -654,12 +655,39 @@ y con `--compact` termina con `vacuum --maximum`. `resume` lleva una
 migración interrumpida hasta el final, y `verify` comprueba sin cambiar
 nada. Cada comando acepta `--json`.
 
-`--encoding envelope` reescribe los registros en el sobre versionado que las
-próximas versiones comprimirán: esta versión y las posteriores lo leen, las
-anteriores rechazan el archivo, así que volver a una versión anterior
-requiere antes `--encoding json` (o el respaldo). Los registros escritos
-después siguen en JSON hasta que una versión escriba sobres por sí misma. Un
-servidor en marcha también planifica y ejecuta migraciones en
+**Compresión.** Los valores (registros, textos, el historial de cambios,
+la auditoría y el log de replicación) se comprimen al escribirse, con
+Zstandard y un diccionario por namespace y tipo de valor, cuando ahorra al
+menos un 12 %; todo se lee exactamente igual que antes. Un servidor entrena
+en segundo plano los diccionarios que le faltan a un namespace en cuanto
+tiene 1.000 valores de un tipo (`[background]
+train_dictionaries_every_secs`, cada 600 segundos), así que lo que se
+escribe después ya se comprime. `--encoding compressed` los entrena en el
+momento y reescribe lo que ya está guardado: en 100.000 entidades de
+catálogo, los nodos ocuparon 10,3 MiB en lugar de 49,2 y el archivo
+entero, con `--reindex-existing --compact`, 311 MiB en lugar de 1.028.
+Para guardar los valores tal cual, desactívala:
+
+```toml
+[storage]
+compression = "off"
+```
+
+Un archivo pasa al layout 20 con su primer valor comprimido: las versiones
+anteriores lo rechazan. Para volver a una de ellas, desactiva la compresión
+y reescribe todo el archivo en JSON, lo que le devuelve su layout anterior
+(o restaura el respaldo hecho antes):
+
+```bash
+grafeno storage apply --config /etc/grafeno/grafeno.toml --encoding json --verify
+```
+
+En un clúster, deja `compression = "off"` hasta que todos los miembros
+ejecuten esta versión: un miembro envía a otro que se ha quedado atrás una
+instantánea de su archivo, y un archivo comprimido es uno que las versiones
+anteriores rechazan.
+
+Un servidor en marcha también planifica y ejecuta migraciones en
 `/v1/storage/migrations` (propietarios), a través de su escritor, entre las
 demás escrituras. En un clúster, migra el archivo de cada miembro con su
 servidor detenido, de uno en uno: la migración es física y no se replica.
@@ -726,6 +754,9 @@ cache_mb = 256              # pages of the database file
 projection_cache_mb = 256   # graphs kept for graph algorithms
 vector_cache_mb = 128       # vectors decoded while inserting embeddings
 
+[storage]
+compression = "auto"        # compress values where it pays; "off" writes them as they are
+
 [changes]                   # the change log that streams and webhooks follow
 enabled = true
 max_entries = 1000000       # per namespace; 0 for no limit
@@ -752,6 +783,7 @@ compact_vectors_min = 1000  # leave smaller graphs alone
 compact_vectors_max = 50000 # and larger ones: compacting holds the writer (see below)
 compact_vectors_below_recall = 0  # also when sampled recall@10 falls below this (0: never measure)
 compact_vectors_every_secs = 300
+train_dictionaries_every_secs = 600  # train missing compression dictionaries (0: never)
 
 [transactions]              # BEGIN … COMMIT across requests
 idle_timeout_secs = 30      # rolled back after this long without a request

@@ -17,6 +17,11 @@
 //! fixtures hold stable properties (codes, numbers) and BM25 scores; vector
 //! results are compared as recall against an exact search, since the HNSW
 //! graph's levels are drawn at random.
+//!
+//! Each dataset is compressed once loaded (phase 5): dictionaries trained
+//! and every value rewritten, as `grafeno storage apply --encoding
+//! compressed` does, before its sizes and latencies are measured.
+//! `COMPRESSION=off` writes and measures values as they are, as before.
 
 use std::collections::BTreeMap;
 use std::io::Write as _;
@@ -26,6 +31,51 @@ use std::time::Instant;
 use grafeno::Grafeno;
 use grafeno_query::{Limits, Params, Value as GqValue};
 use serde_json::{Value, json};
+
+fn compression() -> grafeno::Compression {
+    match std::env::var("COMPRESSION").as_deref() {
+        Ok("off") => grafeno::Compression::Off,
+        _ => grafeno::Compression::Auto,
+    }
+}
+
+fn open_db(path: &Path) -> Grafeno {
+    Grafeno::open_with(
+        path,
+        &grafeno::OpenOptions {
+            compression: compression(),
+            ..grafeno::OpenOptions::default()
+        },
+    )
+    .unwrap()
+}
+
+/// With compression on: trains the dictionaries and rewrites what is
+/// stored with them; returns the seconds it took.
+fn compress_stored(db: &Grafeno) -> f64 {
+    if compression() == grafeno::Compression::Off {
+        return 0.0;
+    }
+    let started = Instant::now();
+    let plan = db
+        .plan_migration(&grafeno::MigrationOptions {
+            encoding: Some(grafeno::Encoding::Compressed),
+            ..grafeno::MigrationOptions::default()
+        })
+        .unwrap();
+    db.start_migration(&plan).unwrap();
+    let done = db
+        .run_migration(
+            &plan.id,
+            &grafeno::RunControl {
+                exclusive: true,
+                ..grafeno::RunControl::default()
+            },
+        )
+        .unwrap();
+    assert_eq!(done.state, grafeno::MigrationState::Completed, "{done:?}");
+    started.elapsed().as_secs_f64()
+}
 
 fn scale() -> f64 {
     std::env::var("SCALE")
@@ -81,6 +131,8 @@ struct Row {
     dataset: String,
     records: usize,
     load_s: f64,
+    /// Training dictionaries and rewriting the values with them.
+    compress_s: f64,
     file_mib: f64,
     stored_mib: f64,
     fragmented_mib: f64,
@@ -95,6 +147,7 @@ fn mib(bytes: u64) -> f64 {
 
 /// Sizes of the file, then of a vacuumed copy.
 fn sizes(db: &Grafeno, path: &Path, row: &mut Row) {
+    row.compress_s = compress_stored(db);
     let usage = db.storage_usage().unwrap();
     row.file_mib = mib(usage.file_bytes.unwrap_or(0));
     row.stored_mib = mib(usage.stored_bytes);
@@ -130,7 +183,7 @@ fn rows_of(result: &grafeno_query::QueryResult) -> Value {
 type Fixtures = BTreeMap<String, Value>;
 
 fn catalog(path: &Path, fixtures: &mut Fixtures) -> Row {
-    let db = Grafeno::open(path).unwrap();
+    let db = open_db(path);
     let ns = "catalog";
     let items = n(100_000);
     let dims = 128;
@@ -328,7 +381,7 @@ fn catalog(path: &Path, fixtures: &mut Fixtures) -> Row {
 }
 
 fn documents(path: &Path, fixtures: &mut Fixtures) -> Row {
-    let db = Grafeno::open(path).unwrap();
+    let db = open_db(path);
     let ns = "docs";
     let count = n(20_000);
     let mut row = Row {
@@ -438,7 +491,7 @@ fn documents(path: &Path, fixtures: &mut Fixtures) -> Row {
 }
 
 fn rows_dataset(path: &Path, fixtures: &mut Fixtures) -> Row {
-    let db = Grafeno::open(path).unwrap();
+    let db = open_db(path);
     let ns = "rows";
     let count = n(300_000);
     let mut row = Row {
@@ -540,7 +593,7 @@ fn rows_dataset(path: &Path, fixtures: &mut Fixtures) -> Row {
 }
 
 fn graph(path: &Path, fixtures: &mut Fixtures) -> Row {
-    let db = Grafeno::open(path).unwrap();
+    let db = open_db(path);
     let ns = "graph";
     let nodes = n(50_000);
     let mut row = Row {
@@ -621,7 +674,7 @@ fn graph(path: &Path, fixtures: &mut Fixtures) -> Row {
 }
 
 fn hyperedges(path: &Path, fixtures: &mut Fixtures) -> Row {
-    let db = Grafeno::open(path).unwrap();
+    let db = open_db(path);
     let ns = "hyper";
     let nodes = n(20_000);
     let count = n(50_000);
@@ -681,7 +734,7 @@ fn hyperedges(path: &Path, fixtures: &mut Fixtures) -> Row {
 }
 
 fn memory(path: &Path, fixtures: &mut Fixtures) -> Row {
-    let db = std::sync::Arc::new(Grafeno::open(path).unwrap());
+    let db = std::sync::Arc::new(open_db(path));
     let ns = "agent";
     let count = n(10_000);
     let mut row = Row {
@@ -827,9 +880,9 @@ fn main() {
         ("memory", memory),
     ];
     println!(
-        "| dataset | records | load s | file MiB | stored MiB | fragmented MiB | after vacuum MiB | largest tables (MiB) |"
+        "| dataset | records | load s | compress s | file MiB | stored MiB | fragmented MiB | after vacuum MiB | largest tables (MiB) |"
     );
-    println!("| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |");
+    println!("| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |");
     for (name, build) in datasets {
         if !wanted(name) {
             continue;
@@ -837,10 +890,11 @@ fn main() {
         let path: PathBuf = dir.path().join(format!("{name}.redb"));
         let row = build(&path, &mut fixtures);
         println!(
-            "| {} | {} | {:.1} | {:.1} | {:.1} | {:.1} | {:.1} | {} |",
+            "| {} | {} | {:.1} | {:.1} | {:.1} | {:.1} | {:.1} | {:.1} | {} |",
             row.dataset,
             row.records,
             row.load_s,
+            row.compress_s,
             row.file_mib,
             row.stored_mib,
             row.fragmented_mib,
@@ -862,15 +916,16 @@ fn main() {
     }
     if let Ok(file) = std::env::var("CSV") {
         let mut csv = String::from(
-            "dataset,records,load_s,file_mib,stored_mib,fragmented_mib,vacuumed_mib,operation,p50_ms,p95_ms,p99_ms\n",
+            "dataset,records,load_s,compress_s,file_mib,stored_mib,fragmented_mib,vacuumed_mib,operation,p50_ms,p95_ms,p99_ms\n",
         );
         for row in &rows {
             for (what, (p50, p95, p99)) in &row.measures {
                 csv.push_str(&format!(
-                    "{},{},{:.2},{:.2},{:.2},{:.2},{:.2},\"{what}\",{p50:.4},{p95:.4},{p99:.4}\n",
+                    "{},{},{:.2},{:.2},{:.2},{:.2},{:.2},{:.2},\"{what}\",{p50:.4},{p95:.4},{p99:.4}\n",
                     row.dataset,
                     row.records,
                     row.load_s,
+                    row.compress_s,
                     row.file_mib,
                     row.stored_mib,
                     row.fragmented_mib,

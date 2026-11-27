@@ -31,6 +31,9 @@
 //! projection_cache_mb = 256  # graphs kept for algorithms
 //! vector_cache_mb = 128  # vectors decoded while inserting
 //!
+//! [storage]
+//! compression = "auto"   # compress values where it pays; "off" writes them as they are
+//!
 //! [changes]              # the change log, per namespace
 //! enabled = true
 //! max_entries = 1000000  # 0 for no limit
@@ -63,6 +66,7 @@
 //! compact_vectors_max = 50000 # 50 000 vectors
 //! compact_vectors_below_recall = 0  # or whose recall falls below (0: off)
 //! compact_vectors_every_secs = 300
+//! train_dictionaries_every_secs = 600  # train compression dictionaries (0: never)
 //! webhooks_to_private = false  # let webhooks reach this machine and
 //!                              # private networks
 //!
@@ -114,6 +118,9 @@ pub struct Config {
     pub query: QueryConfig,
     #[serde(default, skip_serializing_if = "MemoryConfig::is_empty")]
     pub memory: MemoryConfig,
+    /// How values are stored (phase 5 of the storage roadmap).
+    #[serde(default, skip_serializing_if = "StorageConfig::is_empty")]
+    pub storage: StorageConfig,
     #[serde(default, skip_serializing_if = "WriterConfig::is_empty")]
     pub writer: WriterConfig,
     #[serde(default, skip_serializing_if = "ChangesConfig::is_empty")]
@@ -367,6 +374,22 @@ impl MemoryConfig {
             vector_cache_bytes: bytes(self.vector_cache_mb, base.vector_cache_bytes),
             ..base
         }
+    }
+}
+
+/// `[storage]`.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StorageConfig {
+    /// `auto` (the default) compresses values where it pays; `off` writes
+    /// them as they are. Values written either way stay readable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compression: Option<grafeno::Compression>,
+}
+
+impl StorageConfig {
+    fn is_empty(&self) -> bool {
+        *self == Self::default()
     }
 }
 

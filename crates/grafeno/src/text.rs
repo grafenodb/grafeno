@@ -6,12 +6,15 @@
 use std::collections::HashMap;
 
 use grafeno_core::{NodeId, Result};
-use redb::{ReadableTable, WriteTransaction};
+use redb::{ReadableTable, TableHandle, WriteTransaction};
 use unicode_normalization::UnicodeNormalization;
 use unicode_normalization::char::is_combining_mark;
 
 use crate::Hit;
-use crate::store::{POSTINGS, PostingKey, RecordKey, TEXT_LENGTHS, TEXT_STATS, TEXTS, storage};
+use crate::compress::Packer;
+use crate::store::{
+    POSTINGS, PostingKey, RecordKey, TEXT_LENGTHS, TEXT_STATS, TEXT_VALUES, TEXTS, storage,
+};
 
 const MAX_TERM_CHARS: usize = 64;
 const K1: f32 = 1.2;
@@ -89,19 +92,7 @@ pub(crate) fn reindex_namespace(
     ns: &str,
     language: Option<Language>,
 ) -> Result<usize> {
-    let texts: Vec<(u128, String)> = {
-        let table = tx.open_table(TEXTS).map_err(storage)?;
-        let mut texts = Vec::new();
-        for item in table.range((ns, 0u128)..).map_err(storage)? {
-            let (key, value) = item.map_err(storage)?;
-            let (key_ns, id) = key.value();
-            if key_ns != ns {
-                break;
-            }
-            texts.push((id, value.value().to_owned()));
-        }
-        texts
-    };
+    let texts = texts_of(tx, ns)?;
     // Every posting of the namespace goes: they were made in another
     // language.
     {
@@ -194,8 +185,14 @@ pub(crate) fn term_frequencies(terms: &[String]) -> HashMap<&str, u32> {
 }
 
 /// Indexes `text` for `node`, replacing any previous text.
-pub(crate) fn index(tx: &WriteTransaction, ns: &str, node: NodeId, text: &str) -> Result<()> {
-    remove(tx, ns, node)?;
+pub(crate) fn index(
+    tx: &WriteTransaction,
+    packer: &Packer,
+    ns: &str,
+    node: NodeId,
+    text: &str,
+) -> Result<()> {
+    remove(tx, packer, ns, node)?;
     let id = node.as_u128();
     let terms = tokenize_in(language_of(tx, ns)?, text);
     let length = terms.len() as u32;
@@ -205,10 +202,7 @@ pub(crate) fn index(tx: &WriteTransaction, ns: &str, node: NodeId, text: &str) -
             .insert((ns, term, id), (frequency, length))
             .map_err(storage)?;
     }
-    tx.open_table(TEXTS)
-        .map_err(storage)?
-        .insert((ns, id), text)
-        .map_err(storage)?;
+    put(tx, packer, ns, id, text)?;
     tx.open_table(TEXT_LENGTHS)
         .map_err(storage)?
         .insert((ns, id), length)
@@ -221,22 +215,33 @@ pub(crate) fn index(tx: &WriteTransaction, ns: &str, node: NodeId, text: &str) -
 /// statistics are updated once. Much faster than one [`index`] per text.
 pub(crate) fn index_many(
     tx: &WriteTransaction,
+    packer: &Packer,
     ns: &str,
     texts: &[(NodeId, String)],
 ) -> Result<()> {
     // Only nodes that already have a text need the slow removal.
     let existing: Vec<NodeId> = {
         let table = tx.open_table(TEXTS).map_err(storage)?;
+        let values = packer
+            .values_exist()
+            .then(|| tx.open_table(TEXT_VALUES))
+            .transpose()
+            .map_err(storage)?;
         let mut existing = Vec::new();
         for (node, _) in texts {
-            if table.get((ns, node.as_u128())).map_err(storage)?.is_some() {
+            let key = (ns, node.as_u128());
+            let packed = match &values {
+                Some(values) => values.get(key).map_err(storage)?.is_some(),
+                None => false,
+            };
+            if packed || table.get(key).map_err(storage)?.is_some() {
                 existing.push(*node);
             }
         }
         existing
     };
     for node in existing {
-        remove(tx, ns, node)?;
+        remove(tx, packer, ns, node)?;
     }
     let language = language_of(tx, ns)?;
     let mut postings: Vec<(String, u128, u32, u32)> = Vec::new();
@@ -261,13 +266,9 @@ pub(crate) fn index_many(
     drop(table);
     let mut sorted: Vec<&(NodeId, String)> = texts.iter().collect();
     sorted.sort_unstable_by_key(|(node, _)| *node);
-    let mut table = tx.open_table(TEXTS).map_err(storage)?;
     for (node, text) in &sorted {
-        table
-            .insert((ns, node.as_u128()), text.as_str())
-            .map_err(storage)?;
+        put(tx, packer, ns, node.as_u128(), text)?;
     }
-    drop(table);
     lengths.sort_unstable();
     let mut table = tx.open_table(TEXT_LENGTHS).map_err(storage)?;
     for (id, length) in lengths {
@@ -278,17 +279,16 @@ pub(crate) fn index_many(
 }
 
 /// Removes the indexed text of `node`. Returns whether there was any.
-pub(crate) fn remove(tx: &WriteTransaction, ns: &str, node: NodeId) -> Result<bool> {
+pub(crate) fn remove(
+    tx: &WriteTransaction,
+    packer: &Packer,
+    ns: &str,
+    node: NodeId,
+) -> Result<bool> {
     let id = node.as_u128();
-    let mut texts = tx.open_table(TEXTS).map_err(storage)?;
-    let Some(text) = texts
-        .remove((ns, id))
-        .map_err(storage)?
-        .map(|guard| guard.value().to_owned())
-    else {
+    let Some(text) = take(tx, packer, ns, id)? else {
         return Ok(false);
     };
-    drop(texts);
     let terms = tokenize_in(language_of(tx, ns)?, &text);
     let mut postings = tx.open_table(POSTINGS).map_err(storage)?;
     for term in term_frequencies(&terms).keys() {
@@ -323,13 +323,103 @@ fn update_stats(tx: &WriteTransaction, ns: &str, documents: i64, terms: i64) -> 
 
 pub(crate) fn text(
     texts: &impl ReadableTable<RecordKey, &'static str>,
+    values: Option<&impl ReadableTable<RecordKey, &'static [u8]>>,
     ns: &str,
     node: NodeId,
 ) -> Result<Option<String>> {
+    let key = (ns, node.as_u128());
+    if let Some(values) = values
+        && let Some(guard) = values.get(key).map_err(storage)?
+    {
+        return crate::compress::text_of(guard.value()).map(Some);
+    }
     Ok(texts
-        .get((ns, node.as_u128()))
+        .get(key)
         .map_err(storage)?
         .map(|guard| guard.value().to_owned()))
+}
+
+/// Stores the text of `id`: in `text_values` with compression on, in
+/// `texts` with it off; never in both.
+pub(crate) fn put(
+    tx: &WriteTransaction,
+    packer: &Packer,
+    ns: &str,
+    id: u128,
+    text: &str,
+) -> Result<()> {
+    let mut texts = tx.open_table(TEXTS).map_err(storage)?;
+    match packer.text(ns, text) {
+        Some(bytes) => {
+            let mut values = tx.open_table(TEXT_VALUES).map_err(storage)?;
+            values.insert((ns, id), bytes.as_slice()).map_err(storage)?;
+            texts.remove((ns, id)).map_err(storage)?;
+        }
+        None => {
+            texts.insert((ns, id), text).map_err(storage)?;
+            if packer.values_exist() {
+                let mut values = tx.open_table(TEXT_VALUES).map_err(storage)?;
+                values.remove((ns, id)).map_err(storage)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Removes the stored text of `id` from whichever table holds it.
+pub(crate) fn take(
+    tx: &WriteTransaction,
+    packer: &Packer,
+    ns: &str,
+    id: u128,
+) -> Result<Option<String>> {
+    let plain = tx
+        .open_table(TEXTS)
+        .map_err(storage)?
+        .remove((ns, id))
+        .map_err(storage)?
+        .map(|guard| guard.value().to_owned());
+    if !packer.values_exist() {
+        return Ok(plain);
+    }
+    let packed = tx
+        .open_table(TEXT_VALUES)
+        .map_err(storage)?
+        .remove((ns, id))
+        .map_err(storage)?
+        .map(|guard| crate::compress::text_of(guard.value()))
+        .transpose()?;
+    Ok(packed.or(plain))
+}
+
+/// Every stored text of `ns`, in node order, from both tables.
+pub(crate) fn texts_of(tx: &WriteTransaction, ns: &str) -> Result<Vec<(u128, String)>> {
+    let values = crate::compress::has_table(tx, TEXT_VALUES.name())?;
+    let end = format!("{ns}\0");
+    let range = (ns, 0u128)..(end.as_str(), 0u128);
+    let mut out = Vec::new();
+    for item in tx
+        .open_table(TEXTS)
+        .map_err(storage)?
+        .range(range.clone())
+        .map_err(storage)?
+    {
+        let (key, value) = item.map_err(storage)?;
+        out.push((key.value().1, value.value().to_owned()));
+    }
+    if values {
+        for item in tx
+            .open_table(TEXT_VALUES)
+            .map_err(storage)?
+            .range(range)
+            .map_err(storage)?
+        {
+            let (key, value) = item.map_err(storage)?;
+            out.push((key.value().1, crate::compress::text_of(value.value())?));
+        }
+    }
+    out.sort_unstable_by_key(|(id, _)| *id);
+    Ok(out)
 }
 
 /// The `limit` best nodes for `query` by BM25, best first.
@@ -393,6 +483,7 @@ pub(crate) fn search(
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn check(
     texts: &impl ReadableTable<RecordKey, &'static str>,
+    values: Option<&impl ReadableTable<RecordKey, &'static [u8]>>,
     lengths: &impl ReadableTable<RecordKey, u32>,
     postings: &impl ReadableTable<PostingKey, (u32, u32)>,
     stats: &impl ReadableTable<&'static str, (u64, u64)>,
@@ -402,18 +493,13 @@ pub(crate) fn check(
     problems: &mut Vec<String>,
 ) -> Result<u64> {
     let (mut documents, mut total_terms, mut expected_postings) = (0u64, 0u64, 0u64);
-    for item in texts.range((ns, 0u128)..).map_err(storage)? {
-        let (key, value) = item.map_err(storage)?;
-        let (key_ns, id) = key.value();
-        if key_ns != ns {
-            break;
-        }
+    let mut one = |id: u128, text: &str, problems: &mut Vec<String>| -> Result<()> {
         let node = NodeId::from_u128(id);
         documents += 1;
         if !nodes.contains(&id) {
             problems.push(format!("text of missing node {node}"));
         }
-        let terms = tokenize_in(language, value.value());
+        let terms = tokenize_in(language, text);
         total_terms += terms.len() as u64;
         let frequencies = term_frequencies(&terms);
         expected_postings += frequencies.len() as u64;
@@ -435,6 +521,32 @@ pub(crate) fn check(
                     "posting {term:?} of node {node} is {stored:?}, expected {:?}",
                     (frequency, expected_length)
                 ));
+            }
+        }
+        Ok(())
+    };
+    let end = format!("{ns}\0");
+    let range = (ns, 0u128)..(end.as_str(), 0u128);
+    for item in texts.range(range.clone()).map_err(storage)? {
+        let (key, value) = item.map_err(storage)?;
+        one(key.value().1, value.value(), problems)?;
+    }
+    if let Some(values) = values {
+        for item in values.range(range).map_err(storage)? {
+            let (key, value) = item.map_err(storage)?;
+            let id = key.value().1;
+            if texts.get((ns, id)).map_err(storage)?.is_some() {
+                problems.push(format!(
+                    "node {} has its text stored twice",
+                    NodeId::from_u128(id)
+                ));
+            }
+            match crate::compress::text_of(value.value()) {
+                Ok(text) => one(id, &text, problems)?,
+                Err(error) => problems.push(format!(
+                    "the text of node {} does not decode: {error}",
+                    NodeId::from_u128(id)
+                )),
             }
         }
     }

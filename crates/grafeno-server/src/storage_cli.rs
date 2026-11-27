@@ -21,13 +21,31 @@ pub struct Request {
     pub batch_size: usize,
     pub backup: bool,
     pub json: bool,
+    pub retrain: bool,
 }
 
 fn open(path: &Path) -> Result<Grafeno, String> {
+    open_as(path, grafeno::Compression::Auto)
+}
+
+/// Going back to JSON, nothing the tool writes meanwhile may compress.
+fn open_for(path: &Path, request: &Request) -> Result<Grafeno, String> {
+    open_as(
+        path,
+        if request.encoding == Some(Encoding::Json) {
+            grafeno::Compression::Off
+        } else {
+            grafeno::Compression::Auto
+        },
+    )
+}
+
+fn open_as(path: &Path, compression: grafeno::Compression) -> Result<Grafeno, String> {
     Grafeno::open_with(
         path,
         &grafeno::OpenOptions {
             copy_before_upgrade: false,
+            compression,
             ..Default::default()
         },
     )
@@ -60,6 +78,7 @@ fn options(request: &Request) -> MigrationOptions {
         reindex: request.reindex,
         verify: request.verify,
         batch_size: request.batch_size,
+        retrain: request.retrain,
     }
 }
 
@@ -104,6 +123,7 @@ pub fn status(path: &Path, json: bool) -> Result<(), String> {
         .begin_read()
         .and_then(|r| r.migrations())
         .map_err(|e| e.to_string())?;
+    let dictionaries = db.dictionaries().map_err(|e| e.to_string())?;
     if json {
         let out = json!({
             "file_bytes": usage.file_bytes,
@@ -112,6 +132,8 @@ pub fn status(path: &Path, json: bool) -> Result<(), String> {
             "free_bytes": usage.free_bytes,
             "layout": usage.layout,
             "pending": pending,
+            "compression": db.compression(),
+            "dictionaries": dictionaries,
             "migrations": migrations,
         });
         println!(
@@ -134,6 +156,29 @@ pub fn status(path: &Path, json: bool) -> Result<(), String> {
     }
     for item in &pending {
         println!("pending: {}", item.detail);
+    }
+    println!(
+        "compression {}; {} dictionaries ({:.1} KiB)",
+        match db.compression() {
+            grafeno::Compression::Auto => "auto",
+            grafeno::Compression::Off => "off",
+        },
+        dictionaries.len(),
+        dictionaries.iter().map(|d| d.bytes).sum::<usize>() as f64 / 1024.0
+    );
+    for d in &dictionaries {
+        println!(
+            "  dictionary {} {:<24} {:<12} {:>6} bytes, {} samples",
+            d.id,
+            if d.namespace.is_empty() {
+                "(file)"
+            } else {
+                d.namespace.as_str()
+            },
+            format!("{:?}", d.kind).to_lowercase(),
+            d.bytes,
+            d.samples
+        );
     }
     for migration in &migrations {
         print_steps(migration);
@@ -162,9 +207,13 @@ pub fn plan(path: &Path, request: &Request) -> Result<(), String> {
             before.namespace, before.nodes, before.edges, before.hyperedges, before.digest
         );
     }
-    if request.encoding == Some(Encoding::Envelope) {
+    if matches!(
+        request.encoding,
+        Some(Encoding::Envelope | Encoding::Compressed)
+    ) {
         println!(
-            "Records in the envelope are read by this version and later ones only: an older Grafeno would refuse them (`--encoding json` turns them back)."
+            "Values in envelopes are read by this version and later ones only: the file becomes layout {}, which an older Grafeno refuses (`--encoding json` over the whole file turns it back).",
+            grafeno::SCHEMA_VERSION
         );
     }
     if request.compact {
@@ -178,7 +227,7 @@ pub fn plan(path: &Path, request: &Request) -> Result<(), String> {
 pub fn apply(path: &Path, request: &Request) -> Result<(), String> {
     let started = Instant::now();
     let closed_length = length(path);
-    let db = open(path)?;
+    let db = open_for(path, request)?;
     let before = closed(
         closed_length,
         db.storage_usage().map_err(|e| e.to_string())?,

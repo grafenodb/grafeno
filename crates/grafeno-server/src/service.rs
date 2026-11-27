@@ -107,6 +107,7 @@ impl ServerSettings {
                 .unwrap_or(http::QUEUE_WAIT),
             memory: grafeno::OpenOptions {
                 copy_before_upgrade: config.copy_before_upgrade.unwrap_or(true),
+                compression: config.storage.compression.unwrap_or_default(),
                 ..config.memory.options()
             },
             writer: config.writer.options(),
@@ -148,6 +149,9 @@ impl ServerSettings {
             "queue_requests": self.queue_requests,
             "queue_wait_ms": self.queue_wait.as_millis() as u64,
             "copy_before_upgrade": self.memory.copy_before_upgrade,
+            "storage": {
+                "compression": self.memory.compression,
+            },
             "query": {
                 "timeout_secs": secs(self.limits.timeout),
                 "max_reads": self.limits.max_reads,

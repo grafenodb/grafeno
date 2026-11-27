@@ -101,6 +101,12 @@ pub struct Writes {
 }
 
 impl Writes {
+    /// This member's own writer: for what is physical, not replicated
+    /// (storage migrations, compression dictionaries).
+    pub fn local(&self) -> &grafeno::Writer {
+        &self.local
+    }
+
     pub fn write<T: Send + 'static>(
         &self,
         f: impl Fn(&mut WriteTx) -> grafeno::Result<T> + Send + 'static,
@@ -3444,6 +3450,9 @@ pub struct StorageReport {
     pub namespaces: Option<Vec<grafeno::NamespaceUsage>>,
     /// Migrations waiting and space a compaction would give back.
     pub pending: Vec<grafeno::Pending>,
+    /// Whether writes compress values, and the dictionaries they use.
+    pub compression: grafeno::Compression,
+    pub dictionaries: Vec<grafeno::DictionaryInfo>,
 }
 
 /// The storage report of `db`, with every namespace's records if asked.
@@ -3463,6 +3472,8 @@ pub fn storage_report(db: &Grafeno, namespaces: bool) -> grafeno::Result<Storage
         usage,
         namespaces,
         pending,
+        compression: db.compression(),
+        dictionaries: db.dictionaries()?,
     })
 }
 

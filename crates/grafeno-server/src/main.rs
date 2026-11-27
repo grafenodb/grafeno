@@ -1022,10 +1022,16 @@ struct MigrateArgs {
     /// Rebuild every index (entries in key order).
     #[arg(long)]
     reindex_existing: bool,
-    /// Rewrite records into this encoding: `json` (what every version
-    /// reads) or `envelope` (read by this version and later ones).
-    #[arg(long, value_parser = ["json", "envelope"])]
+    /// Rewrite records, texts and logs into this encoding: `compressed`
+    /// (trains dictionaries first; what this version writes), `json` (what
+    /// earlier versions read: over the whole file it brings back the
+    /// layout before envelopes) or `envelope` (uncompressed envelopes).
+    #[arg(long, value_parser = ["compressed", "json", "envelope"])]
     encoding: Option<String>,
+    /// With `--encoding compressed`: train new dictionaries even where
+    /// there are some.
+    #[arg(long)]
+    retrain: bool,
     /// Pack the file afterwards (`vacuum --maximum`).
     #[arg(long)]
     compact: bool,
@@ -1064,8 +1070,10 @@ impl MigrateArgs {
             reindex: self.reindex_existing,
             encoding: self.encoding.as_deref().map(|e| match e {
                 "envelope" => grafeno::Encoding::Envelope,
+                "compressed" => grafeno::Encoding::Compressed,
                 _ => grafeno::Encoding::Json,
             }),
+            retrain: self.retrain,
             verify: self.verify,
             compact: self.compact,
             batch_size: self.batch_size,

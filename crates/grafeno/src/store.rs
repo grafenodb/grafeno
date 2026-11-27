@@ -143,6 +143,11 @@ pub(crate) const NODE_LABELS: TableDefinition<LabelKey, ()> = TableDefinition::n
 
 /// `(ns, node_id) -> text`: the indexed text of a node.
 pub(crate) const TEXTS: TableDefinition<RecordKey, &str> = TableDefinition::new("texts");
+/// `(ns, node) -> text in an envelope` (layout 20): texts written with
+/// compression on, compressed when it pays. A node's text is in one of
+/// `texts` and `text_values`, never both.
+pub(crate) const TEXT_VALUES: TableDefinition<RecordKey, &[u8]> =
+    TableDefinition::new("text_values");
 /// `(ns, node_id) -> number of terms` in the indexed text.
 pub(crate) const TEXT_LENGTHS: TableDefinition<RecordKey, u32> =
     TableDefinition::new("text_lengths");
@@ -180,48 +185,45 @@ pub(crate) fn decode<T: DeserializeOwned>(bytes: &[u8]) -> Result<T> {
 
 /// The first byte of a value in an envelope (docs/roadmap/
 /// STORAGE_AND_INDEXING_OPTIMIZATION.md, 6.1). JSON as `serde_json`
-/// writes it never starts below `0x20`, so a value is either an envelope
-/// or the JSON of earlier layouts, and both are read.
-pub(crate) const ENVELOPE: u8 = 0x01;
+/// writes it never starts below `0x20`, and a hyperedge's binary record
+/// starts with its format (1), so a value is either an envelope or what
+/// earlier layouts wrote, and both are read.
+pub(crate) const ENVELOPE: u8 = 0x1E;
 /// The envelope's version this build writes and reads.
 pub(crate) const ENVELOPE_VERSION: u8 = 1;
 /// The decoded size a value may claim: past it the envelope is corrupt.
 pub(crate) const MAX_DECODED: u64 = 1 << 30;
 
-/// How the payload of an envelope is stored.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Codec {
-    /// As it is.
-    Plain = 0,
-}
+pub(crate) use crate::compress::Codec;
 
-/// `json` in an envelope: tag, version, codec, the decoded length (varint),
-/// then the payload.
-pub(crate) fn envelope(json: &[u8], codec: Codec) -> Vec<u8> {
-    let mut out = Vec::with_capacity(json.len() + 8);
-    out.extend_from_slice(&[ENVELOPE, ENVELOPE_VERSION, codec as u8]);
-    put_varint(&mut out, json.len() as i64);
-    match codec {
-        Codec::Plain => out.extend_from_slice(json),
-    }
-    out
+/// `raw` in an envelope, uncompressed.
+pub(crate) fn envelope(raw: &[u8], codec: Codec) -> Vec<u8> {
+    debug_assert_eq!(codec, Codec::Plain);
+    crate::compress::envelope(raw, Codec::Plain, None, raw)
 }
 
 /// Whether a stored value is in an envelope.
 pub(crate) fn is_enveloped(bytes: &[u8]) -> bool {
-    bytes.first().is_some_and(|first| *first < 0x20)
+    bytes.first() == Some(&ENVELOPE)
 }
 
-/// The JSON a stored value holds: itself, or its envelope's payload once
-/// checked (tag, version, codec, length).
+/// What a stored value holds: itself, or its envelope's payload once
+/// checked (tag, version, codec, length) and decompressed.
 pub(crate) fn unwrap_envelope(bytes: &[u8]) -> Result<std::borrow::Cow<'_, [u8]>> {
-    if !is_enveloped(bytes) {
-        return Ok(std::borrow::Cow::Borrowed(bytes));
+    match bytes.first() {
+        Some(&ENVELOPE) => {}
+        // JSON, or a hyperedge's record: its reader knows it.
+        Some(first) if *first >= 0x20 || *first == 1 => {
+            return Ok(std::borrow::Cow::Borrowed(bytes));
+        }
+        None => return Ok(std::borrow::Cow::Borrowed(bytes)),
+        Some(_) => {
+            return Err(Error::Serialization(
+                "a stored value's envelope has an unknown tag".into(),
+            ));
+        }
     }
     let corrupt = |what: &str| Error::Serialization(format!("a stored value's envelope {what}"));
-    if bytes[0] != ENVELOPE {
-        return Err(corrupt("has an unknown tag"));
-    }
     match bytes.get(1) {
         Some(&ENVELOPE_VERSION) => {}
         Some(version) => {
@@ -241,9 +243,9 @@ pub(crate) fn unwrap_envelope(bytes: &[u8]) -> Result<std::borrow::Cow<'_, [u8]>
     match codec {
         0 if payload.len() as i64 == length => Ok(std::borrow::Cow::Borrowed(payload)),
         0 => Err(corrupt("does not hold the length it claims")),
-        other => Err(Error::Invalid(format!(
-            "a stored value is compressed with codec {other}, which this Grafeno does not read: upgrade Grafeno"
-        ))),
+        codec => {
+            crate::compress::unpack(codec, length as usize, payload).map(std::borrow::Cow::Owned)
+        }
     }
 }
 

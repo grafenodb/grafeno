@@ -70,7 +70,19 @@ use crate::{Hit, text, vector};
 ///     that writes its first hyperedge or declares an index or a rule on
 ///     them; until then it stays 18 ([`BASE_LAYOUT`]), which Grafeno 0.4
 ///     opens. It does not go back to 18 when they are deleted.
-pub const SCHEMA_VERSION: u64 = 19;
+/// 20. Values in envelopes, compressed with Zstandard and dictionaries
+///     (`dictionaries`), and texts in `text_values` (phase 5 of the storage
+///     roadmap). Like 19, a file is marked 20 only by the transaction that
+///     writes its first envelope; the layout it had is kept under
+///     `layout_before_envelopes`, and `grafeno storage apply --encoding
+///     json` over the whole file brings it back to it.
+pub const SCHEMA_VERSION: u64 = 20;
+
+/// The layout of a file that holds hyperedges (and no envelopes).
+pub const HYPEREDGE_LAYOUT: u64 = 19;
+
+/// The `meta` key keeping a file's layout before its first envelope.
+pub(crate) const LAYOUT_BEFORE_ENVELOPES: &str = "layout_before_envelopes";
 
 /// The layout of a file that has never held hyperedges: new files and
 /// upgraded ones get this one, and Grafeno 0.4 reads it.
@@ -101,6 +113,8 @@ pub struct OpenOptions {
     /// [`Grafeno::copy_before_upgrade`]), so the previous version of
     /// Grafeno can still open the data. On by default.
     pub copy_before_upgrade: bool,
+    /// Whether writes compress values (on: [`crate::Compression::Auto`]).
+    pub compression: crate::Compression,
 }
 
 /// The default page cache: 256 MiB.
@@ -113,6 +127,7 @@ impl Default for OpenOptions {
             projection_cache_bytes: crate::algo::DEFAULT_PROJECTION_CACHE,
             vector_cache_bytes: crate::vector::DEFAULT_VECTOR_CACHE,
             copy_before_upgrade: true,
+            compression: crate::Compression::Auto,
         }
     }
 }
@@ -305,7 +320,19 @@ impl Grafeno {
         self.shared
             .set_projection_budget(options.projection_cache_bytes);
         self.vector_cache = options.vector_cache_bytes;
+        self.shared.compression.set(options.compression);
         self
+    }
+
+    /// Whether writes compress values.
+    pub fn compression(&self) -> crate::Compression {
+        self.shared.compression.mode()
+    }
+
+    /// Turns compression of later writes on or off; values written either
+    /// way stay readable.
+    pub fn set_compression(&self, compression: crate::Compression) {
+        self.shared.compression.set(compression);
     }
 
     /// The bytes the projection cache holds now.
@@ -471,12 +498,17 @@ impl Grafeno {
             .get(crate::replication::ENABLED)
             .map_err(storage)?
             .is_some_and(|guard| guard.value() == 1);
-        tx.commit().map_err(storage)?;
         let shared: Arc<Shared> = Arc::default();
+        shared.compression.load(&tx)?;
+        shared
+            .compression
+            .layout_marked
+            .store(layout >= SCHEMA_VERSION, Ordering::Relaxed);
+        tx.commit().map_err(storage)?;
         shared.replication.store(replication, Ordering::Relaxed);
         shared
             .hyperedge_layout
-            .store(layout >= SCHEMA_VERSION, Ordering::Relaxed);
+            .store(layout >= HYPEREDGE_LAYOUT, Ordering::Relaxed);
         Ok(Self {
             db: Arc::new(db),
             eventual: AtomicBool::new(false),
@@ -524,6 +556,11 @@ impl Grafeno {
             inn: tx.open_table(ADJ_IN).map_err(storage)?,
             labels: tx.open_table(NODE_LABELS).map_err(storage)?,
             texts: tx.open_table(TEXTS).map_err(storage)?,
+            text_values: match tx.open_table(crate::store::TEXT_VALUES) {
+                Ok(table) => Some(table),
+                Err(redb::TableError::TableDoesNotExist(_)) => None,
+                Err(error) => return Err(storage(error)),
+            },
             text_lengths: tx.open_table(TEXT_LENGTHS).map_err(storage)?,
             postings: tx.open_table(POSTINGS).map_err(storage)?,
             text_stats: tx.open_table(TEXT_STATS).map_err(storage)?,
@@ -584,6 +621,7 @@ impl Grafeno {
             constraint_log: Vec::new(),
             deferred_rules: None,
             marked_hyperedge_layout: false,
+            wrote_envelope: std::cell::Cell::new(false),
             subscription_cache: None,
             log_changes: self.shared.changes.retention().enabled,
             pending_changes: crate::changes::Pending::default(),
@@ -627,7 +665,7 @@ impl Grafeno {
             .get(SCHEMA_KEY)
             .map_err(storage)?
             .map_or(0, |guard| guard.value());
-        // 18 until a file holds hyperedges, 19 after: both this layout.
+        // 18 until a file holds hyperedges, 19 after, 20 with envelopes.
         if !(BASE_LAYOUT..=SCHEMA_VERSION).contains(&version) {
             return Err(Error::Invalid(format!(
                 "the backup has layout version {version}, this Grafeno {BASE_LAYOUT} or {SCHEMA_VERSION}"
@@ -635,6 +673,7 @@ impl Grafeno {
         }
         let tx = self.db.begin_write().map_err(storage)?;
         let entries = crate::backup::restore_into(&from, &tx)?;
+        self.shared.compression.load(&tx)?;
         let replication = tx
             .open_table(META)
             .map_err(storage)?
@@ -648,6 +687,10 @@ impl Grafeno {
         // The data, and so the layout, are the backup's now.
         self.shared
             .hyperedge_layout
+            .store(version >= HYPEREDGE_LAYOUT, Ordering::Relaxed);
+        self.shared
+            .compression
+            .layout_marked
             .store(version >= SCHEMA_VERSION, Ordering::Relaxed);
         Ok(entries)
     }
@@ -933,6 +976,8 @@ pub struct ReadTx {
     pub(crate) inn: ReadOnlyTable<AdjKey, Adj>,
     pub(crate) labels: ReadOnlyTable<LabelKey, ()>,
     pub(crate) texts: ReadOnlyTable<RecordKey, &'static str>,
+    /// `None` in a file of a layout before 20.
+    pub(crate) text_values: Option<ReadOnlyTable<RecordKey, &'static [u8]>>,
     pub(crate) text_lengths: ReadOnlyTable<RecordKey, u32>,
     pub(crate) postings: ReadOnlyTable<PostingKey, (u32, u32)>,
     pub(crate) text_stats: ReadOnlyTable<&'static str, (u64, u64)>,
@@ -1273,7 +1318,9 @@ impl ReadTx {
                     for label in &node.labels {
                         *stats.node_labels.entry(label.clone()).or_default() += 1;
                     }
-                    stats.texts += u64::from(text::text(&self.texts, ns, node.id)?.is_some());
+                    stats.texts += u64::from(
+                        text::text(&self.texts, self.text_values.as_ref(), ns, node.id)?.is_some(),
+                    );
                     stats.vectors +=
                         u64::from(vector::embedding(&self.vectors, ns, node.id)?.is_some());
                 }
@@ -1331,7 +1378,7 @@ impl ReadTx {
         if self.view.is_some() && !self.sees(ns, id)? {
             return Ok(None);
         }
-        text::text(&self.texts, ns, id)
+        text::text(&self.texts, self.text_values.as_ref(), ns, id)
     }
 
     /// The stored (normalized) embedding of a node.
@@ -1523,6 +1570,9 @@ pub struct WriteTx {
     /// This transaction marked the file layout 19: it is not known to the
     /// others until it commits.
     pub(crate) marked_hyperedge_layout: bool,
+    /// This transaction wrote a value in an envelope: the file becomes
+    /// layout 20 when it commits.
+    pub(crate) wrote_envelope: std::cell::Cell<bool>,
     /// The event subscriptions of a namespace, read once (16.10).
     pub(crate) subscription_cache: Option<(String, Arc<Vec<crate::subscriptions::Subscription>>)>,
     /// Whether commits append to the change log.
@@ -1693,8 +1743,15 @@ impl WriteTx {
             self.commit_at = Some(at);
         }
         let touched = self.write_changes()?;
+        let marking = self.mark_envelope_layout()?;
         let Self { tx, shared, .. } = self;
         shared.committing(|| tx.commit().map_err(storage))?;
+        if marking {
+            shared
+                .compression
+                .layout_marked
+                .store(true, Ordering::Relaxed);
+        }
         if !touched.is_empty() {
             shared.changes.notify(&touched);
         }
@@ -1740,7 +1797,12 @@ impl WriteTx {
     /// The indexed text of a node, as written so far in this transaction.
     pub fn text(&self, ns: &str, id: NodeId) -> Result<Option<String>> {
         let table = self.tx.open_table(TEXTS).map_err(storage)?;
-        text::text(&table, ns, id)
+        let values = self
+            .values_exist()
+            .then(|| self.tx.open_table(crate::store::TEXT_VALUES))
+            .transpose()
+            .map_err(storage)?;
+        text::text(&table, values.as_ref(), ns, id)
     }
 
     /// The stored (normalized) embedding of a node, as written so far in
@@ -1826,10 +1888,10 @@ impl WriteTx {
         self.note(Touch::Vector(ns.to_owned(), id.as_u128()));
         let changed_text = match text {
             Some(text) => {
-                text::index(&self.tx, ns, id, text)?;
+                text::index(&self.tx, &self.packer(), ns, id, text)?;
                 true
             }
-            None => text::remove(&self.tx, ns, id)?,
+            None => text::remove(&self.tx, &self.packer(), ns, id)?,
         };
         let changed_embedding = match embedding {
             Some(embedding) => {
@@ -1913,7 +1975,7 @@ impl WriteTx {
     pub fn set_text(&mut self, ns: &str, id: NodeId, text: &str) -> Result<()> {
         self.node_to_change(ns, id)?;
         self.note(Touch::Text(ns.to_owned(), id.as_u128()));
-        text::index(&self.tx, ns, id, text)?;
+        text::index(&self.tx, &self.packer(), ns, id, text)?;
         self.log_node_part(ns, id, Part::Text)
     }
 
@@ -1924,7 +1986,7 @@ impl WriteTx {
             self.node_to_change(ns, *node)?;
             self.note(Touch::Text(ns.to_owned(), node.as_u128()));
         }
-        text::index_many(&self.tx, ns, texts)?;
+        text::index_many(&self.tx, &self.packer(), ns, texts)?;
         for (node, _) in texts {
             self.log_node_part(ns, *node, Part::Text)?;
         }
@@ -1937,7 +1999,7 @@ impl WriteTx {
             self.guard_node_for(crate::Act::Update, ns, &node)?;
         }
         self.note(Touch::Text(ns.to_owned(), id.as_u128()));
-        let removed = text::remove(&self.tx, ns, id)?;
+        let removed = text::remove(&self.tx, &self.packer(), ns, id)?;
         if removed {
             self.log_node_part(ns, id, Part::Text)?;
         }
@@ -2011,7 +2073,7 @@ impl WriteTx {
         for touch in [Touch::Text, Touch::Vector, Touch::Memory] {
             self.note(touch(ns.to_owned(), id.as_u128()));
         }
-        text::remove(&self.tx, ns, id)?;
+        text::remove(&self.tx, &self.packer(), ns, id)?;
         vector::remove(&self.tx, &mut self.vectors, ns, id)?;
         self.tx
             .open_table(MEMORY)
@@ -2202,7 +2264,7 @@ impl WriteTx {
         node: &Node,
         previous: Option<&Node>,
     ) -> Result<()> {
-        let bytes = encode(node)?;
+        let bytes = self.pack(ns, crate::compress::StoredKind::Node, encode(node)?);
         let id = node.id.as_u128();
         self.note(Touch::Node(ns.to_owned(), id));
         self.tx
@@ -2279,7 +2341,7 @@ impl WriteTx {
     /// Writes the edge record and its adjacency entries (no counters).
     pub(crate) fn put_edge(&mut self, ns: &str, edge: &Edge) -> Result<()> {
         self.note(Touch::Edge(ns.to_owned(), edge.id.as_u128()));
-        let bytes = encode(edge)?;
+        let bytes = self.pack(ns, crate::compress::StoredKind::Edge, encode(edge)?);
         let (from, to, id) = (edge.from.as_u128(), edge.to.as_u128(), edge.id.as_u128());
         let label = edge.label.as_str();
         let previous: Option<Edge> = self

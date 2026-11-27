@@ -227,6 +227,18 @@ pub(crate) fn restore_into(from: &ReadTransaction, to: &WriteTransaction) -> Res
         crate::hyperedge::HYPEREDGE_INCIDENCE,
         crate::hyperedge::HYPEREDGE_LABELS,
     );
+    // Tables of layout 20: a backup of an earlier layout has none.
+    macro_rules! replace_if_present {
+        ($($table:expr),* $(,)?) => {$(
+            to.delete_table($table).map_err(storage)?;
+            match from.open_table($table) {
+                Ok(_) => entries += copy(from, to, $table)?,
+                Err(redb::TableError::TableDoesNotExist(_)) => {}
+                Err(error) => return Err(storage(error)),
+            }
+        )*};
+    }
+    replace_if_present!(crate::compress::DICTIONARIES, crate::store::TEXT_VALUES);
     Ok(entries)
 }
 
@@ -281,6 +293,8 @@ impl ReadTx {
                 crate::hyperedge::HYPEREDGES.name(),
                 crate::hyperedge::HYPEREDGE_INCIDENCE.name(),
                 crate::hyperedge::HYPEREDGE_LABELS.name(),
+                crate::compress::DICTIONARIES.name(),
+                crate::store::TEXT_VALUES.name(),
             ];
             for table in from.list_tables().map_err(storage)? {
                 if !known.contains(&table.name()) {
@@ -328,6 +342,14 @@ impl ReadTx {
             entries += copy(from, &tx, crate::hyperedge::HYPEREDGES)?;
             entries += copy(from, &tx, crate::hyperedge::HYPEREDGE_INCIDENCE)?;
             entries += copy(from, &tx, crate::hyperedge::HYPEREDGE_LABELS)?;
+            // Tables of layout 20, in files that have them.
+            for table in from.list_tables().map_err(storage)? {
+                if table.name() == crate::compress::DICTIONARIES.name() {
+                    entries += copy(from, &tx, crate::compress::DICTIONARIES)?;
+                } else if table.name() == crate::store::TEXT_VALUES.name() {
+                    entries += copy(from, &tx, crate::store::TEXT_VALUES)?;
+                }
+            }
             tx.commit().map_err(storage)?;
             drop(db);
             Ok((entries, known.len()))

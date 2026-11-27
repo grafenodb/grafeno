@@ -624,12 +624,12 @@ impl WriteTx {
             .get(crate::db::SCHEMA_KEY)
             .map_err(storage)?
             .map_or(crate::db::BASE_LAYOUT, |guard| guard.value());
-        if stored >= crate::SCHEMA_VERSION {
+        if stored >= crate::HYPEREDGE_LAYOUT {
             // Committed before: no need to look again.
             self.shared.hyperedge_layout.store(true, Ordering::Relaxed);
         } else {
             // Only once this commits does a later transaction learn it.
-            meta.insert(crate::db::SCHEMA_KEY, crate::SCHEMA_VERSION)
+            meta.insert(crate::db::SCHEMA_KEY, crate::HYPEREDGE_LAYOUT)
                 .map_err(storage)?;
             self.marked_hyperedge_layout = true;
         }
@@ -669,7 +669,11 @@ impl WriteTx {
         };
         self.log_hyperedge(ns, edge, op);
         let label = edge.label.as_str();
-        let bytes = crate::hyperedge_codec::encode(edge)?;
+        let bytes = self.pack(
+            ns,
+            crate::compress::StoredKind::HyperEdge,
+            crate::hyperedge_codec::encode(edge)?,
+        );
         self.tx
             .open_table(HYPEREDGES)
             .map_err(storage)?

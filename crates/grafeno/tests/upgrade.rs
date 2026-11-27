@@ -7,6 +7,18 @@ use std::path::PathBuf;
 
 use grafeno::{Direction, EdgeFilter, Grafeno, NewNode, NodeId, Timestamp};
 
+/// These tests are about layouts 18 and 19: without compression, which
+/// takes a file to 20 (`tests/compression.rs`).
+fn open_plain(path: &std::path::Path) -> grafeno::Result<Grafeno> {
+    Grafeno::open_with(
+        path,
+        &grafeno::OpenOptions {
+            compression: grafeno::Compression::Off,
+            ..grafeno::OpenOptions::default()
+        },
+    )
+}
+
 const NS: &str = "fixture";
 
 /// Decompresses the fixture of `version` into a temporary file.
@@ -199,7 +211,7 @@ fn every_past_layout_upgrades() {
         let path = fixture(version);
         assert_eq!(Grafeno::file_layout(&path).unwrap(), Some(version));
         {
-            let db = Grafeno::open(&path).unwrap_or_else(|e| panic!("v{version}: {e}"));
+            let db = open_plain(&path).unwrap_or_else(|e| panic!("v{version}: {e}"));
             verify(&db, version);
             // No hyperedges yet (layout 19): the reads answer empty.
             let read = db.begin_read().unwrap();
@@ -228,7 +240,7 @@ fn every_past_layout_upgrades() {
             Some(grafeno::BASE_LAYOUT)
         );
         // Reopening upgrades nothing more and loses nothing.
-        let db = Grafeno::open(&path).unwrap();
+        let db = open_plain(&path).unwrap();
         let read = db.begin_read().unwrap();
         assert_eq!(read.stats(NS).unwrap().nodes, 42, "v{version}");
         // One more entry than the fixture wrote (none before layout 12).
@@ -285,7 +297,7 @@ fn every_past_layout_upgrades() {
         // The hyperedge made it layout 19.
         assert_eq!(
             Grafeno::file_layout(&path).unwrap(),
-            Some(grafeno::SCHEMA_VERSION)
+            Some(grafeno::HYPEREDGE_LAYOUT)
         );
         assert_eq!(grafeno::upgrade_copies(&path), copies);
         std::fs::remove_file(&path).unwrap();
@@ -300,7 +312,7 @@ fn the_copy_before_an_upgrade() {
     // A new file and a current one are not copied.
     let path = std::env::temp_dir().join(format!("grafeno-copy-{}.redb", NodeId::new()));
     assert_eq!(Grafeno::file_layout(&path).unwrap(), None);
-    drop(Grafeno::open(&path).unwrap());
+    drop(open_plain(&path).unwrap());
     assert_eq!(Grafeno::copy_before_upgrade(&path).unwrap(), None);
     assert!(grafeno::upgrade_copies(&path).is_empty());
     std::fs::remove_file(&path).unwrap();
@@ -335,14 +347,16 @@ fn fresh(name: &str) -> std::path::PathBuf {
 
 #[test]
 fn layout_19_only_once_hyperedges_are_used() {
-    use grafeno::{BASE_LAYOUT, Constraint, IndexDef, NewHyperEdge, SCHEMA_VERSION};
+    use grafeno::{
+        BASE_LAYOUT, Constraint, HYPEREDGE_LAYOUT as SCHEMA_VERSION, IndexDef, NewHyperEdge,
+    };
     let layout = |path: &std::path::Path| Grafeno::file_layout(path).unwrap();
 
     // A new file, with nodes and edges and every other feature: 18, which
     // Grafeno 0.4 opens.
     let path = fresh("layout");
     let (a, b) = {
-        let db = Grafeno::open(&path).unwrap();
+        let db = open_plain(&path).unwrap();
         let ids = db
             .write(|tx| {
                 let a = tx.create_node(NS, NewNode::new("Person").text("Ana"))?;
@@ -361,11 +375,11 @@ fn layout_19_only_once_hyperedges_are_used() {
     };
     assert_eq!(layout(&path), Some(BASE_LAYOUT));
     // Reopening keeps it 18 and makes no copy.
-    drop(Grafeno::open(&path).unwrap());
+    drop(open_plain(&path).unwrap());
     assert_eq!(layout(&path), Some(BASE_LAYOUT));
     assert!(grafeno::upgrade_copies(&path).is_empty());
     {
-        let db = Grafeno::open(&path).unwrap();
+        let db = open_plain(&path).unwrap();
         db.write(|tx| tx.create_hyperedge(NS, NewHyperEdge::new("pair").node(a).node(b)))
             .unwrap();
         // Later writes find it marked.
@@ -375,7 +389,7 @@ fn layout_19_only_once_hyperedges_are_used() {
     assert_eq!(layout(&path), Some(SCHEMA_VERSION));
     // Deleting them does not take it back.
     {
-        let db = Grafeno::open(&path).unwrap();
+        let db = open_plain(&path).unwrap();
         db.write(|tx| {
             for id in tx.hyperedge_ids(NS, None, 10)? {
                 tx.delete_hyperedge(NS, id)?;
@@ -391,7 +405,7 @@ fn layout_19_only_once_hyperedges_are_used() {
     for kind in ["index", "rule"] {
         let path = fresh(kind);
         {
-            let db = Grafeno::open(&path).unwrap();
+            let db = open_plain(&path).unwrap();
             db.write(|tx| {
                 if kind == "index" {
                     tx.create_index(NS, IndexDef::on_hyperedges("pair", &["k"]))
@@ -438,12 +452,12 @@ fn layout_19_only_once_hyperedges_are_used() {
         .unwrap();
     let path = fresh("member");
     {
-        let member = Grafeno::open(&path).unwrap();
+        let member = open_plain(&path).unwrap();
         member.apply_entries(&entries[..1]).unwrap();
     }
     assert_eq!(layout(&path), Some(BASE_LAYOUT));
     {
-        let member = Grafeno::open(&path).unwrap();
+        let member = open_plain(&path).unwrap();
         member.apply_entries(&entries[1..]).unwrap();
     }
     assert_eq!(layout(&path), Some(SCHEMA_VERSION));
@@ -452,7 +466,7 @@ fn layout_19_only_once_hyperedges_are_used() {
 
 #[test]
 fn a_snapshot_brings_its_own_layout() {
-    use grafeno::{BASE_LAYOUT, NewHyperEdge, SCHEMA_VERSION};
+    use grafeno::{BASE_LAYOUT, HYPEREDGE_LAYOUT as SCHEMA_VERSION, NewHyperEdge};
     // A backup of a file without hyperedges (layout 18).
     let plain = Grafeno::in_memory().unwrap();
     let (a, b) = plain
@@ -471,7 +485,7 @@ fn a_snapshot_brings_its_own_layout() {
     // hyperedge marks it 19 once more.
     let path = fresh("receiver");
     {
-        let member = Grafeno::open(&path).unwrap();
+        let member = open_plain(&path).unwrap();
         let (x, y) = member
             .write(|tx| {
                 Ok((
@@ -493,7 +507,7 @@ fn a_snapshot_brings_its_own_layout() {
     // Restored and closed without a hyperedge, it stays 18.
     let path2 = fresh("receiver-two");
     {
-        let member = Grafeno::open(&path2).unwrap();
+        let member = open_plain(&path2).unwrap();
         let (x, y) = member
             .write(|tx| {
                 Ok((

@@ -15,6 +15,9 @@ serde.workspace = true
 serde_json.workspace = true
 unicode-normalization.workspace = true
 quick-xml = "0.42"
+# Zstandard (the reference library, built from C like mimalloc): values
+# compressed with dictionaries (docs/roadmap/STORAGE_AND_INDEXING_OPTIMIZATION.md, phase 5).
+zstd = { version = "0.14", default-features = false, features = ["zdict_builder"] }
 # Snowball stemmers, for a namespace's language (English, Spanish).
 rust-stemmers = "1.2"
 

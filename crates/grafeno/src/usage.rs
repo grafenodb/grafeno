@@ -184,6 +184,16 @@ impl ReadTx {
             usage.texts += 1;
             usage.text_bytes += value.value().len() as u64;
         }
+        if let Some(values) = &self.text_values {
+            for item in values
+                .range((ns, 0u128)..(end.as_str(), 0u128))
+                .map_err(storage)?
+            {
+                let (_, value) = item.map_err(storage)?;
+                usage.texts += 1;
+                usage.text_bytes += value.value().len() as u64;
+            }
+        }
         for item in self
             .vectors
             .range((ns, 0u128)..(end.as_str(), 0u128))

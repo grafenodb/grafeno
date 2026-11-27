@@ -575,6 +575,8 @@ pub(crate) struct Shared {
     /// Whether the file's committed layout is 19 (it holds hyperedges, or
     /// was told to): known once, so writes stop checking.
     pub(crate) hyperedge_layout: std::sync::atomic::AtomicBool,
+    /// What writes compress values with (phase 5 of the storage roadmap).
+    pub(crate) compression: crate::compress::State,
 }
 
 impl Default for Shared {
@@ -594,6 +596,7 @@ impl Default for Shared {
                 crate::hyperedge::DEFAULT_MAX_PARTICIPANTS,
             ),
             hyperedge_layout: std::sync::atomic::AtomicBool::new(false),
+            compression: crate::compress::State::default(),
         }
     }
 }

@@ -423,7 +423,11 @@ impl WriteTx {
             change.seq = seq;
             change.at = now;
             table
-                .insert((ns.as_str(), seq), encode(&change)?.as_slice())
+                .insert(
+                    (ns.as_str(), seq),
+                    self.pack(&ns, crate::compress::StoredKind::Change, encode(&change)?)
+                        .as_slice(),
+                )
                 .map_err(storage)?;
             last.insert(ns, seq);
         }

@@ -28,6 +28,7 @@ mod audit;
 mod backup;
 mod changes;
 mod check;
+mod compress;
 mod constraints;
 mod db;
 mod dump;
@@ -68,12 +69,13 @@ pub use access::{
 pub use backup::{BackupStats, Vacuumed};
 pub use changes::{Change, ChangeOp, ChangePage, Part, Retention};
 pub use check::{CheckReport, CompactReport, RebuildReport, VectorHealth};
+pub use compress::{Compression, DictionaryInfo, StoredKind, TrainOptions};
 pub use constraints::{
     Action, Constraint, ConstraintEvent, HistoryEntry, OnConflict, PropertyType, Scope,
 };
 pub use db::{
-    Actor, BASE_LAYOUT, DEFAULT_CACHE, Durability, FileIntegrity, Grafeno, OpenOptions, ReadTx,
-    SCHEMA_VERSION, WriteTx, upgrade_copies, upgrade_copy_path,
+    Actor, BASE_LAYOUT, DEFAULT_CACHE, Durability, FileIntegrity, Grafeno, HYPEREDGE_LAYOUT,
+    OpenOptions, ReadTx, SCHEMA_VERSION, WriteTx, upgrade_copies, upgrade_copy_path,
 };
 pub use dump::{DumpStats, EXPORT_FORMAT, EXPORT_VERSION, ImportOptions, Record};
 pub use find::{Cmp, Filter, Find, FindPage, IndexPosition, MAX_FIND_LIMIT, OrderBy, ValueKind};

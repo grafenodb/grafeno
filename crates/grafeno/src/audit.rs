@@ -247,7 +247,11 @@ impl WriteTx {
         self.tx
             .open_table(AUDIT)
             .map_err(storage)?
-            .insert(seq, encode(&record)?.as_slice())
+            .insert(
+                seq,
+                self.pack("", crate::compress::StoredKind::Audit, encode(&record)?)
+                    .as_slice(),
+            )
             .map_err(storage)?;
         self.prune_audit(seq, record.at)?;
         Ok(seq)

@@ -23,16 +23,16 @@
 //! migrates its own file. The registry lives with the file, in the state
 //! store, under a name no namespace can have.
 
-use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use grafeno_core::{Error, Result, Timestamp};
-use redb::ReadableTable;
+use redb::{ReadableTable, ReadableTableMetadata};
 use serde::{Deserialize, Serialize};
 
+use crate::compress::StoredKind;
 use crate::db::{Grafeno, ReadTx, WriteTx};
-use crate::store::{Codec, envelope, is_enveloped, storage, unwrap_envelope};
+use crate::store::{Codec, RecordKey, envelope, is_enveloped, storage, unwrap_envelope};
 
 /// Where the registry is kept in the state store.
 pub(crate) const MIGRATIONS_NS: &str = "\u{1}migrations";
@@ -46,9 +46,13 @@ pub enum Encoding {
     /// what every earlier build reads.
     #[default]
     Json,
-    /// The versioned envelope (its payload JSON, uncompressed for now):
-    /// read by this build and later ones only.
+    /// The versioned envelope, uncompressed: read by this build and later
+    /// ones only.
     Envelope,
+    /// Compressed where it pays (Zstandard, with a dictionary per
+    /// namespace and kind of value, trained first): what this build writes
+    /// with compression on.
+    Compressed,
 }
 
 /// What a migration should do.
@@ -69,12 +73,19 @@ pub struct MigrationOptions {
     /// Records per transaction (10,000 when 0).
     #[serde(default)]
     pub batch_size: usize,
+    /// With [`Encoding::Compressed`]: train new dictionaries even where
+    /// there are some.
+    #[serde(default)]
+    pub retrain: bool,
 }
 
 /// What a step does.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum StepKind {
+    /// Train the dictionaries the namespace (or the file's logs) has none
+    /// of yet.
+    Train,
     Reencode,
     Reindex,
     Verify,
@@ -127,6 +138,10 @@ pub struct Migration {
     /// Per namespace: nodes, edges and hyperedges, and a digest of their
     /// logical values, when the plan was made.
     pub before: Vec<NamespaceDigest>,
+    /// The file's layout once finished (a migration back to JSON of the
+    /// whole file brings back the one before envelopes).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub layout_after: Option<u64>,
 }
 
 /// What a namespace held when a plan was made.
@@ -151,32 +166,134 @@ pub struct RunControl {
     pub exclusive: bool,
 }
 
-/// The tables a reencode step goes through, and their names.
-const RECORD_TABLES: [(
-    &str,
-    redb::TableDefinition<'static, crate::store::RecordKey, &'static [u8]>,
-); 3] = [
-    ("nodes", crate::store::NODES),
-    ("edges", crate::store::EDGES),
-    ("hyperedges", crate::hyperedge::HYPEREDGES),
-];
+/// The tables a reencode step goes through: a namespace's records, texts
+/// and change log, or (the step of namespace "") the file's logs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Slot {
+    Nodes,
+    Edges,
+    HyperEdges,
+    Texts,
+    TextValues,
+    Changes,
+    Audit,
+    Replication,
+}
+
+impl Slot {
+    const NAMESPACE: [Slot; 6] = [
+        Slot::Nodes,
+        Slot::Edges,
+        Slot::HyperEdges,
+        Slot::Texts,
+        Slot::TextValues,
+        Slot::Changes,
+    ];
+    const FILE: [Slot; 2] = [Slot::Audit, Slot::Replication];
+
+    fn name(self) -> &'static str {
+        match self {
+            Slot::Nodes => "nodes",
+            Slot::Edges => "edges",
+            Slot::HyperEdges => "hyperedges",
+            Slot::Texts => "texts",
+            Slot::TextValues => "text_values",
+            Slot::Changes => "changes",
+            Slot::Audit => "audit",
+            Slot::Replication => "replication_log",
+        }
+    }
+
+    fn kind(self) -> StoredKind {
+        match self {
+            Slot::Nodes => StoredKind::Node,
+            Slot::Edges => StoredKind::Edge,
+            Slot::HyperEdges => StoredKind::HyperEdge,
+            Slot::Texts | Slot::TextValues => StoredKind::Text,
+            Slot::Changes => StoredKind::Change,
+            Slot::Audit => StoredKind::Audit,
+            Slot::Replication => StoredKind::Replication,
+        }
+    }
+
+    fn records(self) -> Option<redb::TableDefinition<'static, RecordKey, &'static [u8]>> {
+        match self {
+            Slot::Nodes => Some(crate::store::NODES),
+            Slot::Edges => Some(crate::store::EDGES),
+            Slot::HyperEdges => Some(crate::hyperedge::HYPEREDGES),
+            _ => None,
+        }
+    }
+
+    fn sequence(self) -> Option<redb::TableDefinition<'static, u64, &'static [u8]>> {
+        match self {
+            Slot::Audit => Some(crate::audit::AUDIT),
+            Slot::Replication => Some(crate::replication::REPLICATION_LOG),
+            _ => None,
+        }
+    }
+}
 
 fn decode_migration(bytes: &[u8]) -> Result<Migration> {
     serde_json::from_slice(bytes).map_err(|e| Error::Serialization(e.to_string()))
 }
 
-/// Whether a stored record is in `encoding`.
-fn in_encoding(bytes: &[u8], encoding: Encoding) -> bool {
-    is_enveloped(bytes) == (encoding == Encoding::Envelope)
+/// The codec of a stored value's envelope, `None` without one.
+fn codec_of(bytes: &[u8]) -> Option<u8> {
+    is_enveloped(bytes).then(|| bytes.get(2).copied().unwrap_or(0))
 }
 
-/// `bytes` in `encoding`.
-fn reencoded(bytes: &[u8], encoding: Encoding) -> Result<Vec<u8>> {
-    let json = unwrap_envelope(bytes)?;
-    Ok(match encoding {
-        Encoding::Json => json.into_owned(),
-        Encoding::Envelope => envelope(&json, Codec::Plain),
-    })
+/// Whether a stored value may need rewriting into `encoding` (for the
+/// plan's estimate: a compressed one is rewritten when it was not
+/// compressed with a dictionary).
+fn may_need(bytes: &[u8], encoding: Encoding) -> bool {
+    match (encoding, codec_of(bytes)) {
+        (Encoding::Json, codec) => codec.is_some(),
+        (Encoding::Envelope, codec) => codec != Some(0),
+        (Encoding::Compressed, codec) => codec != Some(3),
+    }
+}
+
+/// `raw` (a value's decoded bytes) as `encoding` stores it in `tx`.
+fn target(
+    tx: &WriteTx,
+    ns: &str,
+    kind: StoredKind,
+    raw: &[u8],
+    encoding: Encoding,
+    always: bool,
+) -> Vec<u8> {
+    match encoding {
+        Encoding::Json => raw.to_vec(),
+        Encoding::Envelope => {
+            tx.wrote_envelope();
+            envelope(raw, Codec::Plain)
+        }
+        Encoding::Compressed => {
+            let (bytes, enveloped) =
+                tx.shared
+                    .compression
+                    .pack_as(ns, kind, raw.to_vec(), always, true);
+            if enveloped {
+                tx.wrote_envelope();
+            }
+            bytes
+        }
+    }
+}
+
+/// A stable 64-bit hash (FNV-1a), for digests kept in the file.
+fn fnv(parts: &[&[u8]]) -> u64 {
+    let mut hash = 0xcbf2_9ce4_8422_2325u64;
+    for part in parts {
+        for byte in *part {
+            hash ^= u64::from(*byte);
+            hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        hash ^= 0xFF;
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    hash
 }
 
 impl ReadTx {
@@ -188,58 +305,156 @@ impl ReadTx {
             .collect()
     }
 
-    /// What a namespace holds, with a digest of its records' values.
+    /// What a namespace holds, with a digest of its records', texts' and
+    /// change log entries' decoded values (the same whatever encoding
+    /// stores them).
     pub fn namespace_digest(&self, ns: &str) -> Result<NamespaceDigest> {
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        let end = format!("{ns}\0");
+        let records = (ns, 0u128)..(end.as_str(), 0u128);
+        let mut digest = 0u64;
         let mut counts = [0u64; 3];
-        for (slot, (_, table)) in RECORD_TABLES.iter().enumerate() {
-            let table = self.tx.open_table(*table).map_err(storage)?;
-            let end = format!("{ns}\0");
-            for item in table
-                .range((ns, 0u128)..(end.as_str(), 0u128))
-                .map_err(storage)?
-            {
+        let mut add = |slot: u8, key: &[u8], value: &[u8]| {
+            digest = digest.wrapping_add(fnv(&[&[slot], key, value]));
+        };
+        for (at, slot) in [Slot::Nodes, Slot::Edges, Slot::HyperEdges]
+            .into_iter()
+            .enumerate()
+        {
+            let table = self
+                .tx
+                .open_table(slot.records().expect("a record table"))
+                .map_err(storage)?;
+            for item in table.range(records.clone()).map_err(storage)? {
                 let (key, value) = item.map_err(storage)?;
-                counts[slot] += 1;
-                key.value().1.hash(&mut hasher);
-                let json: serde_json::Value = crate::store::decode(value.value())?;
-                serde_json::to_vec(&json)
-                    .map_err(|e| Error::Serialization(e.to_string()))?
-                    .hash(&mut hasher);
+                counts[at] += 1;
+                add(
+                    at as u8,
+                    &key.value().1.to_le_bytes(),
+                    &unwrap_envelope(value.value())?,
+                );
             }
+        }
+        for item in self.texts.range(records.clone()).map_err(storage)? {
+            let (key, value) = item.map_err(storage)?;
+            add(3, &key.value().1.to_le_bytes(), value.value().as_bytes());
+        }
+        if let Some(values) = &self.text_values {
+            for item in values.range(records.clone()).map_err(storage)? {
+                let (key, value) = item.map_err(storage)?;
+                add(
+                    3,
+                    &key.value().1.to_le_bytes(),
+                    &unwrap_envelope(value.value())?,
+                );
+            }
+        }
+        let changes = self
+            .tx
+            .open_table(crate::changes::CHANGES)
+            .map_err(storage)?;
+        for item in changes
+            .range((ns, 0u64)..=(ns, u64::MAX))
+            .map_err(storage)?
+        {
+            let (key, value) = item.map_err(storage)?;
+            add(
+                4,
+                &key.value().1.to_le_bytes(),
+                &unwrap_envelope(value.value())?,
+            );
         }
         Ok(NamespaceDigest {
             namespace: ns.to_owned(),
             nodes: counts[0],
             edges: counts[1],
             hyperedges: counts[2],
-            digest: format!("{:016x}", hasher.finish()),
+            digest: format!("{digest:016x}"),
         })
     }
 
-    /// Records of `ns` not stored in `encoding`, from a sample of up to
-    /// `sample` per table, scaled to the table's records: an estimate.
+    /// Values of `ns` (or the file's logs, for "") that may need rewriting
+    /// into `encoding`, from a sample of up to `sample` per table, scaled
+    /// to the table's values: an estimate.
     fn records_to_reencode(&self, ns: &str, encoding: Encoding, sample: usize) -> Result<u64> {
+        let end = format!("{ns}\0");
+        let records = (ns, 0u128)..(end.as_str(), 0u128);
         let mut total = 0u64;
-        for (_, table) in RECORD_TABLES {
-            let table = self.tx.open_table(table).map_err(storage)?;
-            let end = format!("{ns}\0");
+        let count = |values: &mut dyn Iterator<Item = Result<Vec<u8>>>| -> Result<u64> {
             let (mut seen, mut other, mut all) = (0usize, 0usize, 0u64);
-            for item in table
-                .range((ns, 0u128)..(end.as_str(), 0u128))
-                .map_err(storage)?
-            {
-                let (_, value) = item.map_err(storage)?;
+            for value in values {
+                let value = value?;
                 all += 1;
                 if seen < sample {
                     seen += 1;
-                    if !in_encoding(value.value(), encoding) {
-                        other += 1;
-                    }
+                    other += usize::from(may_need(&value, encoding));
                 }
             }
-            if seen > 0 {
-                total += (all as f64 * other as f64 / seen as f64).round() as u64;
+            Ok(if seen > 0 {
+                (all as f64 * other as f64 / seen as f64).round() as u64
+            } else {
+                0
+            })
+        };
+        let slots: &[Slot] = if ns.is_empty() {
+            &Slot::FILE
+        } else {
+            &Slot::NAMESPACE
+        };
+        for slot in slots {
+            match slot {
+                Slot::Texts => {
+                    if encoding != Encoding::Json {
+                        // Every text there moves to `text_values`.
+                        total += self.texts.range(records.clone()).map_err(storage)?.count() as u64;
+                    }
+                }
+                Slot::TextValues => {
+                    if let Some(values) = &self.text_values {
+                        if encoding == Encoding::Json {
+                            // Every text there moves back to `texts`.
+                            total += values.range(records.clone()).map_err(storage)?.count() as u64;
+                        } else {
+                            total += count(
+                                &mut values.range(records.clone()).map_err(storage)?.map(|item| {
+                                    let (_, value) = item.map_err(storage)?;
+                                    Ok(value.value().to_vec())
+                                }),
+                            )?;
+                        }
+                    }
+                }
+                Slot::Changes => {
+                    let table = self
+                        .tx
+                        .open_table(crate::changes::CHANGES)
+                        .map_err(storage)?;
+                    total += count(
+                        &mut table
+                            .range((ns, 0u64)..=(ns, u64::MAX))
+                            .map_err(storage)?
+                            .map(|item| {
+                                let (_, value) = item.map_err(storage)?;
+                                Ok(value.value().to_vec())
+                            }),
+                    )?;
+                }
+                slot => {
+                    if let Some(definition) = slot.records() {
+                        let table = self.tx.open_table(definition).map_err(storage)?;
+                        total += count(&mut table.range(records.clone()).map_err(storage)?.map(
+                            |item| {
+                                let (_, value) = item.map_err(storage)?;
+                                Ok(value.value().to_vec())
+                            },
+                        ))?;
+                    } else if let Some(definition) = slot.sequence() {
+                        let table = self.tx.open_table(definition).map_err(storage)?;
+                        total += count(&mut table.iter().map_err(storage)?.map(|item| {
+                            let (_, value) = item.map_err(storage)?;
+                            Ok(value.value().to_vec())
+                        }))?;
+                    }
+                }
             }
         }
         Ok(total)
@@ -283,8 +498,15 @@ impl Grafeno {
                 error: None,
                 result: None,
             };
+            // Dictionaries first: what the steps after it write uses them.
+            if options.encoding == Some(Encoding::Compressed) {
+                steps.push(step(
+                    StepKind::Train,
+                    self.kinds_to_train(ns, options.retrain) as u64,
+                ));
+            }
             // Rebuilding writes records the way every write does: it goes
-            // first, so that the reencoding after it stays.
+            // before the reencoding, so that what that writes stays.
             if options.reindex {
                 steps.push(step(StepKind::Reindex, read.index_defs(ns)?.len() as u64));
             }
@@ -300,6 +522,31 @@ impl Grafeno {
             }
             before.push(digest);
         }
+        // The file's logs (audit, replication), with the whole file.
+        if let Some(encoding) = options.encoding
+            && options.namespaces.is_empty()
+        {
+            let step = |kind, estimate| MigrationStep {
+                kind,
+                namespace: String::new(),
+                estimate,
+                state: MigrationState::Pending,
+                done: 0,
+                cursor: None,
+                error: None,
+                result: None,
+            };
+            if encoding == Encoding::Compressed {
+                steps.push(step(
+                    StepKind::Train,
+                    self.kinds_to_train("", options.retrain) as u64,
+                ));
+            }
+            steps.push(step(
+                StepKind::Reencode,
+                read.records_to_reencode("", encoding, 1_000)?,
+            ));
+        }
         let now = Timestamp::now();
         Ok(Migration {
             id: format!("m{:x}", now.as_micros()),
@@ -311,7 +558,18 @@ impl Grafeno {
             state: MigrationState::Pending,
             steps,
             before,
+            layout_after: None,
         })
+    }
+
+    /// The kinds of values of `ns` ("" for the file's logs) a train step
+    /// would train a dictionary for, at most.
+    fn kinds_to_train(&self, ns: &str, retrain: bool) -> usize {
+        StoredKind::ALL
+            .into_iter()
+            .filter(|kind| kind.global() == ns.is_empty())
+            .filter(|kind| retrain || !self.shared.compression.has_dictionary(ns, *kind))
+            .count()
     }
 
     /// Records a plan so that it can be run (and resumed).
@@ -423,10 +681,22 @@ fn run(
                     }
                 }
             }
+            // Dictionaries are trained on a snapshot, outside the write;
+            // the batch stores them, and writes use them once committed.
+            let trained = if migration.steps[index].kind == StepKind::Train {
+                db.train_for(&migration.steps[index].namespace, migration.options.retrain)?
+            } else {
+                Vec::new()
+            };
+            let adopting = trained.clone();
             let current = migration.clone();
             let encoding = current.options.encoding.unwrap_or_default();
             let work: Work = Arc::new(move |tx: &mut WriteTx| {
                 let mut migration = current.clone();
+                if migration.steps[index].kind == StepKind::Train {
+                    tx.save_dictionaries(&trained)?;
+                    migration.steps[index].done = trained.len() as u64;
+                }
                 let finished = migration_batch(tx, &mut migration, index, batch, encoding);
                 let finished = match finished {
                     Ok(finished) => finished,
@@ -442,6 +712,7 @@ fn run(
                 Ok(finished)
             });
             let finished = commit(&work)?;
+            db.adopt_dictionaries(&adopting);
             batches += 1;
             migration = db
                 .migration(id)?
@@ -454,6 +725,26 @@ fn run(
             }
         }
     }
+    // Back to JSON, the whole file, with no write compressing meanwhile:
+    // the layout before envelopes comes back.
+    if migration.options.encoding == Some(Encoding::Json)
+        && migration.options.namespaces.is_empty()
+        && db.compression() == crate::Compression::Off
+    {
+        match db.write(|tx| tx.leave_envelope_layout())? {
+            Ok(_) => db.shared.compression.forget(),
+            Err(why) => {
+                if let Some(step) = migration.steps.last_mut() {
+                    let note = format!("the layout stays {}: {why}", crate::SCHEMA_VERSION);
+                    step.result = Some(match &step.result {
+                        Some(result) => format!("{result}; {note}"),
+                        None => note,
+                    });
+                }
+            }
+        }
+    }
+    migration.layout_after = Some(db.layout()?);
     migration.state = MigrationState::Completed;
     migration.updated_at = Timestamp::now();
     let done = migration.clone();
@@ -483,6 +774,8 @@ fn migration_batch(
         }
         // Checked in `run`, on a snapshot: here it only records the result.
         StepKind::Verify => true,
+        // Stored by the batch before this.
+        StepKind::Train => true,
     };
     let step = &mut migration.steps[index];
     if finished {
@@ -532,7 +825,9 @@ fn verify(
     Ok(result)
 }
 
-/// Rewrites up to `batch` records of `ns` after the step's cursor.
+/// Rewrites up to `batch` values of `ns` (the file's logs for "") after the
+/// step's cursor. Every value written is decoded again and compared with
+/// what it held, in the same transaction.
 fn reencode_batch(
     tx: &mut WriteTx,
     step: &mut MigrationStep,
@@ -540,71 +835,375 @@ fn reencode_batch(
     batch: usize,
     encoding: Encoding,
 ) -> Result<bool> {
-    let (mut table_name, mut after) = match &step.cursor {
-        Some((table, id)) => (
-            table.clone(),
+    let tx: &WriteTx = tx;
+    let slots: &[Slot] = if ns.is_empty() {
+        &Slot::FILE
+    } else {
+        &Slot::NAMESPACE
+    };
+    let (mut at, mut after) = match &step.cursor {
+        Some((table, key)) => (
+            slots.iter().position(|s| s.name() == table).unwrap_or(0),
             Some(
-                u128::from_str_radix(id, 16)
+                u128::from_str_radix(key, 16)
                     .map_err(|_| Error::Serialization("a migration's cursor".into()))?,
             ),
         ),
-        None => (RECORD_TABLES[0].0.to_owned(), None),
+        None => (0, None),
     };
     let mut left = batch;
-    let mut slot = RECORD_TABLES
-        .iter()
-        .position(|(name, _)| *name == table_name)
-        .unwrap_or(0);
-    while slot < RECORD_TABLES.len() {
-        let (name, definition) = RECORD_TABLES[slot];
-        let mut table = tx.tx.open_table(definition).map_err(storage)?;
-        let end = format!("{ns}\0");
-        let lower = match after {
-            Some(id) => std::ops::Bound::Excluded((ns, id)),
-            None => std::ops::Bound::Included((ns, 0u128)),
+    while at < slots.len() {
+        let slot = slots[at];
+        let (rewritten, last) = match slot {
+            Slot::Texts => texts_batch(tx, ns, after, &mut left, encoding)?,
+            Slot::TextValues => text_values_batch(tx, ns, after, &mut left, encoding)?,
+            Slot::Changes => changes_batch(tx, ns, after, &mut left, encoding)?,
+            slot if slot.records().is_some() => {
+                records_batch(tx, slot, ns, after, &mut left, encoding)?
+            }
+            slot => sequence_batch(tx, slot, after, &mut left, encoding)?,
         };
-        let upper = std::ops::Bound::Excluded((end.as_str(), 0u128));
-        let mut pending: Vec<(u128, Vec<u8>)> = Vec::new();
-        let mut last = None;
-        for item in table.range((lower, upper)).map_err(storage)? {
-            let (key, value) = item.map_err(storage)?;
-            let id = key.value().1;
-            last = Some(id);
-            if !in_encoding(value.value(), encoding) {
-                pending.push((id, value.value().to_vec()));
-            }
-            left -= 1;
-            if left == 0 {
-                break;
-            }
-        }
-        for (id, old) in &pending {
-            let new = reencoded(old, encoding)?;
-            // The same value, decoded: or nothing is written.
-            let before: serde_json::Value = crate::store::decode(old)?;
-            let after_value: serde_json::Value = crate::store::decode(&new)?;
-            if before != after_value {
-                return Err(Error::Invalid(format!(
-                    "record {id:032x} of {ns} would not read the same reencoded"
-                )));
-            }
-            table.insert((ns, *id), new.as_slice()).map_err(storage)?;
-        }
-        step.done += pending.len() as u64;
+        step.done += rewritten;
         if left == 0 {
-            step.cursor = last.map(|id| (name.to_owned(), format!("{id:032x}")));
+            step.cursor = last.map(|key| (slot.name().to_owned(), format!("{key:032x}")));
             return Ok(false);
         }
-        slot += 1;
+        at += 1;
         after = None;
-        table_name = RECORD_TABLES
-            .get(slot)
-            .map(|(n, _)| (*n).to_owned())
-            .unwrap_or_default();
         step.cursor = None;
     }
-    let _ = table_name;
     Ok(true)
+}
+
+fn same(raw: &[u8], new: &[u8], what: &str) -> Result<()> {
+    if unwrap_envelope(new)?.as_ref() != raw {
+        return Err(Error::Invalid(format!(
+            "{what} would not read the same reencoded"
+        )));
+    }
+    Ok(())
+}
+
+type Batch = (u64, Option<u128>);
+
+fn lower_bound<K>(after: Option<u128>, key: impl Fn(u128) -> K, first: K) -> std::ops::Bound<K> {
+    match after {
+        Some(id) => std::ops::Bound::Excluded(key(id)),
+        None => std::ops::Bound::Included(first),
+    }
+}
+
+fn records_batch(
+    tx: &WriteTx,
+    slot: Slot,
+    ns: &str,
+    after: Option<u128>,
+    left: &mut usize,
+    encoding: Encoding,
+) -> Result<Batch> {
+    let mut table = tx
+        .tx
+        .open_table(slot.records().expect("a record table"))
+        .map_err(storage)?;
+    let end = format!("{ns}\0");
+    let lower = lower_bound(after, |id| (ns, id), (ns, 0u128));
+    let upper = std::ops::Bound::Excluded((end.as_str(), 0u128));
+    let mut pending: Vec<(u128, Vec<u8>, Vec<u8>)> = Vec::new();
+    let mut last = None;
+    for item in table.range((lower, upper)).map_err(storage)? {
+        let (key, value) = item.map_err(storage)?;
+        let id = key.value().1;
+        last = Some(id);
+        let raw = unwrap_envelope(value.value())?.into_owned();
+        let new = target(tx, ns, slot.kind(), &raw, encoding, false);
+        if new != value.value() {
+            pending.push((id, raw, new));
+        }
+        *left -= 1;
+        if *left == 0 {
+            break;
+        }
+    }
+    for (id, raw, new) in &pending {
+        same(raw, new, &format!("record {id:032x} of {ns}"))?;
+        table.insert((ns, *id), new.as_slice()).map_err(storage)?;
+    }
+    Ok((pending.len() as u64, last))
+}
+
+/// Texts in `texts`: into `text_values` unless going back to JSON.
+fn texts_batch(
+    tx: &WriteTx,
+    ns: &str,
+    after: Option<u128>,
+    left: &mut usize,
+    encoding: Encoding,
+) -> Result<Batch> {
+    if encoding == Encoding::Json {
+        return Ok((0, None));
+    }
+    let mut texts = tx.tx.open_table(crate::store::TEXTS).map_err(storage)?;
+    let end = format!("{ns}\0");
+    let lower = lower_bound(after, |id| (ns, id), (ns, 0u128));
+    let upper = std::ops::Bound::Excluded((end.as_str(), 0u128));
+    let mut moving: Vec<(u128, Vec<u8>, Vec<u8>)> = Vec::new();
+    let mut last = None;
+    for item in texts.range((lower, upper)).map_err(storage)? {
+        let (key, value) = item.map_err(storage)?;
+        let id = key.value().1;
+        last = Some(id);
+        let raw = value.value().as_bytes().to_vec();
+        let new = target(
+            tx,
+            ns,
+            StoredKind::Text,
+            &raw,
+            encoding,
+            encoding == Encoding::Envelope,
+        );
+        // Not worth compressing: it stays where it is.
+        if is_enveloped(&new) {
+            moving.push((id, raw, new));
+        }
+        *left -= 1;
+        if *left == 0 {
+            break;
+        }
+    }
+    if moving.is_empty() {
+        return Ok((0, last));
+    }
+    let mut values = tx
+        .tx
+        .open_table(crate::store::TEXT_VALUES)
+        .map_err(storage)?;
+    for (id, raw, new) in &moving {
+        same(raw, new, &format!("the text of {id:032x} in {ns}"))?;
+        values.insert((ns, *id), new.as_slice()).map_err(storage)?;
+        texts.remove((ns, *id)).map_err(storage)?;
+    }
+    Ok((moving.len() as u64, last))
+}
+
+/// Texts in `text_values`: rewritten, or back into `texts` for JSON.
+fn text_values_batch(
+    tx: &WriteTx,
+    ns: &str,
+    after: Option<u128>,
+    left: &mut usize,
+    encoding: Encoding,
+) -> Result<Batch> {
+    if !crate::compress::has_table(&tx.tx, redb::TableHandle::name(&crate::store::TEXT_VALUES))? {
+        return Ok((0, None));
+    }
+    let mut values = tx
+        .tx
+        .open_table(crate::store::TEXT_VALUES)
+        .map_err(storage)?;
+    let end = format!("{ns}\0");
+    let lower = lower_bound(after, |id| (ns, id), (ns, 0u128));
+    let upper = std::ops::Bound::Excluded((end.as_str(), 0u128));
+    let mut pending: Vec<(u128, Vec<u8>, Vec<u8>)> = Vec::new();
+    let mut last = None;
+    for item in values.range((lower, upper)).map_err(storage)? {
+        let (key, value) = item.map_err(storage)?;
+        let id = key.value().1;
+        last = Some(id);
+        let raw = unwrap_envelope(value.value())?.into_owned();
+        let new = if encoding == Encoding::Json {
+            raw.clone()
+        } else {
+            target(
+                tx,
+                ns,
+                StoredKind::Text,
+                &raw,
+                encoding,
+                encoding == Encoding::Envelope,
+            )
+        };
+        if !is_enveloped(&new) || new != value.value() {
+            pending.push((id, raw, new));
+        }
+        *left -= 1;
+        if *left == 0 {
+            break;
+        }
+    }
+    let mut texts = tx.tx.open_table(crate::store::TEXTS).map_err(storage)?;
+    for (id, raw, new) in &pending {
+        if is_enveloped(new) {
+            same(raw, new, &format!("the text of {id:032x} in {ns}"))?;
+            values.insert((ns, *id), new.as_slice()).map_err(storage)?;
+        } else {
+            // Back to `texts`, as it is.
+            let text = std::str::from_utf8(raw)
+                .map_err(|_| Error::Serialization("a stored text is not UTF-8".into()))?;
+            texts.insert((ns, *id), text).map_err(storage)?;
+            values.remove((ns, *id)).map_err(storage)?;
+        }
+    }
+    Ok((pending.len() as u64, last))
+}
+
+fn changes_batch(
+    tx: &WriteTx,
+    ns: &str,
+    after: Option<u128>,
+    left: &mut usize,
+    encoding: Encoding,
+) -> Result<Batch> {
+    let mut table = tx.tx.open_table(crate::changes::CHANGES).map_err(storage)?;
+    let lower = lower_bound(after, |seq| (ns, seq as u64), (ns, 0u64));
+    let upper = std::ops::Bound::Included((ns, u64::MAX));
+    let mut pending: Vec<(u64, Vec<u8>, Vec<u8>)> = Vec::new();
+    let mut last = None;
+    for item in table.range((lower, upper)).map_err(storage)? {
+        let (key, value) = item.map_err(storage)?;
+        let seq = key.value().1;
+        last = Some(u128::from(seq));
+        let raw = unwrap_envelope(value.value())?.into_owned();
+        let new = target(tx, ns, StoredKind::Change, &raw, encoding, false);
+        if new != value.value() {
+            pending.push((seq, raw, new));
+        }
+        *left -= 1;
+        if *left == 0 {
+            break;
+        }
+    }
+    for (seq, raw, new) in &pending {
+        same(raw, new, &format!("change {seq} of {ns}"))?;
+        table.insert((ns, *seq), new.as_slice()).map_err(storage)?;
+    }
+    Ok((pending.len() as u64, last))
+}
+
+fn sequence_batch(
+    tx: &WriteTx,
+    slot: Slot,
+    after: Option<u128>,
+    left: &mut usize,
+    encoding: Encoding,
+) -> Result<Batch> {
+    let mut table = tx
+        .tx
+        .open_table(slot.sequence().expect("a log table"))
+        .map_err(storage)?;
+    let lower = lower_bound(after, |seq| seq as u64, 0u64);
+    let mut pending: Vec<(u64, Vec<u8>, Vec<u8>)> = Vec::new();
+    let mut last = None;
+    for item in table
+        .range((lower, std::ops::Bound::Unbounded))
+        .map_err(storage)?
+    {
+        let (key, value) = item.map_err(storage)?;
+        let seq = key.value();
+        last = Some(u128::from(seq));
+        let raw = unwrap_envelope(value.value())?.into_owned();
+        let new = target(tx, "", slot.kind(), &raw, encoding, false);
+        if new != value.value() {
+            pending.push((seq, raw, new));
+        }
+        *left -= 1;
+        if *left == 0 {
+            break;
+        }
+    }
+    for (seq, raw, new) in &pending {
+        same(raw, new, &format!("entry {seq} of {}", slot.name()))?;
+        table.insert(*seq, new.as_slice()).map_err(storage)?;
+    }
+    Ok((pending.len() as u64, last))
+}
+
+impl WriteTx {
+    /// After a migration back to JSON of the whole file: when no value is
+    /// left in an envelope, the tables of layout 20 go and the file gets
+    /// back the layout it had, which earlier releases open. Returns the
+    /// layout, or why it stays.
+    pub(crate) fn leave_envelope_layout(&mut self) -> Result<std::result::Result<u64, String>> {
+        for slot in [Slot::Nodes, Slot::Edges, Slot::HyperEdges] {
+            let table = self
+                .tx
+                .open_table(slot.records().expect("records"))
+                .map_err(storage)?;
+            for item in table.iter().map_err(storage)? {
+                let (_, value) = item.map_err(storage)?;
+                if is_enveloped(value.value()) {
+                    return Ok(Err(format!(
+                        "{} still holds values in envelopes",
+                        slot.name()
+                    )));
+                }
+            }
+        }
+        for definition in [crate::audit::AUDIT, crate::replication::REPLICATION_LOG] {
+            let table = self.tx.open_table(definition).map_err(storage)?;
+            for item in table.iter().map_err(storage)? {
+                let (_, value) = item.map_err(storage)?;
+                if is_enveloped(value.value()) {
+                    return Ok(Err("a log still holds values in envelopes".into()));
+                }
+            }
+        }
+        let changes = self
+            .tx
+            .open_table(crate::changes::CHANGES)
+            .map_err(storage)?;
+        for item in changes.iter().map_err(storage)? {
+            let (_, value) = item.map_err(storage)?;
+            if is_enveloped(value.value()) {
+                return Ok(Err("the change log still holds values in envelopes".into()));
+            }
+        }
+        drop(changes);
+        let values = redb::TableHandle::name(&crate::store::TEXT_VALUES);
+        if crate::compress::has_table(&self.tx, values)? {
+            if self
+                .tx
+                .open_table(crate::store::TEXT_VALUES)
+                .map_err(storage)?
+                .len()
+                .map_err(storage)?
+                > 0
+            {
+                return Ok(Err("text_values still holds texts".into()));
+            }
+            self.tx
+                .delete_table(crate::store::TEXT_VALUES)
+                .map_err(storage)?;
+        }
+        if crate::compress::has_table(
+            &self.tx,
+            redb::TableHandle::name(&crate::compress::DICTIONARIES),
+        )? {
+            self.tx
+                .delete_table(crate::compress::DICTIONARIES)
+                .map_err(storage)?;
+        }
+        let hyperedges = self
+            .tx
+            .open_table(crate::hyperedge::HYPEREDGES)
+            .map_err(storage)?
+            .len()
+            .map_err(storage)?
+            > 0;
+        let mut meta = self.tx.open_table(crate::store::META).map_err(storage)?;
+        let before = meta
+            .remove(crate::db::LAYOUT_BEFORE_ENVELOPES)
+            .map_err(storage)?
+            .map_or(crate::BASE_LAYOUT, |guard| guard.value());
+        let layout = if hyperedges {
+            before.max(crate::HYPEREDGE_LAYOUT)
+        } else {
+            before
+        }
+        .min(crate::HYPEREDGE_LAYOUT);
+        meta.insert(crate::db::SCHEMA_KEY, layout)
+            .map_err(storage)?;
+        Ok(Ok(layout))
+    }
 }
 
 impl WriteTx {
@@ -628,8 +1227,9 @@ impl WriteTx {
 /// Something the storage could do, or a migration that waits.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct Pending {
-    /// `migration` (paused, in progress, failed), `compact` (free pages),
-    /// `pack` (space lost inside pages).
+    /// `migration` (paused, in progress, failed), `train` (namespaces
+    /// without compression dictionaries), `compact` (free pages), `pack`
+    /// (space lost inside pages).
     pub kind: String,
     pub detail: String,
     /// How many bytes it would give back at most, when it is space.
@@ -657,6 +1257,33 @@ impl Grafeno {
                 detail: format!("migration {} {what}", migration.id),
                 bytes: None,
             });
+        }
+        if self.compression() == crate::Compression::Auto {
+            let read = self.begin_read()?;
+            let mut waiting = Vec::new();
+            for info in read.namespaces()? {
+                if read.stats(&info.name)?.nodes >= 1_000
+                    && !self
+                        .shared
+                        .compression
+                        .has_dictionary(&info.name, StoredKind::Node)
+                {
+                    waiting.push(info.name);
+                }
+            }
+            if !waiting.is_empty() {
+                let shown: Vec<&str> = waiting.iter().take(3).map(String::as_str).collect();
+                out.push(Pending {
+                    kind: "train".into(),
+                    detail: format!(
+                        "{} namespace(s) have no compression dictionaries yet ({}{}): a server trains them in the background; `grafeno storage apply --encoding compressed` also rewrites what is stored",
+                        waiting.len(),
+                        shown.join(", "),
+                        if waiting.len() > 3 { ", …" } else { "" }
+                    ),
+                    bytes: None,
+                });
+            }
         }
         let usage = self.storage_usage()?;
         // The file as it was before opening: what redb added when it

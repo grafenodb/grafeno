@@ -758,7 +758,15 @@ impl WriteTx {
         self.tx
             .open_table(REPLICATION_LOG)
             .map_err(storage)?
-            .insert(index, encode(&entry)?.as_slice())
+            .insert(
+                index,
+                self.pack(
+                    "",
+                    crate::compress::StoredKind::Replication,
+                    encode(&entry)?,
+                )
+                .as_slice(),
+            )
             .map_err(storage)?;
         Ok(Some(at))
     }
@@ -809,7 +817,11 @@ impl WriteTx {
         self.tx
             .open_table(REPLICATION_LOG)
             .map_err(storage)?
-            .insert(index, encode(entry)?.as_slice())
+            .insert(
+                index,
+                self.pack("", crate::compress::StoredKind::Replication, encode(entry)?)
+                    .as_slice(),
+            )
             .map_err(storage)?;
         Ok(true)
     }
@@ -849,9 +861,9 @@ impl WriteTx {
             Op::Text { ns, id, text } => {
                 if self.text(ns, *id)? != *text {
                     match text {
-                        Some(text) => crate::text::index(&self.tx, ns, *id, text)?,
+                        Some(text) => crate::text::index(&self.tx, &self.packer(), ns, *id, text)?,
                         None => {
-                            crate::text::remove(&self.tx, ns, *id)?;
+                            crate::text::remove(&self.tx, &self.packer(), ns, *id)?;
                         }
                     }
                     self.log_node_part(ns, *id, crate::changes::Part::Text)?;
@@ -1086,7 +1098,11 @@ impl WriteTx {
                 match change {
                     Some(change) => {
                         table
-                            .insert((ns.as_str(), *seq), encode(change)?.as_slice())
+                            .insert(
+                                (ns.as_str(), *seq),
+                                self.pack(ns, crate::compress::StoredKind::Change, encode(change)?)
+                                    .as_slice(),
+                            )
                             .map_err(storage)?;
                     }
                     None => {
@@ -1260,13 +1276,24 @@ impl ReadTx {
             )?;
         }
         drop(hyperedges);
+        let mut texts: Vec<(u128, String)> = Vec::new();
         for item in self.texts.range(records.clone()).map_err(storage)? {
             let (key, value) = item.map_err(storage)?;
+            texts.push((key.value().1, value.value().to_owned()));
+        }
+        if let Some(values) = &self.text_values {
+            for item in values.range(records.clone()).map_err(storage)? {
+                let (key, value) = item.map_err(storage)?;
+                texts.push((key.value().1, crate::compress::text_of(value.value())?));
+            }
+        }
+        texts.sort_unstable_by_key(|(id, _)| *id);
+        for (id, text) in texts {
             push(
                 Op::Text {
                     ns: owned(ns),
-                    id: NodeId::from_u128(key.value().1),
-                    text: Some(value.value().to_owned()),
+                    id: NodeId::from_u128(id),
+                    text: Some(text),
                 },
                 &mut ops,
             )?;

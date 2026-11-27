@@ -63,8 +63,9 @@ fn a_dry_run_changes_nothing_and_says_what_would() {
         .iter()
         .find(|s| s.kind == StepKind::Reencode && s.namespace == "a")
         .unwrap();
-    // 2,500 nodes and 2,499 edges are all in JSON.
-    assert_eq!(reencode.estimate, 4_999);
+    // 2,500 nodes, 2,499 edges, their 4,999 change log entries and 2,500
+    // texts.
+    assert_eq!(reencode.estimate, 12_498);
     assert_eq!(plan.before[0].nodes, 2_500);
     // Unknown namespaces are refused.
     let missing = MigrationOptions {
@@ -133,8 +134,8 @@ fn an_interrupted_migration_resumes_to_the_same_result() {
         .iter()
         .find(|s| s.kind == StepKind::Reencode && s.namespace == "a")
         .unwrap();
-    // Every record rewritten once, none twice.
-    assert_eq!(a.done, 4_999);
+    // Every record, text and change log entry rewritten once, none twice.
+    assert_eq!(a.done, 12_498);
     assert!(
         done.steps
             .iter()

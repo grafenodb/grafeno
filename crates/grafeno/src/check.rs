@@ -6,7 +6,7 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-use grafeno_core::{Edge, Node, NodeId, Result};
+use grafeno_core::{Edge, EdgeId, Node, NodeId, Result};
 use redb::ReadableTable;
 use serde::Serialize;
 
@@ -96,7 +96,16 @@ impl ReadTx {
             if key.value().0 != ns {
                 break;
             }
-            let node: Node = decode(value.value())?;
+            let node: Node = match decode(value.value()) {
+                Ok(node) => node,
+                Err(error) => {
+                    problems.push(format!(
+                        "node {} does not decode: {error}",
+                        NodeId::from_u128(key.value().1)
+                    ));
+                    continue;
+                }
+            };
             node_count += 1;
             let id = node.id;
             ids.insert(id.as_u128());
@@ -137,7 +146,16 @@ impl ReadTx {
             if key.value().0 != ns {
                 break;
             }
-            let edge: Edge = decode(value.value())?;
+            let edge: Edge = match decode(value.value()) {
+                Ok(edge) => edge,
+                Err(error) => {
+                    problems.push(format!(
+                        "edge {} does not decode: {error}",
+                        EdgeId::from_u128(key.value().1)
+                    ));
+                    continue;
+                }
+            };
             edge_count += 1;
             *edge_labels.entry(edge.label.clone()).or_default() += 1;
             for end in [edge.from, edge.to] {
@@ -468,6 +486,7 @@ impl ReadTx {
             crate::namespace::read_meta(&self.registry, ns)?.and_then(|meta| meta.language);
         let texts = text::check(
             &self.texts,
+            self.text_values.as_ref(),
             &self.text_lengths,
             &self.postings,
             &self.text_stats,
@@ -476,6 +495,23 @@ impl ReadTx {
             &ids,
             &mut problems,
         )?;
+        // Change log entries decode (compressed ones too).
+        let changes = self
+            .tx
+            .open_table(crate::changes::CHANGES)
+            .map_err(storage)?;
+        for item in changes
+            .range((ns, 0u64)..=(ns, u64::MAX))
+            .map_err(storage)?
+        {
+            let (key, value) = item.map_err(storage)?;
+            if let Err(error) = crate::store::unwrap_envelope(value.value())
+                && problems.len() < MAX_PROBLEMS
+            {
+                problems.push(format!("change {} does not decode: {error}", key.value().1));
+            }
+        }
+        drop(changes);
         let (vectors, dangling_links, unreachable_vectors) = vector::check(
             &self.vectors,
             &self.hnsw_links,
@@ -639,19 +675,7 @@ impl WriteTx {
             ids.insert(key.value().1);
         }
         // Texts and vectors are removed and indexed again, so they are held.
-        let mut texts = Vec::new();
-        for item in tx
-            .open_table(TEXTS)
-            .map_err(storage)?
-            .range((ns, 0u128)..)
-            .map_err(storage)?
-        {
-            let (key, value) = item.map_err(storage)?;
-            if key.value().0 != ns {
-                break;
-            }
-            texts.push((key.value().1, value.value().to_owned()));
-        }
+        let texts = text::texts_of(tx, ns)?;
         let mut vectors = Vec::new();
         {
             let table = tx.open_table(VECTORS).map_err(storage)?;
@@ -711,6 +735,12 @@ impl WriteTx {
             .map_err(storage)?
             .retain_in((ns, 0u128).., |key, _| other(key.0))
             .map_err(storage)?;
+        if crate::compress::has_table(tx, redb::TableHandle::name(&crate::store::TEXT_VALUES))? {
+            tx.open_table(crate::store::TEXT_VALUES)
+                .map_err(storage)?
+                .retain_in((ns, 0u128).., |key, _| other(key.0))
+                .map_err(storage)?;
+        }
         for definition in [VECTORS, VECTORS_Q8] {
             tx.open_table(definition)
                 .map_err(storage)?
@@ -770,7 +800,13 @@ impl WriteTx {
         }
         for (id, content) in &texts {
             if ids.contains(id) {
-                text::index(&self.tx, ns, NodeId::from_u128(*id), content)?;
+                text::index(
+                    &self.tx,
+                    &self.packer(),
+                    ns,
+                    NodeId::from_u128(*id),
+                    content,
+                )?;
                 report.texts += 1;
             } else {
                 report.dropped_texts += 1;

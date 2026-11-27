@@ -747,6 +747,12 @@ pub struct BackgroundConfig {
     /// How often vector graphs are looked at (300 seconds).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compact_vectors_every_secs: Option<u64>,
+    /// How often the server trains the compression dictionaries that
+    /// namespaces with enough values lack (600 seconds; 0 never: only
+    /// `grafeno storage apply --encoding compressed` trains them). Each
+    /// member of a cluster trains its own: they are physical.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub train_dictionaries_every_secs: Option<u64>,
     /// Let webhooks reach this machine and private networks: loopback,
     /// private, link-local and other addresses that are not on the public
     /// internet (false). Off, such a webhook is refused when it is made
@@ -768,6 +774,7 @@ impl BackgroundConfig {
             && self.compact_vectors_max.is_none()
             && self.compact_vectors_below_recall.is_none()
             && self.compact_vectors_every_secs.is_none()
+            && self.train_dictionaries_every_secs.is_none()
             && !self.webhooks_to_private
     }
 
@@ -1035,6 +1042,55 @@ pub fn start(state: &AppState) {
                             status.last_error = None;
                         }
                         Ok(None) => {}
+                        Err(error) => status.last_error = Some(error.to_string()),
+                    }
+                }
+            }
+        });
+    }
+    let train_every = state
+        .background
+        .train_dictionaries_every_secs
+        .unwrap_or(600);
+    if train_every > 0 {
+        let state = state.clone();
+        let index = {
+            let mut runners = state.runners.lock().unwrap_or_else(|e| e.into_inner());
+            runners.push(RunnerStatus {
+                namespace: "*".into(),
+                task: "train_dictionaries".into(),
+                ..RunnerStatus::default()
+            });
+            runners.len() - 1
+        };
+        tokio::spawn(async move {
+            // A first look soon after starting, then every so often.
+            let mut wait = Duration::from_secs(train_every.min(60));
+            loop {
+                tokio::time::sleep(wait).await;
+                wait = Duration::from_secs(train_every);
+                if state.db.compression() == grafeno::Compression::Off {
+                    continue;
+                }
+                let state2 = state.clone();
+                let outcome = tokio::task::spawn_blocking(move || {
+                    state2
+                        .writer
+                        .local()
+                        .train_dictionaries(&grafeno::TrainOptions::default())
+                })
+                .await;
+                if let Ok(report) = outcome {
+                    let mut runners = state.runners.lock().unwrap_or_else(|e| e.into_inner());
+                    let status = &mut runners[index];
+                    match report {
+                        Ok(trained) if trained.is_empty() => {}
+                        Ok(trained) => {
+                            status.runs += 1;
+                            status.last_run = Some(Timestamp::now());
+                            status.last_report = serde_json::to_value(&trained).ok();
+                            status.last_error = None;
+                        }
                         Err(error) => status.last_error = Some(error.to_string()),
                     }
                 }

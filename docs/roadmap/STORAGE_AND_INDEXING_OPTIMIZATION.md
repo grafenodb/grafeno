@@ -473,6 +473,12 @@ Detailed in [section 9](#9-migration-of-existing-databases).
 | D10 | Migrations are recorded in a `migrations` table, idempotent and resumable by checkpoint. | Millions of records cannot be rewritten in one transaction, and an interruption must not restart from zero. |
 | D11 | Mandatory changes (needed to open the file) run at open, as today; optional optimizations run only when an administrator asks. | No surprise rewrites at start. |
 | D12 | Names as numeric ids in keys come last, and only if still worth it. | The widest change; the others may make it unnecessary. |
+| D13 | Phase 5: Zstandard with a dictionary per namespace and kind of value, from the reference library (C, built like mimalloc); no LZ4. | Measured on the section 3 file: values of 170–500 bytes shrink by 2–10% alone with LZ4 and the pure-Rust encoder, 11–27% with Zstandard alone, 64–86% with a dictionary, which is also faster (1.4 µs to compress a node, 0.9 to decompress). The pure-Rust port of the reference library gives the same bytes at the same speed but is a prerelease (0.0.1); the format is the same, so either can replace the other without a migration. |
+| D14 | A file becomes layout 20 with its first envelope or dictionary, not on opening; the tables of layout 20 are created then. A migration back to JSON over the whole file gives it its earlier layout back. | Earlier releases refuse layout 20 cleanly; a file never compressed stays readable by them (their backup refuses unknown tables, so none is created early). |
+| D15 | No checksum per value. | redb checksums every page (`grafeno check`, `verify_file`); a damaged frame fails to decompress or has the wrong length; every value is decompressed and compared before it is written. Four bytes a value would be 10% of a compressed node. |
+| D16 | The envelope's tag is `0x1E`, not `0x01`. | A hyperedge's binary record starts with its format, 1: with `0x01` a migration would have taken one for the other (found in phase 5; phase 4 was not released). |
+| D18 | Compression on by default, though five reads that go through many records are 8–12% slower at p50 (above the 5% of phase 5's acceptance). | Measured with the suite (`docs/data/compression.csv` against `docs/data/redb5.csv`): stored bytes 13–45% lower on every dataset, writes and lookups within ±5%, scans and traversals of many records 8–12% slower from decompressing each one. `compression = "off"` keeps the earlier speed; lazy properties (D17) would take back decoding CPU. |
+| D17 | 6.3 (binary header, lazy properties) moves after phase 5, to be decided on CPU. | Dictionaries took the size of records to 15–40%, the gain 6.3 was for; what is left is decoding CPU, measured with the latencies below. |
 
 ## 8. Phases and tasks
 
@@ -558,8 +564,9 @@ with its tests and benchmarks green and this document updated.
 ### Phase 5 — Adaptive lossless compression (P0, L)
 
 - 5.1 Codecs (LZ4, Zstandard with dictionaries) as dependencies, pure
-  Rust or with C built on every platform (R4).
-- 5.2 Binary record header and lazy properties (6.3).
+  Rust or with C built on every platform (R4). *Done: Zstandard only
+  (D13).*
+- 5.2 Binary record header and lazy properties (6.3). *Moved (D17).*
 - 5.3 Per-value adaptive choice (6.2), `[storage] compression`.
 - 5.4 Dictionaries per namespace and record kind; their table; training
   in the migration and in the background.
@@ -829,14 +836,14 @@ equivalence. No improvement target is set before the baseline exists.
 | R1 | redb 5 reads an existing table differently (encoding change). | No table uses the changed types (verified by type); every layout fixture opened in tests; copy before the layout mark. |
 | R2 | Older Grafeno builds open a file redb 5 wrote. | Layout 20 refused by older builds; locking incompatibility documented (one build per file). |
 | R3 | A migration interrupted halfway leaves mixed state. | Envelope makes mixed files valid; checkpoints in the batch's transaction; idempotent steps; kill tests. |
-| R4 | A codec with C code complicates static musl, arm64 or Windows builds. | Prefer pure-Rust implementations where their speed is close; build every target in CI before adopting one. |
+| R4 | A codec with C code complicates static musl, arm64 or Windows builds. | Prefer pure-Rust implementations where their speed is close; build every target in CI before adopting one. Phase 5: the reference Zstandard (C) builds through `cc` as mimalloc does, on every target of the Installers workflow (D13). |
 | R5 | Compression makes reads slower on hot paths. | Binary header and lazy properties first; per-table codecs; thresholds; benchmarks gate each table. |
 | R6 | Automatic indexing multiplies write cost and size. | Limits per label, measurement in phase 6, approval of the default for existing namespaces (Q3), `manual` available. |
 | R7 | A new full-text layout changes scores. | BM25 fixtures to the last digit; both layouts readable until rebuilt; rebuild per index. |
 | R8 | Online compaction blocks requests too long. | Opt-in window, time limit, abort if transactions do not drain; requests wait in the admission queue. |
-| R9 | Dictionaries lost or changed make records unreadable. | Dictionaries immutable by id, replicated as logical effects, backed up with the file, checked by `check`. |
+| R9 | Dictionaries lost or changed make records unreadable. | Dictionaries immutable by id (a hash of their bytes), kept in the file and copied by backups and snapshots; a value naming a dictionary the file lacks is an error, and `check` reports values that do not decode. Each member trains its own: replication carries records, not their bytes. |
 | R10 | A rollback silently drops writes. | Only explicit restores, with the loss stated; export/import as the lossless way back. |
-| R11 | Cluster members disagree on encodings. | Encodings are per member (logical replication); new ones enabled only when every member reads them. |
+| R11 | Cluster members disagree on encodings. | Encodings are per member (logical replication). A snapshot of a compressed member is layout 20, which a member of an earlier release refuses: during a rolling upgrade, compression stays off (`[storage] compression = "off"`) until every member runs this release. |
 
 ## 13. Acceptance criteria
 
@@ -913,5 +920,16 @@ The initiative is complete when, measured against the phase-1 baseline:
 | 2026-11-27 | 4.4 Runner | done | batches through `Grafeno::write` or the writer's bulk lane, the checkpoint saved in the batch's own transaction; pause (a stop flag, a batch limit), resume, idempotent steps; reindex before reencode (a rebuild rewrites records as JSON). Rebuilding indexes no longer writes the change log (it logged every record as updated). Cancel is not offered: a migration stopped stays `paused`, and the backup or `--encoding json` undoes one |
 | 2026-11-27 | 4.5 Tool and route | done | `grafeno storage status|plan|apply|resume|verify` (`storage_cli.rs`): backup checked before anything changes, `--compact` (`vacuum --maximum`), reports with `--json`; `GET`/`POST /v1/storage/migrations` (owners, refused on a cluster) |
 | 2026-11-27 | Phase 4 acceptance | done | `crates/grafeno/tests/migrations.rs` (dry run, interrupted and resumed, run twice, envelope and back, verification catching a change) and `crash.rs` (`migrations_survive_being_killed`: killed at random points six times, resumed, same digests). On the section 3 file, `apply --reindex-existing --encoding envelope --verify --compact`: 199,974 records rewritten and verified, 1,028 → 402.8 MiB, 165.9 → 16.2 MiB lost inside pages, 65.9 s (`docs/benchmarks.md`, "A storage migration"). Found on the way: redb grows a packed file while it is open and trims it on close, so the free pages counted while open are not what a compaction gives back; the tool and `pending_work` measure against the closed length |
-| | Phase 5 | next | adaptive lossless compression |
+| 2026-11-27 | 5.1 Codecs | done | measured with the section 3 file (`crates/grafeno/examples/compression.rs`, `docs/benchmarks.md` "Compression"): Zstandard with dictionaries (D13); LZ4 and the pure-Rust encoder measured and not used |
+| 2026-11-27 | 5.2 Binary header | moved | D17 |
+| 2026-11-27 | 5.3 Adaptive choice | done | `crates/grafeno/src/compress.rs`: with the namespace's dictionary from 32 bytes, without one from 1 KiB (Zstandard alone costs 7 µs a write for 28% on a 500-byte record), kept when it saves 12%, decompressed and compared before writing; `[storage] compression = "auto" \| "off"`, `OpenOptions::compression` |
+| 2026-11-27 | 5.4 Dictionaries | done | `dictionaries` table, id = FNV-1a of the bytes, 64 KiB at most, trained on up to 4,000 evenly spread values of a namespace and kind with 1,000 or more; in a migration's `train` step, and by the server every `train_dictionaries_every_secs` (600) through the writer's bulk lane; written values use one only once the transaction storing it has committed |
+| 2026-11-27 | 5.5 Texts | done | `text_values` (bytes, always in an envelope) for compressed texts, `texts` for the others; readers look in both, a text is in one only |
+| 2026-11-27 | 5.6 Logs | done | change log entries per namespace, audit and replication log entries per file; the migration rewrites them too (a step for the file's logs when it covers every namespace) |
+| 2026-11-27 | 5.7 `check` | done | nodes, edges, texts and change log entries that do not decode are problems, not errors; a text stored twice is one. No checksum per value (D15) |
+| 2026-11-27 | Layout 20 | done | D14; the envelope tag became `0x1E` (D16); `tests/compression.rs` (compression off leaves no new table, compressed values read the same and search the same, back to JSON gives layout 18 back, an interrupted compression resumes, a backup restores with its dictionaries) |
+| 2026-11-27 | Phase 5 on the section 3 file | done | `apply --encoding compressed --reindex-existing --verify --compact`: nodes 49.2 → 10.3 MiB, edges 28.4 → 11.0, changes 52.4 → 26.2; file 1,028 → 311.2 MiB in 66.7 s (403 with `vacuum --maximum` alone); every record's value as before |
+| 2026-11-27 | Phase 5 suite | done | every result matches the fixtures; stored MiB: catalogue 341.8 → 277.3, documents 488.1 → 425.2, rows 162.2 → 95.0, graph 339.1 → 185.8, hyperedges 39.0 → 27.2, memory 21.4 → 13.9 (training and rewriting: 0.7–10 s). p50 within ±5% of redb 5's run except two hops up the hierarchy (+10.7%), node text search (+8.0%), a country's latest 20 (+11.7%), the unindexed count (+9.1%), two hops in the graph (+11.2%): D18. A first run made a Zstandard context per value and was tens of times slower on parallel scans; contexts are kept per thread now |
+| 2026-11-27 | Phase 5 checks | done | 699 tests green; `docs/benchmarks.md` ("Compression") |
+| | Phase 6 | next | indexing policies per namespace |
 | | Phases 6–14 | pending | |

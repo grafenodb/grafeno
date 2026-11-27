@@ -1890,3 +1890,87 @@ grafeno storage apply --db catalogue.redb --reindex-existing --encoding envelope
 65.9 s in all, the backup included. The stored bytes grow by 1 MiB (five
 bytes of envelope header a record); compression comes in phase 5.
 
+
+## Compression (phase 5)
+
+### Codecs (`crates/grafeno/examples/compression.rs`)
+
+The values of the file of section 3 of the storage roadmap (100,000
+catalogue entities, written uncompressed), one by one, Windows, release
+build. Stored: what the engine would keep, each value compressed only
+when it saves 12% (with an 8-byte allowance for the envelope).
+
+| values | codec | MiB | stored MiB | of the original | compress µs | decompress µs |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| nodes (491 bytes) | LZ4 | 46.9 | 46.9 | 100% | 0.82 | 0.20 |
+| | Zstandard, pure-Rust encoder, fastest | 46.9 | 46.9 | 100% | 22.09 | 2.52 |
+| | Zstandard 1 | 46.9 | 34.0 | 72.5% | 5.09 | 2.48 |
+| | Zstandard 1, dictionary | 46.9 | 6.7 | 14.4% | 1.39 | 0.86 |
+| edges (274 bytes) | LZ4 | 26.1 | 26.1 | 100% | 0.62 | 0.16 |
+| | Zstandard 1 | 26.1 | 19.2 | 73.6% | 3.93 | 2.29 |
+| | Zstandard 1, dictionary | 26.1 | 7.4 | 28.4% | 1.45 | 1.07 |
+| changes (167 bytes) | LZ4 | 47.9 | 47.9 | 100% | 0.43 | 0.13 |
+| | Zstandard 1 | 47.9 | 42.7 | 89.2% | 3.60 | 1.81 |
+| | Zstandard 1, dictionary | 47.9 | 17.5 | 36.5% | 1.18 | 0.63 |
+
+Level 3 compresses these values no better than level 1, and more
+slowly. Each dictionary is 64 KiB, trained in under 0.1 s on 2% of the
+values. LZ4 saves 2–10% before the 12% rule, so nothing is kept. The
+pure-Rust port of the reference library (`libzstd-rs-sys`, a prerelease)
+gave the same sizes at the same speed. The LZ4 and pure-Rust rows come
+from a one-off program; `compression.rs` measures the Zstandard rows.
+
+### A file compressed (`grafeno storage apply --encoding compressed`)
+
+The same file, as in "A storage migration" above:
+
+```bash
+grafeno storage apply --db catalogue.redb --encoding compressed --reindex-existing --verify --compact
+```
+
+| Table | Before MiB | After MiB |
+| --- | ---: | ---: |
+| nodes | 49.2 | 10.3 |
+| edges | 28.4 | 11.0 |
+| changes | 52.4 | 26.2 |
+| all tables, stored | 360.7 | 278.4 |
+| file | 1,028 | 311.2 |
+
+66.7 s in all (training, rebuilding the indexes, rewriting 299,974
+change log entries, verifying 199,974 records, compacting); three
+dictionaries, 169 KiB. `vacuum --maximum` alone leaves 403 MiB. What is
+left is mostly index entries (139 MiB), keys that are not compressed
+(phase 6.4).
+
+### The storage suite compressed
+
+`crates/grafeno-server/examples/storage_suite.rs` now compresses each
+dataset once it is loaded (`COMPRESSION=off` measures without); numbers
+in `docs/data/compression.csv`, against the redb 5 run of
+`docs/data/redb5.csv`. Every result matches the fixtures.
+
+| dataset | stored MiB before | after | after vacuum before | after | train and rewrite s |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| catalog | 341.8 | 277.3 | 384.4 | 311.9 | 3.1 |
+| documents | 488.1 | 425.2 | 618.0 | 482.8 | 2.7 |
+| rows | 162.2 | 95.0 | 177.9 | 107.4 | 3.7 |
+| graph | 339.1 | 185.8 | 376.8 | 210.6 | 10.0 |
+| hyperedges | 39.0 | 27.2 | 42.8 | 30.6 | 1.0 |
+| memory | 21.4 | 13.9 | 23.7 | 16.0 | 0.7 |
+
+| dataset | operation | p50 ms before | after |
+| --- | --- | ---: | ---: |
+| catalog | lookup by code (index) | 0.061 | 0.063 |
+| catalog | two hops up the hierarchy | 0.059 | 0.065 |
+| catalog | write a node | 1.595 | 1.577 |
+| documents | node text search (BM25), 10 | 1.429 | 1.542 |
+| documents | read a document by number | 0.052 | 0.054 |
+| rows | a country's latest 20 | 6.766 | 7.561 |
+| rows | unindexed filter, count | 124.9 | 136.2 |
+| graph | neighbors of a node | 0.140 | 0.140 |
+| graph | two hops, count | 13.04 | 14.50 |
+| memory | context of a question | 5.994 | 6.294 |
+
+The other operations are within ±5% (full list in the CSV). Reads that
+go through many records pay for decompressing each one: 8–12%.
+

@@ -612,12 +612,13 @@ grafeno storage plan --config /etc/grafeno/grafeno.toml --reindex-existing --ver
 ```
 
 ```bash
-grafeno storage apply --config /etc/grafeno/grafeno.toml --reindex-existing --verify --compact
+grafeno storage apply --config /etc/grafeno/grafeno.toml --encoding compressed --reindex-existing --verify --compact
 ```
 
 `status` shows the file, what is pending (free pages a compaction would
-give back, space lost inside pages, a migration waiting) and every
-migration recorded; a starting server logs the same pending work. `plan`
+give back, space lost inside pages, a migration waiting, namespaces
+without compression dictionaries), the dictionaries and every migration
+recorded; a starting server logs the same pending work. `plan`
 says what `apply` would do and changes nothing. `apply` first copies the
 file next to it (`<file>.before-<id>.redb`, checked before anything
 changes; `--no-backup` skips it), then migrates (`--namespace` for some
@@ -627,11 +628,37 @@ before, and with `--compact` ends with `vacuum --maximum`. `resume` runs
 an interrupted migration to its end, and `verify` checks without changing
 anything. Each command takes `--json`.
 
-`--encoding envelope` rewrites records into the versioned envelope that
-later releases will compress: this release and later ones read it, earlier
-ones refuse the file, so going back to an earlier release needs
-`--encoding json` first (or the backup). Records written afterwards are
-still JSON until a release writes envelopes itself. A running server also
+**Compression.** Values (records, texts, the change, audit and
+replication logs) are compressed as they are written, with Zstandard and
+a dictionary per namespace and kind of value, when it saves at least 12%;
+everything reads exactly as before. A server trains the dictionaries a
+namespace lacks once it has 1,000 values of a kind, in the background
+(`[background] train_dictionaries_every_secs`, every 600 seconds), so
+what is written after that compresses. `--encoding compressed` trains
+them at once and rewrites what is already stored: on 100,000 catalogue
+entities, nodes took 10.3 MiB instead of 49.2 and the whole file, with
+`--reindex-existing --compact`, 311 MiB instead of 1,028. To store values
+as they are, set it off:
+
+```toml
+[storage]
+compression = "off"
+```
+
+A file becomes layout 20 with its first compressed value: earlier
+releases refuse it. To go back to one, turn compression off and rewrite
+the whole file as JSON, which gives it its earlier layout back (or
+restore the backup taken before):
+
+```bash
+grafeno storage apply --config /etc/grafeno/grafeno.toml --encoding json --verify
+```
+
+On a cluster, keep `compression = "off"` until every member runs this
+release: a member sends a lagging one a snapshot of its file, and a
+compressed file is one an earlier release refuses.
+
+A running server also
 plans and runs migrations at `/v1/storage/migrations` (owners), through
 its writer, between other writes. On a cluster, migrate each member's file
 with its server stopped, one member at a time: the migration is physical
@@ -699,6 +726,9 @@ cache_mb = 256              # pages of the database file
 projection_cache_mb = 256   # graphs kept for graph algorithms
 vector_cache_mb = 128       # vectors decoded while inserting embeddings
 
+[storage]
+compression = "auto"        # compress values where it pays; "off" writes them as they are
+
 [changes]                   # the change log that streams and webhooks follow
 enabled = true
 max_entries = 1000000       # per namespace; 0 for no limit
@@ -725,6 +755,7 @@ compact_vectors_min = 1000  # leave smaller graphs alone
 compact_vectors_max = 50000 # and larger ones: compacting holds the writer (see below)
 compact_vectors_below_recall = 0  # also when sampled recall@10 falls below this (0: never measure)
 compact_vectors_every_secs = 300
+train_dictionaries_every_secs = 600  # train missing compression dictionaries (0: never)
 
 [transactions]              # BEGIN … COMMIT across requests
 idle_timeout_secs = 30      # rolled back after this long without a request

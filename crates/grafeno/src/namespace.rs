@@ -300,6 +300,13 @@ impl WriteTx {
         clear!(NODES, (ns, 0u128), (end.as_str(), 0u128));
         clear!(EDGES, (ns, 0u128), (end.as_str(), 0u128));
         clear!(TEXTS, (ns, 0u128), (end.as_str(), 0u128));
+        if self.values_exist() {
+            clear!(
+                crate::store::TEXT_VALUES,
+                (ns, 0u128),
+                (end.as_str(), 0u128)
+            );
+        }
         clear!(TEXT_LENGTHS, (ns, 0u128), (end.as_str(), 0u128));
         clear!(VECTORS, (ns, 0u128), (end.as_str(), 0u128));
         clear!(VECTORS_Q8, (ns, 0u128), (end.as_str(), 0u128));
