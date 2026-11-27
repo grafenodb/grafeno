@@ -901,6 +901,6 @@ The initiative is complete when, measured against the phase-1 baseline:
 | 2026-11-26 | 2.3 Layout 20 | **not needed** | redb 5 keeps file format 3: a file written by this build was opened, written and checked by the 0.5.3 build (redb 4.4), and the other way round. Bumping the layout would only stop a downgrade that works; the layout stays 18/19 (decision D9 revised: a physical change bumps the layout only when older builds would misread it) |
 | 2026-11-26 | 2.4 `vacuum --maximum` | done | `Grafeno::vacuum_with`; 1,028 → 403 MiB on the section 3 file (555 with `vacuum`) |
 | 2026-11-26 | Phase 2 benchmarks | done | `docs/benchmarks.md` ("redb 5.0"), `docs/data/redb5.csv`: same bytes, same results, files grown more sparingly, times within noise |
-| | 2.5 Platforms | in CI | Linux musl x64/arm64, Windows x64/arm64, container, MSIX, `.deb`/`.rpm` build in the Installers workflow on push |
+| 2026-11-26 | 2.5 Platforms | done | CI (tests on Linux) and Installers (Linux musl x64/arm64, Windows x64/arm64, `.deb`, `.rpm`, the setup) green on `785d98a` |
 | | Phase 3 | next | cheaper indexing |
 | | Phases 2–14 | pending | |
