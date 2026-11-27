@@ -49,6 +49,7 @@ windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Storage
 
 [dev-dependencies]
 http-body-util = "0.1"
+tempfile.workspace = true
 # Raw HTTP/1.1 connections in examples/many_connections.rs.
 tokio = { version = "1", features = ["io-util"] }
 

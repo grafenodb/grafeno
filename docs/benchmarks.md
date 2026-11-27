@@ -1723,3 +1723,61 @@ ingestion (500 lines a batch) and now CSV and GraphML imports, which
 wrote around the writer and took its lock in turn with it. One statement
 of 200,000 rows still holds the writer for its whole run: large writes in
 GQ belong in `IN TRANSACTIONS`.
+
+## Storage baseline (`crates/grafeno-server/examples/storage_suite.rs`)
+
+Phase 1 of `docs/roadmap/STORAGE_AND_INDEXING_OPTIMIZATION.md`: six
+datasets loaded into files on E1-disk the way an application would, then
+what each takes and how fast it reads and writes
+(`docs/data/storage_baseline.csv`, two runs; the results of fixed queries
+in `docs/data/storage_fixtures/`, which later phases compare against with
+`COMPARE=docs/data/storage_fixtures`):
+
+| Dataset | Records | File MiB | Stored MiB | Fragmented MiB | After `vacuum` MiB | Largest tables (stored MiB) |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| catalogue: entities with a code, a Spanish title and definition, a 128-dimension embedding, a hierarchy | 100,000 | 1,028 | 342 | 144 | 384 | full-text and property entries 105, vectors 51, HNSW links 46 |
+| documents: about 2,000 characters each, a full-text index and node text | 20,000 | 2,056 | 488 | 353 | 618 | full-text entries 237, node text postings 162, records 45 |
+| rows: orders with six properties, two indexes | 300,000 | 268 | 162 | 25 | 178 | records 79, change log 42, index entries 33 |
+| graph: ten edges a node, a third with a valid time | 550,000 | 514 | 339 | 23 | 377 | edges 140, change log 121, adjacency 34 each way |
+| hyperedges: three participants with roles | 70,000 | 129 | 39 | 4 | 43 | change log 16, hyperedges 7, incidence 7 |
+| agent memory: a palace with ten rooms, memories anchored and related, through MCP | 10,000 | 32–42 | 21 | 5 | 24 | change log 6, edges 5, text postings 4 |
+
+The stored, fragmented and vacuumed sizes were the same in both runs to
+the tenth of a MiB (only the memory file itself differed, 42 and 32 MiB,
+by where its last pages fell); every query result matched the first
+run's. Latencies of the second run (the first
+ran while the machine was locked and throttled, about twice as slow, so
+these are indicative until phase 2 repeats them on an idle machine):
+
+| Dataset | Operation | p50 ms | p99 ms |
+| --- | --- | ---: | ---: |
+| catalogue | lookup by code (index) | 0.31 | 1.32 |
+| catalogue | full-text search, 10 results | 109 | 224 |
+| catalogue | vector search, 10 | 3.4 | 78 |
+| catalogue | two hops up the hierarchy | 0.16 | 0.67 |
+| documents | full-text search, 10 | 2.6 | 5.2 |
+| documents | node text search (BM25), 10 | 1.5 | 2.6 |
+| rows | an order by number | 0.04 | 0.10 |
+| rows | a country's latest 20 (`(country, placed)`) | 10.4 | 18.4 |
+| rows | unindexed filter, count of 300,000 | 170 | 181 |
+| graph | neighbors of a node | 0.15 | 0.29 |
+| graph | two hops, count | 15.7 | 26.3 |
+| hyperedges | a hyperedge by property | 0.04 | 0.06 |
+| memory | `context` of a question | 6.5 | 12.1 |
+| memory | `palace_enter` | 28.7 | 43.9 |
+| every dataset | one node written (its own transaction) | 1.6–3.4 | 2.6–5.3 |
+
+What it shows for the roadmap:
+
+- The files are two to four times what their tables store: free pages
+  (F1) and fragmentation inside pages (F7). `vacuum` takes them to
+  1.1–1.3 times the stored bytes; the fragmented bytes stay.
+- Full-text entries are the largest structure wherever there is text
+  (F2): 237 MiB for 20,000 documents, with as much again fragmented, and
+  node text postings another 162 MiB.
+- The change log is the second largest table of rows, graphs and
+  hyperedges (F5): 121 MiB for 550,000 records of the graph.
+- A full-text search of the catalogue takes 109 ms against 2.6 for the
+  documents: its terms are few and shared by most entries (a skew of the
+  synthetic text, and a case phase 9 has to measure on the real
+  catalogue).

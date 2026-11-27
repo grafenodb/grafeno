@@ -560,6 +560,18 @@ It verifies every page against its checksum, then the indexes. Exports
 (`grafeno export`) are the other kind of copy: JSON Lines, readable and
 portable between versions, but without the keys.
 
+**What it takes.** `grafeno storage stats` reads a stopped server's file
+(`--config` or `--db`) and prints each table (entries, the bytes its
+leaves store, B-tree metadata, space lost inside pages), the file's size,
+the pages in use and the free pages a compaction could give back; with
+`--namespaces`, each namespace's records and their bytes (it reads them
+all), and `--json` for scripts. A running server answers the same at
+`GET /v1/storage` (owners; `?namespaces=true` for the namespaces).
+
+```bash
+grafeno storage stats --config /etc/grafeno/grafeno.toml --namespaces
+```
+
 **Space.** The file does not shrink by itself: what deletes and rewrites
 free (a namespace dropped, a catalogue loaded again) is reused by later
 writes, not given back. With the service stopped, `grafeno vacuum`

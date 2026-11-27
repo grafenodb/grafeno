@@ -14,6 +14,13 @@ upgraded in place, with a copy kept first.
 
 ## Unreleased
 
+- **Added**: what a database takes on disk. `GET /v1/storage` (owners)
+  and `grafeno storage stats` give each table's entries, stored bytes,
+  B-tree metadata and space lost inside pages, the file's size, the pages
+  in use and the free pages a compaction can give back
+  (`Grafeno::storage_usage`); with `?namespaces=true` (`--namespaces`),
+  each namespace's records and their bytes. The storage baseline of six
+  datasets is in `docs/benchmarks.md`.
 - **Added**: entities looked up as rows of a table. `POST
   /v1/{ns}/nodes/find` (`ReadTx::find_nodes` in Rust) takes a label,
   conditions on properties (`eq`, `ne`, `lt`, `lte`, `gt`, `gte`, `in`,

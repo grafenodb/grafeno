@@ -1,0 +1,21 @@
+{
+  "anchored": [
+    [
+      10000
+    ]
+  ],
+  "recall palaces": [
+    "Decision 6 about agents: keep agents simple and measure it before changing it (6).",
+    "Decision 7 about palaces: keep palaces simple and measure it before changing it (7).",
+    "Decision 8 about security: keep security simple and measure it before changing it (8).",
+    "Decision 96 about agents: keep agents simple and measure it before changing it (96).",
+    "Decision 97 about palaces: keep palaces simple and measure it before changing it (0)."
+  ],
+  "recall storage": [
+    "Decision 0 about storage: keep storage simple and measure it before changing it (0).",
+    "Decision 1 about indexing: keep indexing simple and measure it before changing it (1).",
+    "Decision 100 about storage: keep storage simple and measure it before changing it (3).",
+    "Decision 101 about indexing: keep indexing simple and measure it before changing it (4).",
+    "Decision 99 about releases: keep releases simple and measure it before changing it (2)."
+  ]
+}

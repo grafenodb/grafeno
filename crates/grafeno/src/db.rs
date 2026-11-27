@@ -196,6 +196,8 @@ pub struct Grafeno {
     /// The commit counter and the projections cached for algorithms.
     pub(crate) shared: Arc<Shared>,
     vector_cache: usize,
+    /// The file it was opened from (`None` in memory).
+    pub(crate) path: Option<std::path::PathBuf>,
 }
 
 impl Grafeno {
@@ -215,7 +217,8 @@ impl Grafeno {
             .set_cache_size(options.cache_bytes)
             .create(path)
             .map_err(storage)?;
-        let grafeno = Self::init(db)?;
+        let mut grafeno = Self::init(db)?;
+        grafeno.path = Some(path.to_owned());
         Ok(grafeno.with_options(options))
     }
 
@@ -326,6 +329,21 @@ impl Grafeno {
     }
 
     /// An in-memory database: for tests and short-lived agents.
+    /// The redb database itself, for the engine's own maintenance.
+    pub(crate) fn raw(&self) -> &Database {
+        &self.db
+    }
+
+    /// The layout version recorded in the file.
+    pub fn layout(&self) -> Result<u64> {
+        let read = self.db.begin_read().map_err(storage)?;
+        let meta = read.open_table(META).map_err(storage)?;
+        Ok(meta
+            .get(SCHEMA_KEY)
+            .map_err(storage)?
+            .map_or(BASE_LAYOUT, |guard| guard.value()))
+    }
+
     pub fn in_memory() -> Result<Self> {
         let db = Database::builder()
             .create_with_backend(redb::backends::InMemoryBackend::new())
@@ -458,6 +476,7 @@ impl Grafeno {
             unflushed: AtomicBool::new(false),
             shared,
             vector_cache: crate::vector::DEFAULT_VECTOR_CACHE,
+            path: None,
         })
     }
 

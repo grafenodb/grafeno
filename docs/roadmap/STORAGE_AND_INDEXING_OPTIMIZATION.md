@@ -1,9 +1,9 @@
 # Storage and indexing optimization
 
-**Status: proposed, waiting for approval.** Nothing in the engine has
-changed for this initiative yet. This document is its source of truth:
-every step done or left is recorded here, in [Progress](#progress), as
-the work goes on.
+**Status: approved on 2026-11-26, with the answers proposed in
+[section 14](#14-questions-for-approval); phase 1 done, phase 2 next.** This
+document is its source of truth: every step done or left is recorded
+here, in [Progress](#progress), as the work goes on.
 
 The initiative makes the engine's storage smaller and its indexing
 cheaper and configurable, on its own terms: redb stays the only store,
@@ -889,6 +889,10 @@ The initiative is complete when, measured against the phase-1 baseline:
 | 2026-11-26 | 0.1 Audit | done | sections 2 and 4, against `8241baf` |
 | 2026-11-26 | 0.2 First baseline | done | section 3: one synthetic catalogue; the full suite is phase 1 |
 | 2026-11-26 | 0.3 Compatibility audit | done | sections 2.1, 2.4, 5 |
-| 2026-11-26 | 0.4 Roadmap | proposed | waiting for answers to section 14 |
-| | Phase 1 | pending | starts after approval |
+| 2026-11-26 | 0.4 Roadmap | done | approved with the proposed answers: redb 5.x (Q1), `grafeno storage` (Q2), automatic indexing of existing namespaces only through the migration (Q3), LZ4 and Zstandard preferring pure Rust (Q4), opt-in compaction windows (Q5), phase 12 after measuring (Q6), order as proposed (Q7) |
+| 2026-11-26 | 1.1 Benchmark suite | done | `crates/grafeno-server/examples/storage_suite.rs`: six datasets (catalogue, documents, rows, graph, hyperedges, agent memory through MCP), sizes, `vacuum`, latencies; numbers in `docs/benchmarks.md` ("Storage baseline") and `docs/data/storage_baseline.csv`. Two full runs, 18 and 10 minutes: sizes identical, latencies not within ±10% (the first ran on a locked, throttled machine) |
+| 2026-11-26 | 1.2 Storage statistics | done | `Grafeno::storage_usage`, `ReadTx::namespace_usage` (`crates/grafeno/src/usage.rs`), `GET /v1/storage` (owners, `?namespaces=true`), `grafeno storage stats [--namespaces] [--json]`. Not added to `/v1/metrics`: redb's page counts need a write transaction, too dear for every scrape |
+| 2026-11-26 | 1.3 Result fixtures | done | `docs/data/storage_fixtures/*.json`: full-text results with BM25 scores, node text results, lookups, aggregates, traversals, hyperedges, recall sets, vector recall@10 (a lower bound); `COMPARE=` fails on any difference (numbers within a relative 1e-9, the precision JSON keeps) |
+| | 1.1 Latency baseline on an idle machine | pending | to repeat at the start of phase 2, together with redb 5's run, so that both use the same conditions; CPU per operation is measured in phase 3 (3.1) |
+| | Phase 2 | next | redb 5.0 |
 | | Phases 2–14 | pending | |

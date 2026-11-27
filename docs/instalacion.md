@@ -584,6 +584,19 @@ Verifica cada página contra su suma de comprobación, y luego los índices.
 Las exportaciones (`grafeno export`) son el otro tipo de copia: JSON Lines,
 legibles y portables entre versiones, pero sin las claves.
 
+**Lo que ocupa.** `grafeno storage stats` lee el archivo de un servidor
+detenido (`--config` o `--db`) y muestra cada tabla (entradas, los bytes
+que guardan sus hojas, los metadatos del árbol B, el espacio perdido dentro
+de las páginas), el tamaño del archivo, las páginas en uso y las libres
+que una compactación podría devolver; con `--namespaces`, los registros de
+cada namespace y sus bytes (los lee todos), y `--json` para scripts. Un
+servidor en marcha responde lo mismo en `GET /v1/storage` (propietarios;
+`?namespaces=true` para los namespaces).
+
+```bash
+grafeno storage stats --config /etc/grafeno/grafeno.toml --namespaces
+```
+
 **Espacio.** El archivo no se reduce solo: lo que liberan los borrados y
 las reescrituras (un namespace eliminado, un catálogo cargado de nuevo) lo
 reutilizan las escrituras siguientes, pero no se devuelve al sistema. Con el

@@ -57,6 +57,7 @@ mod subscriptions;
 mod text;
 pub mod textsim;
 mod traverse;
+mod usage;
 mod vector;
 mod writer;
 
@@ -99,6 +100,7 @@ pub use stats::{NamespaceInfo, NamespaceStats};
 pub use subscriptions::{ChangeValues, Delivery, EventTarget, Subscription};
 pub use text::{Language, tokenize, tokenize_in};
 pub use traverse::{Direction, EdgeFilter, Neighbor, Path, Subgraph};
+pub use usage::{NamespaceUsage, StorageUsage, TableUsage};
 pub use vector::Similarity;
 pub use vindex::{BuildProgress, Building, EMBEDDING_KEY, VectorFilter, VectorSearch, VectorSpec};
 pub use writer::{Histogram, HistogramSnapshot, Lane, Writer, WriterOptions, WriterSnapshot};

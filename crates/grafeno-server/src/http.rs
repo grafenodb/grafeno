@@ -840,6 +840,7 @@ pub fn router_with(state: AppState, options: &Options) -> Router {
         .route("/{ns}/consolidation", get(consolidation))
         .route("/{ns}/summaries", post(summaries))
         .route("/metrics", get(metrics))
+        .route("/storage", get(storage_usage))
         .route("/cluster", get(cluster_status))
         .route("/cluster/voters", post(cluster_voters))
         .route("/cluster/compact", post(cluster_compact))
@@ -3419,6 +3420,118 @@ async fn import(
         .await
         .map_err(crate::http::joined)??;
     Ok(Json(stats))
+}
+
+// ---------------------------------------------------------------- storage
+
+/// What `GET /v1/storage` and `grafeno storage stats` report.
+#[derive(Serialize)]
+pub struct StorageReport {
+    #[serde(flatten)]
+    pub usage: grafeno::StorageUsage,
+    /// Each namespace's records, when asked for.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub namespaces: Option<Vec<grafeno::NamespaceUsage>>,
+}
+
+/// The storage report of `db`, with every namespace's records if asked.
+pub fn storage_report(db: &Grafeno, namespaces: bool) -> grafeno::Result<StorageReport> {
+    let usage = db.storage_usage()?;
+    let namespaces = namespaces
+        .then(|| -> grafeno::Result<Vec<grafeno::NamespaceUsage>> {
+            let read = db.begin_read()?;
+            read.namespaces()?
+                .into_iter()
+                .map(|info| read.namespace_usage(&info.name))
+                .collect()
+        })
+        .transpose()?;
+    Ok(StorageReport { usage, namespaces })
+}
+
+/// The report as text: tables largest first, then the file.
+pub fn storage_text(report: &StorageReport) -> String {
+    let mib = |bytes: u64| bytes as f64 / (1024.0 * 1024.0);
+    let usage = &report.usage;
+    let mut out = format!(
+        "{:<28} {:>12} {:>11} {:>9} {:>11}\n",
+        "table", "entries", "stored MiB", "meta MiB", "fragm. MiB"
+    );
+    for table in usage.tables.iter().filter(|t| t.entries > 0) {
+        out.push_str(&format!(
+            "{:<28} {:>12} {:>11.1} {:>9.1} {:>11.1}\n",
+            table.name,
+            table.entries,
+            mib(table.stored_bytes),
+            mib(table.metadata_bytes),
+            mib(table.fragmented_bytes)
+        ));
+    }
+    out.push_str(&format!(
+        "{:<28} {:>12} {:>11.1} {:>9.1} {:>11.1}\n",
+        "all tables",
+        "",
+        mib(usage.stored_bytes),
+        mib(usage.metadata_bytes),
+        mib(usage.fragmented_bytes)
+    ));
+    if let (Some(file), Some(allocated), Some(free)) =
+        (usage.file_bytes, usage.allocated_bytes, usage.free_bytes)
+    {
+        out.push_str(&format!(
+            "file {:.1} MiB: {:.1} MiB in pages in use, {:.1} MiB free (what a compaction can give back at most); layout {}\n",
+            mib(file),
+            mib(allocated),
+            mib(free),
+            usage.layout
+        ));
+    }
+    if let Some(namespaces) = &report.namespaces {
+        out.push_str(&format!(
+            "\n{:<24} {:>10} {:>10} {:>10} {:>10} {:>10} {:>12} {:>10}\n",
+            "namespace",
+            "nodes",
+            "node MiB",
+            "edges",
+            "edge MiB",
+            "text MiB",
+            "index entr.",
+            "chg MiB"
+        ));
+        for ns in namespaces {
+            out.push_str(&format!(
+                "{:<24} {:>10} {:>10.1} {:>10} {:>10.1} {:>10.1} {:>12} {:>10.1}\n",
+                ns.name,
+                ns.nodes,
+                mib(ns.node_bytes),
+                ns.edges,
+                mib(ns.edge_bytes),
+                mib(ns.text_bytes),
+                ns.index_entries,
+                mib(ns.change_bytes)
+            ));
+        }
+    }
+    out
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StorageParams {
+    #[serde(default)]
+    namespaces: bool,
+}
+
+/// `GET /v1/storage` (owners): what the database takes on disk.
+async fn storage_usage(
+    State(state): State<AppState>,
+    Params(params): Params<StorageParams>,
+) -> ApiResult<Json<StorageReport>> {
+    let db = state.db.clone();
+    let report = tokio::task::spawn_blocking(move || storage_report(&db, params.namespaces))
+        .await
+        .map_err(crate::http::joined)??;
+    Ok(Json(report))
 }
 
 // ---------------------------------------------------------------- queries

@@ -244,6 +244,13 @@ enum Command {
         #[arg(long = "namespace", short = 'n')]
         namespaces: Vec<String>,
     },
+    /// What a database file takes: each table, the file, and with
+    /// --namespaces each namespace's records. The server using it must be
+    /// stopped (or ask a running one: `GET /v1/storage`).
+    Storage {
+        #[command(subcommand)]
+        action: StorageAction,
+    },
     /// Compact a database file in place: the space freed by deletes and
     /// rewrites goes back to the system. The server using it must be
     /// stopped. Nothing in the data changes.
@@ -927,6 +934,25 @@ fn serve_beside_mcp(
 #[global_allocator]
 static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
+#[derive(Subcommand)]
+enum StorageAction {
+    /// Tables, file and free space; with --namespaces, every namespace.
+    Stats {
+        /// The database file.
+        #[arg(long, env = "GRAFENO_DB", conflicts_with = "config")]
+        db: Option<PathBuf>,
+        /// The settings file of the server whose database to read.
+        #[arg(long)]
+        config: Option<PathBuf>,
+        /// Also count each namespace's records (reads all of them).
+        #[arg(long)]
+        namespaces: bool,
+        /// Print JSON instead of tables.
+        #[arg(long)]
+        json: bool,
+    },
+}
+
 fn main() -> ExitCode {
     let mut args: Vec<std::ffi::OsString> = std::env::args_os().collect();
     // From the Microsoft Store package, no arguments (its Start menu entry)
@@ -1434,6 +1460,37 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                         stats.bytes
                     );
                 }
+            }
+        }
+        Command::Storage {
+            action:
+                StorageAction::Stats {
+                    db,
+                    config,
+                    namespaces,
+                    json,
+                },
+        } => {
+            let config = config.or_else(grafeno_server::packaged::settings);
+            let path = match (db, config) {
+                (Some(db), _) => db,
+                (None, Some(settings)) => Config::load(&settings)?
+                    .db
+                    .ok_or_else(|| format!("{} keeps its data in memory", settings.display()))?,
+                (None, None) => return Err("give --db <file> or --config <settings>".into()),
+            };
+            let opened = Grafeno::open_with(
+                &path,
+                &grafeno::OpenOptions {
+                    copy_before_upgrade: false,
+                    ..Default::default()
+                },
+            )?;
+            let report = grafeno_server::http::storage_report(&opened, namespaces)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&report)?);
+            } else {
+                print!("{}", grafeno_server::http::storage_text(&report));
             }
         }
         Command::Vacuum { db, config } => {
