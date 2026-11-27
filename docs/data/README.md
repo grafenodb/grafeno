@@ -69,6 +69,7 @@ build unless the file says otherwise; on E1, runs vary by about ±20%.
 | `import_pressure.csv` | An agent's write latency and a reader's GQ latency over HTTP during a 4 000 000-record import and other loads, before and after CSV and GraphML imports use the bulk lane | `crates/grafeno-server/examples/import_pressure.rs` | E1-disk | 2026-11-26 | bars of agent p99 and max per load, log scale |
 | `storage_baseline.csv` | The storage baseline: six datasets (catalogue, documents, rows, graph, hyperedges, agent memory), their load time, file and stored sizes, size after vacuum, and read and write latency; two runs | `crates/grafeno-server/examples/storage_suite.rs` | E1-disk | 2026-11-26 | stacked bars of stored, fragmented and free MiB per dataset |
 | `redb5.csv` | The storage baseline on redb 4.4.0 and 5.0.0, same machine, idle | `crates/grafeno-server/examples/storage_suite.rs` | E1-disk | 2026-11-26 | paired bars per dataset: file MiB, load s, p50 per operation |
+| `write_cost.csv` | Microseconds a write (create, set properties, set the embedding) with no index, property indexes and a full-text index, before and after phase 3; building an index | `crates/grafeno/examples/write_cost.rs` | E1-disk, eventual durability | 2026-11-27 | paired bars per operation and indexes |
 
 `python docs/charts/build.py` draws the charts of
 [performance](../performance.md) from these files (light and dark SVG in

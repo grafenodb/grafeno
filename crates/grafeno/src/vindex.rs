@@ -436,6 +436,7 @@ impl WriteTx {
             .map_err(storage)?
             .insert((ns, def.name.as_str()), encode(&def)?.as_slice())
             .map_err(storage)?;
+        self.forget_index_defs();
         Ok(Some(BuildProgress {
             index: name.to_owned(),
             done: building.done.min(total),

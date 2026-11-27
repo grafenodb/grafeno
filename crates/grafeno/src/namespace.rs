@@ -322,6 +322,7 @@ impl WriteTx {
         clear!(LABEL_COUNTS, (ns, ""), (end.as_str(), ""));
         clear!(EDGE_LABEL_COUNTS, (ns, ""), (end.as_str(), ""));
         clear!(INDEXES, (ns, ""), (end.as_str(), ""));
+        self.forget_index_defs();
         // The spaces of its vector indexes (`ns\0index`).
         let (low, high) = (format!("{ns}\0"), format!("{ns}\u{1}"));
         clear!(VECTORS, (low.as_str(), 0u128), (high.as_str(), 0u128));

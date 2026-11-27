@@ -572,6 +572,7 @@ impl Grafeno {
             shared: self.shared.clone(),
             actor: None,
             constraint_cache: None,
+            index_cache: std::sync::Mutex::default(),
             constraint_log: Vec::new(),
             deferred_rules: None,
             marked_hyperedge_layout: false,
@@ -1503,6 +1504,9 @@ pub struct WriteTx {
     pub(crate) actor: Option<Actor>,
     /// The constraints of the namespace last written, read once.
     pub(crate) constraint_cache: Option<(String, Arc<Vec<crate::constraints::Constraint>>)>,
+    /// The indexes of the namespace last written, read once: forgotten by
+    /// every change to an index definition in this transaction.
+    pub(crate) index_cache: std::sync::Mutex<Option<(String, Arc<Vec<crate::IndexDef>>)>>,
     /// What constraints did in this transaction.
     pub(crate) constraint_log: Vec<crate::constraints::ConstraintEvent>,
     /// Records whose property rules (16.5) are checked at
@@ -2206,7 +2210,7 @@ impl WriteTx {
             &node.labels,
             previous.map(|old| (old.labels.as_slice(), &old.props)),
         )?;
-        let defs = self.index_defs(ns)?;
+        let defs = self.cached_index_defs(ns)?;
         self.index_node_with(&defs, ns, Some(node), previous)?;
         if !self.applying {
             self.record_history(ns, node, previous)?;
@@ -2288,7 +2292,7 @@ impl WriteTx {
                 .as_ref()
                 .map(|old| (std::slice::from_ref(&old.label), &old.props)),
         )?;
-        let defs = self.index_defs(ns)?;
+        let defs = self.cached_index_defs(ns)?;
         self.index_edge_with(&defs, ns, Some(edge), previous.as_ref())?;
         let labels = [edge.label.clone()];
         let live = !edge.is_retracted();

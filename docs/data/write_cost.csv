@@ -1,0 +1,25 @@
+indexes,operation,before,after
+no index,create a node,23.02,23.14
+no index,set an unindexed property,12.47,11.47
+no index,set an indexed property,12.87,11.84
+no index,set the embedding,214.89,206.73
+a property index,create a node,40.54,30.44
+a property index,set an unindexed property,22.43,13.75
+a property index,set an indexed property,28.78,20.02
+a property index,set the embedding,216.36,242.45
+five property indexes,create a node,51.44,44.74
+five property indexes,set an unindexed property,24.90,22.47
+five property indexes,set an indexed property,30.75,25.67
+five property indexes,set the embedding,230.27,221.52
+a full-text index,create a node,142.36,89.03
+a full-text index,set an unindexed property,123.20,14.13
+a full-text index,set an indexed property,117.50,13.71
+a full-text index,set the embedding,230.81,230.39
+full-text and a property index,create a node,139.86,91.25
+full-text and a property index,set an unindexed property,149.09,13.76
+full-text and a property index,set an indexed property,137.67,21.71
+full-text and a property index,set the embedding,234.73,227.63
+build a property index,seconds,0.10,0.08
+build a property index,fragmented MiB,0.3,0.0
+build a full-text index,seconds,1.10,0.89
+build a full-text index,fragmented MiB,11.9,0.4

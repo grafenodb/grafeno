@@ -14,6 +14,15 @@ upgraded in place, with a copy kept first.
 
 ## Unreleased
 
+- **Changed**: writes keep indexes for less. An index whose properties a
+  change does not touch keeps its entries without computing them (a
+  full-text index tokenized its fields four times for any change: setting
+  an unrelated property cost 123 µs, now 14), a full-text index analyzes
+  its fields once for entries and BM25 counts (creating a node with one,
+  142 µs → 89), and a write transaction reads the namespace's index
+  definitions once instead of at every write. Building an index inserts
+  its entries in key order: a full-text index of 20,000 nodes leaves 0.4
+  MiB fragmented instead of 11.9 and builds in 0.89 s instead of 1.10.
 - **Changed**: redb 5.0 (from 4.4). Files stay interchangeable both ways:
   this build opens files of earlier releases as they are, and earlier
   releases (redb 4.4) open the files it writes, so going back after an

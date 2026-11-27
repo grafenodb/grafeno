@@ -8,7 +8,7 @@
 //! `cargo run --release -p grafeno-server --example many_connections -- 1000 2000 4000`
 //! (connections per run; `SECONDS=20` per run, `CSV=path` writes the rows,
 //! `MAX_REQUESTS=` and `QUEUE_REQUESTS=` change the server's limits,
-//! `WRITES=0` leaves the writes out, `HEALTH=1` sends only `GET /health`,
+//! `WRITES=0` leaves the writes out (`WRITES=only` sends only them), `HEALTH=1` sends only `GET /health`,
 //! `SPREAD=1` prints more percentiles, `SERVER_THREADS=` and
 //! `CLIENT_THREADS=` size the two runtimes, `KEEP_FILE_LIMIT=1` leaves the
 //! open-files limit as it is)
@@ -131,6 +131,7 @@ fn percentile(sorted: &[f64], p: f64) -> f64 {
 async fn user(addr: SocketAddr, seed: u64, ids: Arc<Vec<String>>, stop: Arc<AtomicBool>) -> Tally {
     let writes = std::env::var("WRITES").map_or(true, |value| value != "0");
     let health = std::env::var_os("HEALTH").is_some();
+    let writes_only = std::env::var("WRITES").is_ok_and(|value| value == "only");
     let mut tally = Tally::default();
     let mut connection = match Connection::open(addr).await {
         Ok(connection) => connection,
@@ -152,6 +153,10 @@ async fn user(addr: SocketAddr, seed: u64, ids: Arc<Vec<String>>, stop: Arc<Atom
             pick %= 35;
         }
         let person = ((state >> 13) % PEOPLE as u64) as usize;
+        // `WRITES=only`: only the writes.
+        if writes_only {
+            pick = 80 + pick % 20;
+        }
         // `HEALTH=1`: only `GET /health` (no token, no database).
         if health {
             pick = 200;
@@ -284,13 +289,22 @@ fn main() {
             state = state.with_queue(queue, Duration::from_secs(5));
         }
         let metrics = state.metrics.clone();
+        let writes = state.writer.clone();
         // The server on a runtime of its own, as in `grafeno serve`, so that
         // the clients' tasks do not take its threads.
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         listener.set_nonblocking(true).unwrap();
         let addr = listener.local_addr().unwrap();
         std::thread::spawn(move || {
-            let server = tokio::runtime::Builder::new_multi_thread()
+            let mut builder = tokio::runtime::Builder::new_multi_thread();
+            // `BLOCKING_THREADS=`: the threads reads run on (512 by default).
+            if let Some(n) = std::env::var("BLOCKING_THREADS")
+                .ok()
+                .and_then(|n| n.parse().ok())
+            {
+                builder.max_blocking_threads(n);
+            }
+            let server = builder
                 .worker_threads(
                     std::env::var("SERVER_THREADS")
                         .ok()
@@ -310,6 +324,7 @@ fn main() {
         println!("| ---: | --- | ---: | ---: | ---: | ---: | ---: |");
         for connections in runs {
             let queued_before = metrics.queued_total();
+            let writer_before = writes.metrics();
             let stop = Arc::new(AtomicBool::new(false));
             let users: Vec<_> = (0..connections)
                 .map(|n| tokio::spawn(user(addr, n as u64 + 1, ids.clone(), stop.clone())))
@@ -383,6 +398,16 @@ fn main() {
                 percentile(&all, 0.99),
                 all.last().copied().unwrap_or(0.0)
             ));
+            let writer_after = writes.metrics();
+            let groups = writer_after.groups - writer_before.groups;
+            let committed = writer_after.writes - writer_before.writes;
+            let commit_s = writer_after.commit_seconds.sum - writer_before.commit_seconds.sum;
+            println!(
+                "  writer: {committed} writes in {groups} commits ({:.0} a commit), {:.1} ms a commit at the disk, retried {}",
+                committed as f64 / groups.max(1) as f64,
+                commit_s * 1000.0 / groups.max(1) as f64,
+                writer_after.retried - writer_before.retried
+            );
             println!(
                 "  errors: {errors} (by status {:?}, connections lost {}), queued {}",
                 total

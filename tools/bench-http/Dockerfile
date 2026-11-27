@@ -21,12 +21,13 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,id=grafeno-bench-target,target=/src/target \
     find crates -name '*.rs' -exec touch {} + \
     && cargo build --release --locked --target "$TARGET" -p grafeno-server \
-        ${FEATURES:+--features "$FEATURES"} --bin grafeno --example http_load --example many_connections \
+        ${FEATURES:+--features "$FEATURES"} --bin grafeno --example http_load --example many_connections --example writer_mix \
     && cp "target/$TARGET/release/grafeno" /grafeno \
-    && cp "target/$TARGET/release/examples/http_load" /http_load     && cp "target/$TARGET/release/examples/many_connections" /many_connections
+    && cp "target/$TARGET/release/examples/http_load" /http_load     && cp "target/$TARGET/release/examples/many_connections" /many_connections     && cp "target/$TARGET/release/examples/writer_mix" /writer_mix
 
 FROM debian:trixie-slim@sha256:a72b4433de1cf7d6bae0c4cee74d0547f58601a643b3375f070c51600d63b6b2
 COPY --from=build /grafeno /usr/local/bin/grafeno
 COPY --from=build /http_load /usr/local/bin/http_load
 COPY --from=build /many_connections /usr/local/bin/many_connections
+COPY --from=build /writer_mix /usr/local/bin/writer_mix
 ENTRYPOINT ["grafeno"]

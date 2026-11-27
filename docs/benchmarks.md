@@ -1810,3 +1810,63 @@ hold. Times move within run-to-run noise, a little faster on the whole.
 `vacuum --maximum` (redb 5's `CompactionMode::Maximum`) takes the
 catalogue file of section 3 from 1,028 MiB to 403 MiB, against 555 with
 the plain `vacuum`: the fragmented bytes went from 166 MiB to 17.
+
+## What a write costs (`crates/grafeno/examples/write_cost.rs`)
+
+Phase 3 of the storage roadmap: 20,000 writes of each kind, a thousand to
+a transaction on a file with eventual durability (the engine's work, not
+the disk's), with no index, property indexes and a full-text index on a
+40-word text (`docs/data/write_cost.csv`), µs a write:
+
+| Indexes | Operation | Before | After |
+| --- | --- | ---: | ---: |
+| none | create a node | 23.0 | 23.1 |
+| none | set an unindexed property | 12.5 | 11.5 |
+| a property index | create a node | 40.5 | 30.4 |
+| a property index | set an unindexed property | 22.4 | 13.8 |
+| a property index | set the indexed property | 28.8 | 20.0 |
+| five property indexes | set an unindexed property | 24.9 | 22.5 |
+| a full-text index | create a node | 142.4 | 89.0 |
+| a full-text index | set an unindexed property | 123.2 | 14.1 |
+| full-text and a property index | set an unindexed property | 149.1 | 13.8 |
+| any | set the embedding (an HNSW insert) | 207–242 | 207–242 |
+
+Building over 20,000 existing nodes: a full-text index in 0.89 s instead
+of 1.10, leaving 0.4 MiB fragmented in the index table instead of 11.9; a
+property index in 0.08 s instead of 0.10.
+
+What changed:
+
+- An index whose labels and properties are the same before and after a
+  change keeps its entries without computing them: a full-text index
+  tokenized its fields four times (old and new entries, old and new
+  BM25 counts) for a change that did not touch them.
+- A full-text index's fields are analyzed once for both its entries and
+  its BM25 counts.
+- A write transaction reads the namespace's index definitions once
+  (decoded from JSON) instead of at every write, and forgets them when one
+  is created, changed or dropped.
+- Building an index inserts its entries in key order: pages fill instead
+  of splitting half empty across the table.
+
+Every result of the storage suite matched its fixtures after the change.
+
+### The writer under mixed load
+
+`crates/grafeno-server/examples/writer_mix.rs` drives the group-commit
+writer alone with the write mix of `many_connections.rs` (a new node, or a
+property set on one of 100,000 indexed nodes), immediate durability:
+
+| Writers | Windows, writes/s | p50 ms | Linux container, writes/s | p50 ms | Writes a commit |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 50 | 6,389 | 7.1 | 6,724 | 7.3 | 49 |
+| 200 | 9,824 | 19.5 | 7,034 | 27.9 | 197 |
+| 800 | 11,722 | 78.2 | 7,211 | 124.6 | 504 |
+
+So the about 700 writes a second of `many_connections` on Linux are not
+the writer's limit. Over HTTP with 300 connections (Windows), the writer
+committed 54 writes a group, 20 ms a commit at the disk, and each write
+took about 0.5 ms inside its group against 0.14 ms alone: the writer's
+thread shares the process's CPUs with the requests around it. Giving
+reads fewer threads (512 down to 32) changed nothing; isolating the
+writer's thread is left for a later phase.

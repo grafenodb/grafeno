@@ -27,6 +27,7 @@
 
 use std::collections::HashMap;
 use std::ops::Bound;
+use std::sync::Arc;
 
 use grafeno_core::{Edge, EdgeId, Error, HyperEdge, HyperEdgeId, Node, NodeId, Props, Result};
 use redb::{ReadableTable, TableDefinition};
@@ -611,6 +612,18 @@ pub(crate) fn record_entries<'a, S: AsRef<str>>(
     out
 }
 
+/// Whether `def` holds the same entries for both versions of a record: it
+/// covers both or neither, and every property it reads is equal.
+fn unchanged_for(def: &IndexDef, old: (&[String], &Props), new: (&[String], &Props)) -> bool {
+    let (old_labels, old_props) = old;
+    let (new_labels, new_props) = new;
+    def.covers(old_labels) == def.covers(new_labels)
+        && def
+            .keys()
+            .iter()
+            .all(|key| old_props.get(*key) == new_props.get(*key))
+}
+
 /// A record's values for the properties of `def`, for messages.
 pub(crate) fn values_of(def: &IndexDef, props: &Props) -> String {
     let values: Vec<String> = def
@@ -1011,7 +1024,25 @@ impl ReadTx {
 
 impl WriteTx {
     pub fn index_defs(&self, ns: &str) -> Result<Vec<IndexDef>> {
-        defs_in(&self.tx.open_table(INDEXES).map_err(storage)?, ns)
+        Ok(self.cached_index_defs(ns)?.as_ref().clone())
+    }
+
+    /// The indexes of `ns`, read once per transaction until one changes.
+    pub(crate) fn cached_index_defs(&self, ns: &str) -> Result<Arc<Vec<IndexDef>>> {
+        let mut cache = self.index_cache.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((cached_ns, defs)) = cache.as_ref()
+            && cached_ns == ns
+        {
+            return Ok(defs.clone());
+        }
+        let defs = Arc::new(defs_in(&self.tx.open_table(INDEXES).map_err(storage)?, ns)?);
+        *cache = Some((ns.to_owned(), defs.clone()));
+        Ok(defs)
+    }
+
+    /// Forgets the indexes read: one was created, changed or dropped.
+    pub(crate) fn forget_index_defs(&self) {
+        *self.index_cache.lock().unwrap_or_else(|e| e.into_inner()) = None;
     }
 
     /// [`ReadTx::index_seek_nodes`] as written so far in this transaction.
@@ -1129,6 +1160,13 @@ impl WriteTx {
     /// it is; another index with the same name or on the same label and
     /// property is an error, as are duplicate values in a unique index.
     pub fn create_index(&mut self, ns: &str, def: IndexDef) -> Result<u64> {
+        self.forget_index_defs();
+        let created = self.create_index_inner(ns, def);
+        self.forget_index_defs();
+        created
+    }
+
+    fn create_index_inner(&mut self, ns: &str, def: IndexDef) -> Result<u64> {
         self.note(crate::replication::Touch::Index(
             ns.to_owned(),
             def.name.clone(),
@@ -1318,6 +1356,9 @@ impl WriteTx {
             }
             entries.push((bytes, *id));
         }
+        // In key order: each insert lands after the last, so pages fill
+        // instead of splitting half empty all over the table.
+        entries.sort_unstable();
         let mut table = self.tx.open_table(INDEX_ENTRIES).map_err(storage)?;
         for (bytes, id) in &entries {
             table
@@ -1338,6 +1379,13 @@ impl WriteTx {
 
     /// Removes an index and its entries. Returns whether it existed.
     pub fn drop_index(&mut self, ns: &str, name: &str) -> Result<bool> {
+        self.forget_index_defs();
+        let dropped = self.drop_index_inner(ns, name);
+        self.forget_index_defs();
+        dropped
+    }
+
+    fn drop_index_inner(&mut self, ns: &str, name: &str) -> Result<bool> {
         self.note(crate::replication::Touch::Index(
             ns.to_owned(),
             name.to_owned(),
@@ -1372,7 +1420,7 @@ impl WriteTx {
         node: Option<&Node>,
         previous: Option<&Node>,
     ) -> Result<()> {
-        let defs = self.index_defs(ns)?;
+        let defs = self.cached_index_defs(ns)?;
         self.index_node_with(&defs, ns, node, previous)
     }
 
@@ -1408,7 +1456,7 @@ impl WriteTx {
         edge: Option<&Edge>,
         previous: Option<&Edge>,
     ) -> Result<()> {
-        let defs = self.index_defs(ns)?;
+        let defs = self.cached_index_defs(ns)?;
         self.index_edge_with(&defs, ns, edge, previous)
     }
 
@@ -1450,7 +1498,7 @@ impl WriteTx {
         edge: Option<&HyperEdge>,
         previous: Option<&HyperEdge>,
     ) -> Result<()> {
-        let defs = self.index_defs(ns)?;
+        let defs = self.cached_index_defs(ns)?;
         if !defs.iter().any(|def| def.hyperedges) {
             return Ok(());
         }
@@ -1492,14 +1540,33 @@ impl WriteTx {
         if nodes && defs.iter().any(|def| def.vector.is_some()) {
             self.index_vectors(defs, ns, id, new, old)?;
         }
-        let old_entries = old
-            .map(|(labels, props)| record_entries(defs, kind, labels, props))
-            .unwrap_or_default();
-        let new_entries = new
-            .map(|(labels, props)| record_entries(defs, kind, labels, props))
-            .unwrap_or_default();
+        // An index whose labels and properties are the same on both sides
+        // keeps its entries as they are: nothing to compute (a full-text
+        // index would tokenize its fields four times for nothing).
+        let changed: Vec<IndexDef>;
+        let defs = match (old, new) {
+            (Some(old), Some(new)) => {
+                changed = defs
+                    .iter()
+                    .filter(|def| !unchanged_for(def, old, new))
+                    .cloned()
+                    .collect();
+                if !changed.iter().any(|def| def.kind() == kind) {
+                    return Ok(());
+                }
+                changed.as_slice()
+            }
+            _ => defs,
+        };
         // A full-text index holds the words of its fields, and BM25 their
-        // counts: kept as the entries are.
+        // counts: each side's fields are analyzed once, for both.
+        let mut old_entries: Vec<(&IndexDef, Vec<u8>)> = Vec::new();
+        let mut new_entries: Vec<(&IndexDef, Vec<u8>)> = Vec::new();
+        let plain: Vec<IndexDef> = defs
+            .iter()
+            .filter(|def| !(nodes && def.fulltext.is_some()))
+            .cloned()
+            .collect();
         if nodes {
             for def in defs.iter().filter(|def| def.kind() == RecordKind::Node) {
                 let Some(fulltext) = &def.fulltext else {
@@ -1509,14 +1576,36 @@ impl WriteTx {
                     side.filter(|(labels, _)| def.covers(labels))
                         .and_then(|(_, props)| crate::fulltext::doc_of(def, fulltext, props))
                 };
+                let (before, after) = (doc(old), doc(new));
                 crate::fulltext::update_stats(
                     &self.tx,
                     ns,
                     &def.name,
-                    doc(old).as_ref(),
-                    doc(new).as_ref(),
+                    before.as_ref(),
+                    after.as_ref(),
                 )?;
+                if let Some(doc) = before {
+                    old_entries.extend(doc.entries.into_iter().map(|bytes| (def, bytes)));
+                }
+                if let Some(doc) = after {
+                    new_entries.extend(doc.entries.into_iter().map(|bytes| (def, bytes)));
+                }
             }
+        }
+        let by_name = |def: &IndexDef| defs.iter().find(|d| d.name == def.name).expect("a def");
+        if let Some((labels, props)) = old {
+            old_entries.extend(
+                record_entries(&plain, kind, labels, props)
+                    .into_iter()
+                    .map(|(def, bytes)| (by_name(def), bytes)),
+            );
+        }
+        if let Some((labels, props)) = new {
+            new_entries.extend(
+                record_entries(&plain, kind, labels, props)
+                    .into_iter()
+                    .map(|(def, bytes)| (by_name(def), bytes)),
+            );
         }
         let old_set: std::collections::HashSet<(&str, &[u8])> = old_entries
             .iter()

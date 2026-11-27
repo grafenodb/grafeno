@@ -707,7 +707,7 @@ impl WriteTx {
             self.record_hyperedge_history(ns, edge, old)?;
         }
         // Not null, types and keys: now, or at the end of a statement.
-        let defs = self.index_defs(ns)?;
+        let defs = self.cached_index_defs(ns)?;
         self.check_rules_later(
             ns,
             crate::index::RecordKind::HyperEdge,

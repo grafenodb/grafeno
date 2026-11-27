@@ -1,7 +1,7 @@
 # Storage and indexing optimization
 
 **Status: approved on 2026-11-26, with the answers proposed in
-[section 14](#14-questions-for-approval); phases 1 and 2 done, phase 3 next.** This
+[section 14](#14-questions-for-approval); phases 1 to 3 done, phase 4 next.** This
 document is its source of truth: every step done or left is recorded
 here, in [Progress](#progress), as the work goes on.
 
@@ -902,5 +902,10 @@ The initiative is complete when, measured against the phase-1 baseline:
 | 2026-11-26 | 2.4 `vacuum --maximum` | done | `Grafeno::vacuum_with`; 1,028 → 403 MiB on the section 3 file (555 with `vacuum`) |
 | 2026-11-26 | Phase 2 benchmarks | done | `docs/benchmarks.md` ("redb 5.0"), `docs/data/redb5.csv`: same bytes, same results, files grown more sparingly, times within noise |
 | 2026-11-26 | 2.5 Platforms | done | CI (tests on Linux) and Installers (Linux musl x64/arm64, Windows x64/arm64, `.deb`, `.rpm`, the setup) green on `785d98a` |
-| | Phase 3 | next | cheaper indexing |
+| 2026-11-27 | 3.1 Write cost by part | done | `crates/grafeno/examples/write_cost.rs`: a full-text index made an unrelated property change 10 times dearer (123 µs against 12.5), one property index 1.8 times (`docs/benchmarks.md`, "What a write costs") |
+| 2026-11-27 | 3.2 Entry diffs, tokenize once | done | unchanged indexes skipped (`unchanged_for` in `index.rs`), full-text fields analyzed once for entries and BM25 counts, index definitions read once per write transaction (`WriteTx::cached_index_defs`, forgotten by every change to a definition): 123 → 14 µs, create with full-text 142 → 89 µs |
+| 2026-11-27 | 3.3 Sorted inserts | done | index builds insert in key order: 11.9 → 0.4 MiB fragmented for a full-text index of 20,000 nodes, 1.10 → 0.89 s. Bulk loads insert record by record (each record's entries in its own transaction), so they keep their order; their fragmentation is for compaction (phase 11) |
+| 2026-11-27 | 3.4 Writer under mixed load | measured | the writer alone does 6,400–11,700 writes/s for the mix (7,000 in the Linux container); over HTTP each write takes about four times longer inside its group, sharing the CPUs with the requests. Fewer read threads changed nothing. Isolating the writer's thread (priority, its own core) is a follow-up, not in this phase |
+| 2026-11-27 | Phase 3 checks | done | storage suite against the fixtures: identical; 682 tests green; `crates/grafeno/tests/index_upkeep.rs` |
+| | Phase 4 | next | versioned format and the migration framework |
 | | Phases 2–14 | pending | |
