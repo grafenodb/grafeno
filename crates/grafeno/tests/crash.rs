@@ -71,6 +71,21 @@ fn crash_child() {
                 println!("dropped");
             }
         }
+        "migrate" => {
+            let db = Grafeno::open(&path).unwrap();
+            let id = db
+                .begin_read()
+                .unwrap()
+                .migrations()
+                .unwrap()
+                .last()
+                .unwrap()
+                .id
+                .clone();
+            db.run_migration(&id, &grafeno::RunControl::default())
+                .unwrap();
+            println!("done");
+        }
         "upgrade" => {
             let db = Grafeno::open(&path).unwrap();
             drop(db);
@@ -249,6 +264,62 @@ fn upgrades_survive_being_killed() {
         let stats = read.stats("fixture").unwrap();
         assert_eq!((stats.nodes, stats.edges), (41, 79));
         drop((read, db));
+        let _ = std::fs::remove_file(&db_path);
+    }
+}
+
+#[test]
+fn migrations_survive_being_killed() {
+    for round in 0..6 {
+        let db_path = temp("migrate.redb");
+        let (before, id) = {
+            let db = Grafeno::open(&db_path).unwrap();
+            db.write(|tx| fill(tx, NS, 4_000)).unwrap();
+            let encoding = if round % 2 == 0 {
+                grafeno::Encoding::Envelope
+            } else {
+                grafeno::Encoding::Json
+            };
+            let options = grafeno::MigrationOptions {
+                encoding: Some(encoding),
+                reindex: true,
+                verify: true,
+                batch_size: 40,
+                ..Default::default()
+            };
+            let plan = db.plan_migration(&options).unwrap();
+            db.start_migration(&plan).unwrap();
+            (
+                db.begin_read().unwrap().namespace_digest(NS).unwrap(),
+                plan.id,
+            )
+        };
+        let finished = run_and_kill("migrate", &db_path, None, 300..2_500);
+        // Reopened, it checks out, holds what it held, and resumes to the
+        // end with every record as before.
+        let db = Grafeno::open(&db_path).unwrap();
+        assert_eq!(consistent(&db, NS), (4_000, 3_999));
+        assert_eq!(
+            db.begin_read().unwrap().namespace_digest(NS).unwrap(),
+            before
+        );
+        let state = db.migration(&id).unwrap().unwrap().state;
+        eprintln!("migrate: {state:?} after the crash (finished: {finished})");
+        let done = db
+            .run_migration(
+                &id,
+                &grafeno::RunControl {
+                    exclusive: true,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(done.state, grafeno::MigrationState::Completed, "{done:?}");
+        assert_eq!(
+            db.begin_read().unwrap().namespace_digest(NS).unwrap(),
+            before
+        );
+        drop(db);
         let _ = std::fs::remove_file(&db_path);
     }
 }

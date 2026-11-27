@@ -332,8 +332,9 @@ fn meta_get(table: &impl ReadableTable<&'static str, u64>, key: &str) -> Result<
         .map_or(0, |guard| guard.value()))
 }
 
+/// A stored value as JSON: as written, or out of its envelope.
 fn json_of(bytes: &[u8]) -> Result<Json> {
-    serde_json::from_slice(bytes).map_err(|e| Error::Serialization(e.to_string()))
+    crate::store::decode(bytes)
 }
 
 fn bytes_of(value: &Json) -> Result<Vec<u8>> {

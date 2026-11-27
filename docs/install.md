@@ -566,7 +566,8 @@ leaves store, B-tree metadata, space lost inside pages), the file's size,
 the pages in use and the free pages a compaction could give back; with
 `--namespaces`, each namespace's records and their bytes (it reads them
 all), and `--json` for scripts. A running server answers the same at
-`GET /v1/storage` (owners; `?namespaces=true` for the namespaces).
+`GET /v1/storage` (owners; `?namespaces=true` for the namespaces), with
+the work pending in `pending`.
 
 ```bash
 grafeno storage stats --config /etc/grafeno/grafeno.toml --namespaces
@@ -595,6 +596,46 @@ back too (`grafeno storage stats` shows it as fragmented): a file of
 and to 403 MiB with `--maximum`, in about 6 seconds either way. Inserts
 into the packed tables are slower for a while afterwards, until their
 pages have split again.
+
+**Bringing storage up to date.** `grafeno storage` also migrates a file:
+it rebuilds indexes, rewrites records into another encoding and checks the
+result, in batches that record how far they got, so an interruption
+(a crash, a kill, `Ctrl+C`) loses nothing and `resume` goes on from there.
+With the service stopped:
+
+```bash
+grafeno storage status --config /etc/grafeno/grafeno.toml
+```
+
+```bash
+grafeno storage plan --config /etc/grafeno/grafeno.toml --reindex-existing --verify
+```
+
+```bash
+grafeno storage apply --config /etc/grafeno/grafeno.toml --reindex-existing --verify --compact
+```
+
+`status` shows the file, what is pending (free pages a compaction would
+give back, space lost inside pages, a migration waiting) and every
+migration recorded; a starting server logs the same pending work. `plan`
+says what `apply` would do and changes nothing. `apply` first copies the
+file next to it (`<file>.before-<id>.redb`, checked before anything
+changes; `--no-backup` skips it), then migrates (`--namespace` for some
+namespaces only, `--batch-size` records per transaction), with
+`--verify` checks every namespace and that every record reads exactly as
+before, and with `--compact` ends with `vacuum --maximum`. `resume` runs
+an interrupted migration to its end, and `verify` checks without changing
+anything. Each command takes `--json`.
+
+`--encoding envelope` rewrites records into the versioned envelope that
+later releases will compress: this release and later ones read it, earlier
+ones refuse the file, so going back to an earlier release needs
+`--encoding json` first (or the backup). Records written afterwards are
+still JSON until a release writes envelopes itself. A running server also
+plans and runs migrations at `/v1/storage/migrations` (owners), through
+its writer, between other writes. On a cluster, migrate each member's file
+with its server stopped, one member at a time: the migration is physical
+and is not replicated.
 
 To move a namespace to or from other tools (spreadsheets, graph drawing
 and analysis programs, other databases), use CSV or GraphML. They hold current knowledge, without

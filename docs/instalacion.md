@@ -591,7 +591,8 @@ de las páginas), el tamaño del archivo, las páginas en uso y las libres
 que una compactación podría devolver; con `--namespaces`, los registros de
 cada namespace y sus bytes (los lee todos), y `--json` para scripts. Un
 servidor en marcha responde lo mismo en `GET /v1/storage` (propietarios;
-`?namespaces=true` para los namespaces).
+`?namespaces=true` para los namespaces), con el trabajo pendiente en
+`pending`.
 
 ```bash
 grafeno storage stats --config /etc/grafeno/grafeno.toml --namespaces
@@ -621,6 +622,47 @@ como fragmentado): un archivo de 100.000 entidades de catálogo pasó de
 1.028 MiB a 555 MiB con `vacuum` y a 403 MiB con `--maximum`, en unos 6
 segundos en ambos casos. Las inserciones en las tablas compactadas van más
 lentas un tiempo, hasta que sus páginas vuelven a dividirse.
+
+**Poner el almacenamiento al día.** `grafeno storage` también migra un
+archivo: reconstruye índices, reescribe los registros en otra codificación
+y comprueba el resultado, en lotes que guardan hasta dónde llegaron, así que
+una interrupción (un fallo, un kill, `Ctrl+C`) no pierde nada y `resume`
+sigue desde ahí. Con el servicio detenido:
+
+```bash
+grafeno storage status --config /etc/grafeno/grafeno.toml
+```
+
+```bash
+grafeno storage plan --config /etc/grafeno/grafeno.toml --reindex-existing --verify
+```
+
+```bash
+grafeno storage apply --config /etc/grafeno/grafeno.toml --reindex-existing --verify --compact
+```
+
+`status` muestra el archivo, lo pendiente (páginas libres que una
+compactación devolvería, espacio perdido dentro de las páginas, una
+migración en espera) y cada migración registrada; un servidor al arrancar
+registra lo mismo pendiente en su log. `plan` dice qué haría `apply` y no
+cambia nada. `apply` primero copia el archivo a su lado
+(`<archivo>.before-<id>.redb`, comprobado antes de cambiar nada;
+`--no-backup` lo omite), luego migra (`--namespace` para solo algunos
+namespaces, `--batch-size` registros por transacción), con `--verify`
+comprueba cada namespace y que cada registro se lee exactamente como antes,
+y con `--compact` termina con `vacuum --maximum`. `resume` lleva una
+migración interrumpida hasta el final, y `verify` comprueba sin cambiar
+nada. Cada comando acepta `--json`.
+
+`--encoding envelope` reescribe los registros en el sobre versionado que las
+próximas versiones comprimirán: esta versión y las posteriores lo leen, las
+anteriores rechazan el archivo, así que volver a una versión anterior
+requiere antes `--encoding json` (o el respaldo). Los registros escritos
+después siguen en JSON hasta que una versión escriba sobres por sí misma. Un
+servidor en marcha también planifica y ejecuta migraciones en
+`/v1/storage/migrations` (propietarios), a través de su escritor, entre las
+demás escrituras. En un clúster, migra el archivo de cada miembro con su
+servidor detenido, de uno en uno: la migración es física y no se replica.
 
 Para llevar un namespace a otras herramientas o traerlo de ellas (hojas de
 cálculo, programas de dibujo y análisis de grafos, otras bases de datos),

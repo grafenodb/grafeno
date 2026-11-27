@@ -97,3 +97,68 @@ async fn owners_see_every_table_and_namespace() {
     let (code, _) = call(&app, &key, "GET", "/v1/storage", None).await;
     assert_eq!(code, StatusCode::FORBIDDEN);
 }
+
+#[tokio::test]
+async fn owners_plan_and_run_migrations() {
+    let app = router(AppState::new(
+        Arc::new(Grafeno::in_memory().unwrap()),
+        Some(OWNER),
+    ));
+    call(
+        &app,
+        OWNER,
+        "POST",
+        "/v1/shop/query",
+        Some(json!({"query": "UNWIND range(1, 50) AS i CREATE (:Item {i: i})"})),
+    )
+    .await;
+    let options = json!({"namespaces": ["shop"], "encoding": "envelope", "reindex": true, "verify": true, "batch_size": 20});
+    let (code, plan) = call(
+        &app,
+        OWNER,
+        "POST",
+        "/v1/storage/migrations",
+        Some(json!({"options": options, "dry_run": true})),
+    )
+    .await;
+    assert_eq!(code, StatusCode::OK, "{plan}");
+    assert_eq!(plan["state"], "pending");
+    let (_, list) = call(&app, OWNER, "GET", "/v1/storage/migrations", None).await;
+    assert_eq!(list, json!([]));
+
+    let (code, done) = call(
+        &app,
+        OWNER,
+        "POST",
+        "/v1/storage/migrations",
+        Some(json!({"options": options})),
+    )
+    .await;
+    assert_eq!(code, StatusCode::OK, "{done}");
+    assert_eq!(done["state"], "completed", "{done}");
+    let (_, list) = call(&app, OWNER, "GET", "/v1/storage/migrations", None).await;
+    assert_eq!(list[0]["id"], done["id"]);
+    // The data reads as before.
+    let (_, rows) = call(
+        &app,
+        OWNER,
+        "POST",
+        "/v1/shop/query",
+        Some(json!({"query": "MATCH (n:Item) RETURN sum(n.i) AS s"})),
+    )
+    .await;
+    assert_eq!(rows["rows"][0][0], 1275, "{rows}");
+    // Nothing pending is reported for a database just migrated.
+    let (_, report) = call(&app, OWNER, "GET", "/v1/storage", None).await;
+    assert!(report["pending"].is_array(), "{report}");
+    // Unknown fields are refused.
+    let (code, _) = call(
+        &app,
+        OWNER,
+        "POST",
+        "/v1/storage/migrations",
+        Some(json!({"dryrun": true})),
+    )
+    .await;
+    assert!(code.is_client_error());
+}

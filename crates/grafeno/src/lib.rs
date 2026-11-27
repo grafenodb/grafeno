@@ -39,6 +39,7 @@ mod index;
 mod interchange;
 mod memory;
 mod merge;
+mod migrations;
 mod namespace;
 mod planstats;
 mod replication;
@@ -87,6 +88,10 @@ pub use memory::{DEFAULT_IMPORTANCE, MemoryState, names_of, normalize_name};
 pub use merge::{
     Conflict, ConflictKind, DEFAULT_STRONG_KEYS, MergeOptions, MergeRecord, MergeReport,
     NodeSnapshot, node_conflicts,
+};
+pub use migrations::{
+    Encoding, Migration, MigrationOptions, MigrationState, MigrationStep, NamespaceDigest, Pending,
+    RunControl, StepKind,
 };
 pub use namespace::{DropStats, MAX_NAMESPACE_LENGTH, RESERVED, check_new_namespace};
 pub use planstats::{BUCKETS, COMMON_VALUES, EdgeLabelStats, IndexStats, PlannerStats};

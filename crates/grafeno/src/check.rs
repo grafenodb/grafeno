@@ -609,7 +609,15 @@ impl WriteTx {
     pub fn rebuild_indexes(&mut self, ns: &str) -> Result<RebuildReport> {
         self.bulk(
             crate::replication::Bulk::RebuildIndexes { ns: ns.to_owned() },
-            |tx| tx.rebuild_indexes_inner(ns),
+            |tx| {
+                // Rebuilding changes no record: nothing for the change log
+                // (it wrote every node and edge as updated, 200,000
+                // entries for a catalogue, and a change event each).
+                let logging = std::mem::replace(&mut tx.log_changes, false);
+                let rebuilt = tx.rebuild_indexes_inner(ns);
+                tx.log_changes = logging;
+                rebuilt
+            },
         )
     }
 

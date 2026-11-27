@@ -135,3 +135,28 @@ fn building_an_index_holds_every_entry_once() {
         .unwrap();
     assert_eq!(one.len(), 1);
 }
+
+#[test]
+fn rebuilding_indexes_writes_nothing_to_the_change_log() {
+    let db = Grafeno::in_memory().unwrap();
+    db.write(|tx| {
+        tx.create_index("n", IndexDef::new("P", "k"))?;
+        for i in 0..200i64 {
+            tx.create_node("n", NewNode::new("P").prop("k", i))?;
+        }
+        Ok(())
+    })
+    .unwrap();
+    let logged = |db: &Grafeno| {
+        db.begin_read()
+            .unwrap()
+            .changes("n", 0, 100_000)
+            .unwrap()
+            .changes
+            .len()
+    };
+    let before = logged(&db);
+    db.write(|tx| tx.rebuild_indexes("n")).unwrap();
+    assert_eq!(logged(&db), before);
+    assert!(db.begin_read().unwrap().check("n").unwrap().is_ok());
+}

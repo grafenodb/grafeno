@@ -1870,3 +1870,23 @@ took about 0.5 ms inside its group against 0.14 ms alone: the writer's
 thread shares the process's CPUs with the requests around it. Giving
 reads fewer threads (512 down to 32) changed nothing; isolating the
 writer's thread is left for a later phase.
+
+## A storage migration (`grafeno storage apply`, phase 4)
+
+On the file of section 3 of the storage roadmap (100,000 catalogue
+entities, 1,028 MiB, 165.9 MiB lost inside pages), Windows, release build:
+
+```bash
+grafeno storage apply --db catalogue.redb --reindex-existing --encoding envelope --verify --compact
+```
+
+| Step | Records | Result |
+| --- | ---: | --- |
+| reindex | 3 indexes | rebuilt in key order |
+| reencode | 199,974 | JSON → envelope (no compression yet) |
+| verify | 199,974 | check ok, every record's value as before |
+| compact | | 1,028 → 402.8 MiB; lost inside pages 165.9 → 16.2 MiB |
+
+65.9 s in all, the backup included. The stored bytes grow by 1 MiB (five
+bytes of envelope header a record); compression comes in phase 5.
+

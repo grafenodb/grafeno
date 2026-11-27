@@ -174,7 +174,77 @@ pub(crate) fn encode<T: Serialize>(value: &T) -> Result<Vec<u8>> {
 }
 
 pub(crate) fn decode<T: DeserializeOwned>(bytes: &[u8]) -> Result<T> {
-    serde_json::from_slice(bytes).map_err(|e| Error::Serialization(e.to_string()))
+    let json = unwrap_envelope(bytes)?;
+    serde_json::from_slice(&json).map_err(|e| Error::Serialization(e.to_string()))
+}
+
+/// The first byte of a value in an envelope (docs/roadmap/
+/// STORAGE_AND_INDEXING_OPTIMIZATION.md, 6.1). JSON as `serde_json`
+/// writes it never starts below `0x20`, so a value is either an envelope
+/// or the JSON of earlier layouts, and both are read.
+pub(crate) const ENVELOPE: u8 = 0x01;
+/// The envelope's version this build writes and reads.
+pub(crate) const ENVELOPE_VERSION: u8 = 1;
+/// The decoded size a value may claim: past it the envelope is corrupt.
+pub(crate) const MAX_DECODED: u64 = 1 << 30;
+
+/// How the payload of an envelope is stored.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Codec {
+    /// As it is.
+    Plain = 0,
+}
+
+/// `json` in an envelope: tag, version, codec, the decoded length (varint),
+/// then the payload.
+pub(crate) fn envelope(json: &[u8], codec: Codec) -> Vec<u8> {
+    let mut out = Vec::with_capacity(json.len() + 8);
+    out.extend_from_slice(&[ENVELOPE, ENVELOPE_VERSION, codec as u8]);
+    put_varint(&mut out, json.len() as i64);
+    match codec {
+        Codec::Plain => out.extend_from_slice(json),
+    }
+    out
+}
+
+/// Whether a stored value is in an envelope.
+pub(crate) fn is_enveloped(bytes: &[u8]) -> bool {
+    bytes.first().is_some_and(|first| *first < 0x20)
+}
+
+/// The JSON a stored value holds: itself, or its envelope's payload once
+/// checked (tag, version, codec, length).
+pub(crate) fn unwrap_envelope(bytes: &[u8]) -> Result<std::borrow::Cow<'_, [u8]>> {
+    if !is_enveloped(bytes) {
+        return Ok(std::borrow::Cow::Borrowed(bytes));
+    }
+    let corrupt = |what: &str| Error::Serialization(format!("a stored value's envelope {what}"));
+    if bytes[0] != ENVELOPE {
+        return Err(corrupt("has an unknown tag"));
+    }
+    match bytes.get(1) {
+        Some(&ENVELOPE_VERSION) => {}
+        Some(version) => {
+            return Err(Error::Invalid(format!(
+                "a stored value is in envelope version {version}, newer than this Grafeno reads: upgrade Grafeno"
+            )));
+        }
+        None => return Err(corrupt("is cut short")),
+    }
+    let codec = *bytes.get(2).ok_or_else(|| corrupt("is cut short"))?;
+    let mut at = 3;
+    let length = take_varint(bytes, &mut at);
+    if length < 0 || length as u64 > MAX_DECODED || at > bytes.len() {
+        return Err(corrupt("claims an impossible length"));
+    }
+    let payload = &bytes[at..];
+    match codec {
+        0 if payload.len() as i64 == length => Ok(std::borrow::Cow::Borrowed(payload)),
+        0 => Err(corrupt("does not hold the length it claims")),
+        other => Err(Error::Invalid(format!(
+            "a stored value is compressed with codec {other}, which this Grafeno does not read: upgrade Grafeno"
+        ))),
+    }
 }
 
 pub(crate) fn check_namespace(ns: &str) -> Result<()> {
@@ -444,5 +514,56 @@ mod tests {
         // A plain fact: flags, the other end and a recent time.
         let plain = (42u128, 1_700_000_000_000_000, i64::MAX, i64::MIN, i64::MAX);
         assert_eq!(encode_adj(&plain).len(), 25);
+    }
+}
+
+#[cfg(test)]
+mod envelope_tests {
+    use super::*;
+
+    #[test]
+    fn values_read_the_same_in_an_envelope_or_not() {
+        let value = serde_json::json!({"id": 7, "labels": ["A"], "text": "héllo"});
+        let json = serde_json::to_vec(&value).unwrap();
+        let wrapped = envelope(&json, Codec::Plain);
+        assert!(is_enveloped(&wrapped) && !is_enveloped(&json));
+        let a: serde_json::Value = decode(&json).unwrap();
+        let b: serde_json::Value = decode(&wrapped).unwrap();
+        assert_eq!(a, b);
+        // Every JSON value serde writes starts at 0x20 or above.
+        for v in [
+            serde_json::json!([1]),
+            serde_json::json!("s"),
+            serde_json::json!(-1),
+            serde_json::json!(null),
+            serde_json::json!(true),
+        ] {
+            assert!(!is_enveloped(&serde_json::to_vec(&v).unwrap()));
+        }
+    }
+
+    #[test]
+    fn a_damaged_or_newer_envelope_is_refused() {
+        let json = br#"{"a":1}"#;
+        let wrapped = envelope(json, Codec::Plain);
+        let decode_bytes = |bytes: &[u8]| {
+            decode::<serde_json::Value>(bytes)
+                .map(|_| ())
+                .unwrap_err()
+                .to_string()
+        };
+        assert!(decode_bytes(&wrapped[..wrapped.len() - 1]).contains("length"));
+        let mut newer = wrapped.clone();
+        newer[1] = 9;
+        assert!(decode_bytes(&newer).contains("upgrade Grafeno"));
+        let mut codec = wrapped.clone();
+        codec[2] = 7;
+        assert!(decode_bytes(&codec).contains("codec 7"));
+        let mut tag = wrapped.clone();
+        tag[0] = 0x02;
+        assert!(decode_bytes(&tag).contains("unknown tag"));
+        let mut huge = vec![ENVELOPE, ENVELOPE_VERSION, 0];
+        put_varint(&mut huge, i64::MAX);
+        assert!(decode_bytes(&huge).contains("impossible length"));
     }
 }

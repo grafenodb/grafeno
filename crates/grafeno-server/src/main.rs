@@ -955,6 +955,124 @@ enum StorageAction {
         #[arg(long)]
         json: bool,
     },
+    /// The file, what is pending (space to give back, migrations waiting)
+    /// and every migration recorded.
+    Status {
+        #[command(flatten)]
+        file: StorageFile,
+        #[arg(long)]
+        json: bool,
+    },
+    /// What `apply` would do with these options, changing nothing.
+    Plan {
+        #[command(flatten)]
+        file: StorageFile,
+        #[command(flatten)]
+        migrate: MigrateArgs,
+    },
+    /// Back the file up, migrate it in batches (resumable), and report.
+    Apply {
+        #[command(flatten)]
+        file: StorageFile,
+        #[command(flatten)]
+        migrate: MigrateArgs,
+        /// Do not copy the file first.
+        #[arg(long)]
+        no_backup: bool,
+    },
+    /// Run the paused or interrupted migration to its end.
+    Resume {
+        #[command(flatten)]
+        file: StorageFile,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Check namespaces as a migration's last step does.
+    Verify {
+        #[command(flatten)]
+        file: StorageFile,
+        /// Only these namespaces (all by default).
+        #[arg(long = "namespace", short = 'n')]
+        namespaces: Vec<String>,
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+/// The file a storage command opens.
+#[derive(clap::Args)]
+struct StorageFile {
+    /// The database file.
+    #[arg(long, env = "GRAFENO_DB", conflicts_with = "config")]
+    db: Option<PathBuf>,
+    /// The settings file of the server whose database to open.
+    #[arg(long)]
+    config: Option<PathBuf>,
+}
+
+/// What a migration does.
+#[derive(clap::Args)]
+struct MigrateArgs {
+    /// Only these namespaces.
+    #[arg(long = "namespace", short = 'n', conflicts_with = "all_namespaces")]
+    namespaces: Vec<String>,
+    /// Every namespace (the default when none is named).
+    #[arg(long)]
+    all_namespaces: bool,
+    /// Rebuild every index (entries in key order).
+    #[arg(long)]
+    reindex_existing: bool,
+    /// Rewrite records into this encoding: `json` (what every version
+    /// reads) or `envelope` (read by this version and later ones).
+    #[arg(long, value_parser = ["json", "envelope"])]
+    encoding: Option<String>,
+    /// Pack the file afterwards (`vacuum --maximum`).
+    #[arg(long)]
+    compact: bool,
+    /// Check each namespace at the end, and that every record reads as
+    /// before.
+    #[arg(long)]
+    verify: bool,
+    /// Records per transaction.
+    #[arg(long, default_value_t = 10_000)]
+    batch_size: usize,
+    #[arg(long)]
+    json: bool,
+}
+
+impl StorageFile {
+    fn path(&self) -> Result<PathBuf, String> {
+        let config = self
+            .config
+            .clone()
+            .or_else(grafeno_server::packaged::settings);
+        match (&self.db, config) {
+            (Some(db), _) => Ok(db.clone()),
+            (None, Some(settings)) => Config::load(&settings)
+                .map_err(|e| e.to_string())?
+                .db
+                .ok_or_else(|| format!("{} keeps its data in memory", settings.display())),
+            (None, None) => Err("give --db <file> or --config <settings>".into()),
+        }
+    }
+}
+
+impl MigrateArgs {
+    fn request(&self, backup: bool) -> grafeno_server::storage_cli::Request {
+        grafeno_server::storage_cli::Request {
+            namespaces: self.namespaces.clone(),
+            reindex: self.reindex_existing,
+            encoding: self.encoding.as_deref().map(|e| match e {
+                "envelope" => grafeno::Encoding::Envelope,
+                _ => grafeno::Encoding::Json,
+            }),
+            verify: self.verify,
+            compact: self.compact,
+            batch_size: self.batch_size,
+            backup,
+            json: self.json,
+        }
+    }
 }
 
 fn main() -> ExitCode {
@@ -1483,6 +1601,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                     .ok_or_else(|| format!("{} keeps its data in memory", settings.display()))?,
                 (None, None) => return Err("give --db <file> or --config <settings>".into()),
             };
+            let closed_length = grafeno_server::storage_cli::length(&path);
             let opened = Grafeno::open_with(
                 &path,
                 &grafeno::OpenOptions {
@@ -1490,13 +1609,47 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                     ..Default::default()
                 },
             )?;
-            let report = grafeno_server::http::storage_report(&opened, namespaces)?;
+            let mut report = grafeno_server::http::storage_report(&opened, namespaces)?;
+            report.usage = grafeno_server::storage_cli::closed(closed_length, report.usage);
             if json {
                 println!("{}", serde_json::to_string_pretty(&report)?);
             } else {
                 print!("{}", grafeno_server::http::storage_text(&report));
             }
         }
+        Command::Storage {
+            action: StorageAction::Status { file, json },
+        } => grafeno_server::storage_cli::status(&file.path()?, json)?,
+        Command::Storage {
+            action: StorageAction::Plan { file, migrate },
+        } => grafeno_server::storage_cli::plan(&file.path()?, &migrate.request(false))?,
+        Command::Storage {
+            action:
+                StorageAction::Apply {
+                    file,
+                    migrate,
+                    no_backup,
+                },
+        } => grafeno_server::storage_cli::apply(&file.path()?, &migrate.request(!no_backup))?,
+        Command::Storage {
+            action: StorageAction::Resume { file, json },
+        } => grafeno_server::storage_cli::resume(&file.path()?, json)?,
+        Command::Storage {
+            action:
+                StorageAction::Verify {
+                    file,
+                    namespaces,
+                    json,
+                },
+        } => grafeno_server::storage_cli::apply(
+            &file.path()?,
+            &grafeno_server::storage_cli::Request {
+                namespaces,
+                verify: true,
+                json,
+                ..Default::default()
+            },
+        )?,
         Command::Vacuum {
             db,
             config,

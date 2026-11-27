@@ -198,6 +198,11 @@ pub struct Grafeno {
     vector_cache: usize,
     /// The file it was opened from (`None` in memory).
     pub(crate) path: Option<std::path::PathBuf>,
+    /// The file's length before it was opened: redb grows a file with no
+    /// free pages when it opens it and trims that again when it closes it,
+    /// so the free pages counted while open overstate what a compaction
+    /// gives back.
+    pub(crate) opened_bytes: Option<u64>,
 }
 
 impl Grafeno {
@@ -213,12 +218,14 @@ impl Grafeno {
         if options.copy_before_upgrade {
             Self::copy_before_upgrade(path)?;
         }
+        let opened_bytes = std::fs::metadata(path).ok().map(|meta| meta.len());
         let db = Database::builder()
             .set_cache_size(options.cache_bytes)
             .create(path)
             .map_err(storage)?;
         let mut grafeno = Self::init(db)?;
         grafeno.path = Some(path.to_owned());
+        grafeno.opened_bytes = opened_bytes.filter(|&bytes| bytes > 0);
         Ok(grafeno.with_options(options))
     }
 
@@ -477,6 +484,7 @@ impl Grafeno {
             shared,
             vector_cache: crate::vector::DEFAULT_VECTOR_CACHE,
             path: None,
+            opened_bytes: None,
         })
     }
 

@@ -14,6 +14,32 @@ upgraded in place, with a copy kept first.
 
 ## Unreleased
 
+- **Added**: storage migrations. `grafeno storage status`, `plan`,
+  `apply`, `resume` and `verify` (the server stopped) rebuild indexes
+  (`--reindex-existing`), rewrite records into another encoding
+  (`--encoding`), check every namespace and that every record reads as
+  before (`--verify`) and compact (`--compact`), in batches whose
+  checkpoint is saved with them: a migration killed at any point resumes
+  and ends with the same data, and running it again changes nothing.
+  `apply` copies the file first and checks the copy. Migrations are
+  recorded in the file, with their steps, counts and results; a running
+  server lists them and runs one through its writer at
+  `/v1/storage/migrations` (owners), and logs at start, and reports in
+  `GET /v1/storage` (`pending`), the work waiting: free pages, space lost
+  inside pages, a migration. On 100,000 catalogue entities, `apply
+  --reindex-existing --encoding envelope --verify --compact` took the file
+  from 1,028 MiB to 403 MiB in 66 s, every record read back as before
+  (`vacuum --maximum` alone: 403 MiB, the records left as JSON).
+- **Added**: records may be stored in a versioned envelope (a tag byte,
+  its version, a codec, the length, then the JSON), what later releases
+  will compress. This release reads records in either form and still
+  writes JSON; only `grafeno storage apply --encoding envelope` writes
+  envelopes, and earlier releases refuse such a file (`--encoding json`
+  turns it back). An envelope from a newer release, or with an unknown
+  codec or a wrong length, is an error, never misread.
+- **Fixed**: rebuilding indexes (`grafeno rebuild`, `POST
+  /v1/{ns}/rebuild`, a migration) wrote every node and edge to the change
+  log as updated, a change event each; it writes nothing there now.
 - **Changed**: writes keep indexes for less. An index whose properties a
   change does not touch keeps its entries without computing them (a
   full-text index tokenized its fields four times for any change: setting

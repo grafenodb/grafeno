@@ -776,7 +776,7 @@ pub fn need(method: &str, path: &str) -> Need {
         // The settings it runs with (no secrets, but its limits and paths).
         ["settings"] => Need::Owner,
         // Every table and namespace, whoever owns them.
-        ["storage"] => Need::Owner,
+        ["storage"] | ["storage", "migrations"] => Need::Owner,
         // Their own sessions, password and keys; the handlers check more.
         ["auth", ..] | ["keys", ..] => Need::Caller,
         ["accounts", ..] => Need::Server(Act::ManageAccounts),

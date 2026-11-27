@@ -27,6 +27,7 @@ pub mod packaged;
 pub mod roles;
 pub mod service;
 pub mod shell;
+pub mod storage_cli;
 pub mod studio;
 pub mod transactions;
 pub mod users;

@@ -543,6 +543,12 @@ pub async fn serve_on(
         );
     }
     open_files_for_connections();
+    // What waits in the file: said, never run at start.
+    if let Ok(pending) = state.db.pending_work() {
+        for item in pending {
+            eprintln!("grafeno: storage: {}", item.detail);
+        }
+    }
     crate::events::start(&state);
     // Explicit transactions past their time give the writer back.
     {
@@ -841,6 +847,10 @@ pub fn router_with(state: AppState, options: &Options) -> Router {
         .route("/{ns}/summaries", post(summaries))
         .route("/metrics", get(metrics))
         .route("/storage", get(storage_usage))
+        .route(
+            "/storage/migrations",
+            get(storage_migrations).post(start_storage_migration),
+        )
         .route("/cluster", get(cluster_status))
         .route("/cluster/voters", post(cluster_voters))
         .route("/cluster/compact", post(cluster_compact))
@@ -3432,6 +3442,8 @@ pub struct StorageReport {
     /// Each namespace's records, when asked for.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub namespaces: Option<Vec<grafeno::NamespaceUsage>>,
+    /// Migrations waiting and space a compaction would give back.
+    pub pending: Vec<grafeno::Pending>,
 }
 
 /// The storage report of `db`, with every namespace's records if asked.
@@ -3446,7 +3458,12 @@ pub fn storage_report(db: &Grafeno, namespaces: bool) -> grafeno::Result<Storage
                 .collect()
         })
         .transpose()?;
-    Ok(StorageReport { usage, namespaces })
+    let pending = db.pending_work()?;
+    Ok(StorageReport {
+        usage,
+        namespaces,
+        pending,
+    })
 }
 
 /// The report as text: tables largest first, then the file.
@@ -3484,6 +3501,13 @@ pub fn storage_text(report: &StorageReport) -> String {
             mib(allocated),
             mib(free),
             usage.layout
+        ));
+    }
+    for pending in &report.pending {
+        out.push_str(&format!(
+            "pending: {}
+",
+            pending.detail
         ));
     }
     if let Some(namespaces) = &report.namespaces {
@@ -3532,6 +3556,65 @@ async fn storage_usage(
         .await
         .map_err(crate::http::joined)??;
     Ok(Json(report))
+}
+
+/// `GET /v1/storage/migrations` (owners): every migration of this file.
+async fn storage_migrations(
+    State(state): State<AppState>,
+) -> ApiResult<Json<Vec<grafeno::Migration>>> {
+    let db = state.db.clone();
+    let list = tokio::task::spawn_blocking(move || db.begin_read()?.migrations())
+        .await
+        .map_err(crate::http::joined)??;
+    Ok(Json(list))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MigrationInput {
+    #[serde(default)]
+    options: grafeno::MigrationOptions,
+    /// Only plan it.
+    #[serde(default)]
+    dry_run: bool,
+    /// Resume this migration instead of starting one.
+    #[serde(default)]
+    resume: Option<String>,
+}
+
+/// `POST /v1/storage/migrations` (owners): plans a migration, or runs it
+/// (or resumes one) through the writer's bulk lane, batch by batch, while
+/// the server keeps serving. Answers when it ends.
+async fn start_storage_migration(
+    State(state): State<AppState>,
+    Body(input): Body<MigrationInput>,
+) -> ApiResult<Json<grafeno::Migration>> {
+    if state.writer.cluster().is_some() {
+        return Err(ApiError::bad_request(
+            "migrate a cluster member's file with `grafeno storage apply`, its server stopped, one member at a time",
+        ));
+    }
+    let writes = state.writer.clone();
+    let db = state.db.clone();
+    let migration = tokio::task::spawn_blocking(move || -> grafeno::Result<grafeno::Migration> {
+        let id = match input.resume {
+            Some(id) => id,
+            None => {
+                let plan = db.plan_migration(&input.options)?;
+                if input.dry_run {
+                    return Ok(plan);
+                }
+                db.start_migration(&plan)?;
+                plan.id
+            }
+        };
+        writes
+            .local
+            .run_migration(&id, &grafeno::RunControl::default())
+    })
+    .await
+    .map_err(crate::http::joined)??;
+    Ok(Json(migration))
 }
 
 // ---------------------------------------------------------------- queries
