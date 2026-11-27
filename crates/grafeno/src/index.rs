@@ -88,6 +88,10 @@ pub struct IndexDef {
     /// for [`ReadTx::vector_search`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vector: Option<crate::vindex::VectorSpec>,
+    /// Who made it: `CREATE INDEX` (or a write's `indexes`), or the
+    /// namespace's indexing policy (phase 6).
+    #[serde(default, skip_serializing_if = "crate::IndexOrigin::is_manual")]
+    pub origin: crate::IndexOrigin,
 }
 
 impl IndexDef {
@@ -340,6 +344,9 @@ pub struct IndexInfo {
     #[serde(flatten)]
     pub def: IndexDef,
     pub entries: u64,
+    /// Reads that used it since the database was opened (lookups, seeks,
+    /// searches; a query that reads it counts once).
+    pub uses: u64,
 }
 
 /// Which values to look up.
@@ -838,7 +845,8 @@ impl ReadTx {
                 } else {
                     self.index_entry_count(ns, &def.name)?
                 };
-                Ok(IndexInfo { def, entries })
+                let uses = self.shared.index_uses.get(ns, &def.name);
+                Ok(IndexInfo { def, entries, uses })
             })
             .collect()
     }
@@ -859,6 +867,7 @@ impl ReadTx {
         limit: usize,
     ) -> Result<Vec<FuzzyHit>> {
         let def = fuzzy_def(self.index_defs(ns)?, label, key)?;
+        self.shared.index_uses.note(ns, &def.name);
         fuzzy(
             &self.index_entries,
             |id| self.node(ns, id),
@@ -879,6 +888,7 @@ impl ReadTx {
         range: &IndexRange,
         limit: usize,
     ) -> Result<Vec<NodeId>> {
+        self.shared.index_uses.note(ns, name);
         let Some(view) = self.view() else {
             return lookup(&self.index_entries, ns, name, range, limit);
         };
@@ -917,6 +927,7 @@ impl ReadTx {
         range: Option<&IndexRange>,
         limit: usize,
     ) -> Result<Vec<NodeId>> {
+        self.shared.index_uses.note(ns, name);
         let def = find_def(self.index_defs(ns)?, name)?;
         if def.kind() != RecordKind::Node {
             return Err(Error::Invalid(format!(
@@ -964,6 +975,7 @@ impl ReadTx {
         range: Option<&IndexRange>,
         limit: usize,
     ) -> Result<Vec<EdgeId>> {
+        self.shared.index_uses.note(ns, name);
         let def = find_def(self.index_defs(ns)?, name)?;
         if def.kind() != RecordKind::Edge {
             return Err(Error::Invalid(format!(
@@ -998,6 +1010,7 @@ impl ReadTx {
         range: Option<&IndexRange>,
         limit: usize,
     ) -> Result<Vec<HyperEdgeId>> {
+        self.shared.index_uses.note(ns, name);
         let def = find_def(self.index_defs(ns)?, name)?;
         if def.kind() != RecordKind::HyperEdge {
             return Err(Error::Invalid(format!(
@@ -1273,6 +1286,15 @@ impl WriteTx {
             .iter()
             .find(|other| other.same_shape(&def) && other.required == def.required)
         {
+            // An index the policy made gives way to one asked for: the
+            // same entries, kept under the name and origin asked for.
+            if other.origin == crate::IndexOrigin::Auto && def.origin == crate::IndexOrigin::Manual
+            {
+                let name = other.name.clone();
+                self.drop_index_inner(ns, &name)?;
+                self.forget_index_defs();
+                return self.create_index_inner(ns, def);
+            }
             return Err(Error::Invalid(format!(
                 "index {:?} already covers {}",
                 other.name,

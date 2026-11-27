@@ -22,6 +22,10 @@ pub struct NamespaceInfo {
     /// The language its node texts are stemmed in (`en`, `es`), if any.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub language: Option<crate::text::Language>,
+    /// Its indexing policy; `None` for a namespace of an earlier release,
+    /// which is manual until migrated.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub indexing: Option<crate::IndexingPolicy>,
 }
 
 /// What a namespace holds, by label and by index.
@@ -130,6 +134,7 @@ pub(crate) fn namespaces(
             created_at: meta.created_at,
             description: meta.description,
             language: meta.language,
+            indexing: meta.indexing,
         });
     }
     Ok(out)

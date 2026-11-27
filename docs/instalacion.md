@@ -757,6 +757,9 @@ vector_cache_mb = 128       # vectors decoded while inserting embeddings
 [storage]
 compression = "auto"        # compress values where it pays; "off" writes them as they are
 
+[indexing]
+mode = "automatic"          # of namespaces without one: automatic, manual or hybrid
+
 [changes]                   # the change log that streams and webhooks follow
 enabled = true
 max_entries = 1000000       # per namespace; 0 for no limit
@@ -820,6 +823,49 @@ para un momento tranquilo (`grafeno compact -n NS`, o
 de que se compacten índices vectoriales: un miembro más antiguo que
 repite la compactación de un índice vectorial lo reconstruye con la
 similitud por defecto.
+
+### Indexación
+
+Un namespace indexa por sí mismo las propiedades de sus nodos según
+aparecen: decide el primer valor de cada propiedad de una etiqueta (una
+cadena de hasta 256 caracteres, un número o un booleano reciben un índice de
+propiedad, que sirve igualdades, rangos y prefijos; una cadena más larga, un
+índice de texto completo; listas, mapas y nulos, ninguno). Son índices
+corrientes, `auto_Etiqueta_propiedad`, que `SHOW INDEXES` muestra con
+`origin` `auto` y las lecturas que usaron cada uno (`uses`), y se eliminan
+como cualquiera: uno eliminado no se vuelve a crear. Una etiqueta tiene como
+mucho 32 índices automáticos.
+
+El modo de un namespace sin uno propio es el del servidor:
+
+```toml
+[indexing]
+mode = "automatic"   # o "manual": solo CREATE INDEX; o "hybrid"
+```
+
+Un namespace puede tener el suyo, con reglas (`hybrid`): gana una regla para
+la propiedad de una etiqueta, luego una exclusión, luego una regla para la
+propiedad en cualquier etiqueta y por último la decisión automática:
+
+```bash
+grafeno shell --config /etc/grafeno/grafeno.toml -c "ALTER NAMESPACE docs SET INDEXING {mode: 'hybrid', exclude: ['raw'], labels: {Doc: {properties: {title: ['exact', 'fulltext']}}}}"
+```
+
+(`CREATE NAMESPACE docs OPTIONS {indexing: {...}}` e `indexing` en
+`POST`/`PATCH /v1/namespaces` hacen lo mismo.) Una escritura también puede
+nombrar los índices que quiere: `"indexes": {"title": ["exact", "fulltext"]}`
+en un nodo escrito por HTTP los declara como lo haría `CREATE INDEX`.
+
+Cambiar el modo de un namespace no construye nada: las propiedades que ya
+tiene se quedan como están, y solo las que no ha visto reciben índices. Los
+namespaces creados por una versión anterior no tienen modo y siguen en
+manual. Para ambos, la migración planifica y construye los índices que el
+modo quiere para los datos que hay (`grafeno storage status` lista los
+namespaces de versiones anteriores):
+
+```bash
+grafeno storage apply --config /etc/grafeno/grafeno.toml --indexing automatic
+```
 
 ### Memoria
 

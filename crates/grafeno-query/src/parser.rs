@@ -479,15 +479,46 @@ impl Parser<'_> {
             } else {
                 None
             };
+            let indexing = if self.eat_keyword("OPTIONS") {
+                let start = self.start();
+                let options = self
+                    .literal_map("OPTIONS is a map of literals: {indexing: {mode: 'automatic'}}")?;
+                let serde_json::Value::Object(mut options) = options else {
+                    unreachable!("a map")
+                };
+                let indexing = options.remove("indexing");
+                if let Some(other) = options.keys().next() {
+                    return Err(QueryError::at(
+                        self.source,
+                        start,
+                        format!("a namespace has no option {other:?} (only indexing)"),
+                    ));
+                }
+                indexing
+            } else {
+                None
+            };
             return Ok(Some(NamespaceOp::Create {
                 name,
                 if_not_exists,
                 comment,
+                indexing,
             }));
         }
         if self.at_keyword("ALTER") {
             self.position += 2;
             let name = self.access_name("the namespace's name")?;
+            if self.at_keyword("SET") && self.keyword_at(1, "INDEXING") {
+                self.position += 2;
+                let indexing = self.literal_map(
+                    "SET INDEXING takes a map of literals: {mode: 'hybrid', exclude: ['raw']}",
+                )?;
+                return Ok(Some(NamespaceOp::Alter {
+                    name,
+                    comment: None,
+                    indexing: Some(indexing),
+                }));
+            }
             let comment = if self.at_keyword("SET") && self.keyword_at(1, "COMMENT") {
                 self.position += 2;
                 Some(comment(self)?)
@@ -495,9 +526,15 @@ impl Parser<'_> {
                 self.position += 2;
                 None
             } else {
-                return Err(self.unexpected("SET COMMENT 'text' or REMOVE COMMENT"));
+                return Err(
+                    self.unexpected("SET COMMENT 'text', REMOVE COMMENT or SET INDEXING {...}")
+                );
             };
-            return Ok(Some(NamespaceOp::Alter { name, comment }));
+            return Ok(Some(NamespaceOp::Alter {
+                name,
+                comment,
+                indexing: None,
+            }));
         }
         if self.at_keyword("DROP") {
             self.position += 2;
@@ -509,6 +546,16 @@ impl Parser<'_> {
             return Ok(Some(NamespaceOp::Drop { name, if_exists }));
         }
         Ok(None)
+    }
+
+    /// A map of literals, as JSON.
+    fn literal_map(&mut self, what: &str) -> Result<serde_json::Value, QueryError> {
+        let start = self.start();
+        let expr = self.expr()?;
+        match crate::plan::constant(&expr, None) {
+            Some(map @ Value::Map(_)) => Ok(map.to_json()),
+            _ => Err(QueryError::at(self.source, start, what.to_owned())),
+        }
     }
 
     /// `CREATE ALIAS`, `ALTER ALIAS` and `DROP ALIAS`, at their first word.

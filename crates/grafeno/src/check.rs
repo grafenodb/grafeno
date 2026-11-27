@@ -650,8 +650,10 @@ impl WriteTx {
                 // (it wrote every node and edge as updated, 200,000
                 // entries for a catalogue, and a change event each).
                 let logging = std::mem::replace(&mut tx.log_changes, false);
+                let deciding = std::mem::replace(&mut tx.deciding_indexes, false);
                 let rebuilt = tx.rebuild_indexes_inner(ns);
                 tx.log_changes = logging;
+                tx.deciding_indexes = deciding;
                 rebuilt
             },
         )

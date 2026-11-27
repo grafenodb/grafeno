@@ -34,6 +34,9 @@
 //! [storage]
 //! compression = "auto"   # compress values where it pays; "off" writes them as they are
 //!
+//! [indexing]
+//! mode = "automatic"     # of namespaces without one: automatic, manual or hybrid
+//!
 //! [changes]              # the change log, per namespace
 //! enabled = true
 //! max_entries = 1000000  # 0 for no limit
@@ -121,6 +124,9 @@ pub struct Config {
     /// How values are stored (phase 5 of the storage roadmap).
     #[serde(default, skip_serializing_if = "StorageConfig::is_empty")]
     pub storage: StorageConfig,
+    /// How namespaces index their properties.
+    #[serde(default, skip_serializing_if = "IndexingConfig::is_empty")]
+    pub indexing: IndexingConfig,
     #[serde(default, skip_serializing_if = "WriterConfig::is_empty")]
     pub writer: WriterConfig,
     #[serde(default, skip_serializing_if = "ChangesConfig::is_empty")]
@@ -385,6 +391,30 @@ pub struct StorageConfig {
     /// them as they are. Values written either way stay readable.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compression: Option<grafeno::Compression>,
+}
+
+/// `[indexing]`: the indexing mode of namespaces that have none of their
+/// own (phase 6). A server indexes automatically; namespaces made by an
+/// earlier release stay manual until migrated.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct IndexingConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<grafeno::IndexingMode>,
+}
+
+impl IndexingConfig {
+    fn is_empty(&self) -> bool {
+        *self == Self::default()
+    }
+
+    /// `automatic` unless set.
+    pub fn mode(&self) -> grafeno::IndexingMode {
+        match self.mode {
+            None | Some(grafeno::IndexingMode::Default) => grafeno::IndexingMode::Automatic,
+            Some(mode) => mode,
+        }
+    }
 }
 
 impl StorageConfig {

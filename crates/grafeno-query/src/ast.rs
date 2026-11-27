@@ -79,16 +79,22 @@ pub(crate) enum EventsOp {
 /// A statement on a namespace as a whole (16.3).
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum NamespaceOp {
-    /// `CREATE NAMESPACE name [IF NOT EXISTS] [COMMENT 'text']`
+    /// `CREATE NAMESPACE name [IF NOT EXISTS] [COMMENT 'text'] [OPTIONS
+    /// {indexing: {...}}]`
     Create {
         name: String,
         if_not_exists: bool,
         comment: Option<String>,
+        /// Its indexing policy (phase 6), as JSON.
+        indexing: Option<serde_json::Value>,
     },
-    /// `ALTER NAMESPACE name SET COMMENT 'text' | REMOVE COMMENT`
+    /// `ALTER NAMESPACE name SET COMMENT 'text' | REMOVE COMMENT | SET
+    /// INDEXING {...}`
     Alter {
         name: String,
         comment: Option<String>,
+        /// `SET INDEXING`: the new policy instead of a comment.
+        indexing: Option<serde_json::Value>,
     },
     /// `DROP NAMESPACE name [IF EXISTS]`
     Drop { name: String, if_exists: bool },

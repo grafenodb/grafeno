@@ -80,7 +80,9 @@ fn composite_indexes_are_used_by_a_prefix_of_their_properties() {
             "nodes",
             false,
             "value",
-            "online"
+            "online",
+            "manual",
+            0
         ]])
     );
     assert!(

@@ -1239,6 +1239,7 @@ impl ReadTx {
         with_fragments: bool,
         filter: Option<&crate::VectorFilter>,
     ) -> Result<Vec<FulltextHit>> {
+        self.shared.index_uses.note(ns, index);
         let def = self
             .index_defs(ns)?
             .into_iter()

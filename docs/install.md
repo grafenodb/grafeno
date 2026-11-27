@@ -729,6 +729,9 @@ vector_cache_mb = 128       # vectors decoded while inserting embeddings
 [storage]
 compression = "auto"        # compress values where it pays; "off" writes them as they are
 
+[indexing]
+mode = "automatic"          # of namespaces without one: automatic, manual or hybrid
+
 [changes]                   # the change log that streams and webhooks follow
 enabled = true
 max_entries = 1000000       # per namespace; 0 for no limit
@@ -790,6 +793,48 @@ over `compact_vectors_max` are left for a quiet time
 did is in `GET /v1/background`. In a cluster, upgrade every member before
 vector indexes are compacted: an older member replaying the compaction of
 a vector index rebuilds it with the default similarity.
+
+### Indexing
+
+A namespace indexes its node properties by itself, as they appear: the
+first value of a label's property decides (a string of up to 256
+characters, a number or a boolean get a property index, which serves
+equality, ranges and prefixes; a longer string, a full-text index; lists,
+maps and nulls, none). These indexes are ordinary ones, `auto_Label_property`,
+shown by `SHOW INDEXES` with `origin` `auto` and the reads that used each
+(`uses`), and dropped like any: one dropped is not made again. A label has
+32 automatic indexes at most.
+
+The mode of a namespace without one of its own is the server's:
+
+```toml
+[indexing]
+mode = "automatic"   # or "manual": only CREATE INDEX; or "hybrid"
+```
+
+A namespace can have its own, with rules (`hybrid`): a rule for a label's
+property wins, then an exclusion, then a rule for the property in any
+label, then the automatic decision:
+
+```bash
+grafeno shell --config /etc/grafeno/grafeno.toml -c "ALTER NAMESPACE docs SET INDEXING {mode: 'hybrid', exclude: ['raw'], labels: {Doc: {properties: {title: ['exact', 'fulltext']}}}}"
+```
+
+(`CREATE NAMESPACE docs OPTIONS {indexing: {...}}`, and `indexing` in
+`POST`/`PATCH /v1/namespaces`, do the same.) A write can also name the
+indexes it wants: `"indexes": {"title": ["exact", "fulltext"]}` in a node
+written over HTTP declares them as `CREATE INDEX` would.
+
+Changing a namespace's mode builds nothing: the properties it already
+holds are left as they are, and only properties it has not seen get
+indexes. Namespaces made by an earlier release have no mode and stay
+manual. For either, the migration plans and builds the indexes the mode
+wants for the data there (`grafeno storage status` lists the namespaces
+of an earlier release):
+
+```bash
+grafeno storage apply --config /etc/grafeno/grafeno.toml --indexing automatic
+```
 
 ### Memory
 

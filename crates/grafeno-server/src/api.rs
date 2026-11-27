@@ -46,6 +46,10 @@ pub struct NodeInput {
     pub text: Option<String>,
     #[serde(default)]
     pub embedding: Option<Vec<f32>>,
+    /// Indexes its properties should have, declared as `CREATE INDEX`
+    /// would where none gives them yet: `{"title": ["exact", "fulltext"]}`.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub indexes: std::collections::BTreeMap<String, Vec<grafeno::IndexKind>>,
 }
 
 impl NodeInput {

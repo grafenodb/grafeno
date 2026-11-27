@@ -508,6 +508,9 @@ impl ReadTx {
     ) -> Result<Vec<Hit>> {
         // An index on `@embedding` searches the embeddings, kept to its labels.
         let mut scope: Option<Vec<String>> = None;
+        if let Some(name) = &search.index {
+            self.shared.index_uses.note(ns, name);
+        }
         let (space, default_ef) = match &search.index {
             Some(name) => {
                 let def = self

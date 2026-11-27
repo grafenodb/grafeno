@@ -1556,15 +1556,20 @@ async fn create_node(
     Path(ns): Path<String>,
     Body(input): Body<NodeInput>,
 ) -> ApiResult<(StatusCode, Json<Upserted>)> {
-    let result = write(&state, move |tx| match input.id {
-        Some(id) => {
-            let created = tx.upsert_node(&ns, id, input.clone().into_new())?;
-            Ok(Upserted { id, created })
+    let result = write(&state, move |tx| {
+        if !input.indexes.is_empty() {
+            tx.declare_property_indexes(&ns, &input.labels, &input.indexes)?;
         }
-        None => Ok(Upserted {
-            id: tx.create_node(&ns, input.clone().into_new())?,
-            created: true,
-        }),
+        match input.id {
+            Some(id) => {
+                let created = tx.upsert_node(&ns, id, input.clone().into_new())?;
+                Ok(Upserted { id, created })
+            }
+            None => Ok(Upserted {
+                id: tx.create_node(&ns, input.clone().into_new())?,
+                created: true,
+            }),
+        }
     })
     .await?;
     let status = if result.created {
@@ -1587,6 +1592,9 @@ async fn put_node(
         ));
     }
     let created = write(&state, move |tx| {
+        if !input.indexes.is_empty() {
+            tx.declare_property_indexes(&ns, &input.labels, &input.indexes)?;
+        }
         tx.upsert_node(&ns, id, input.clone().into_new())
     })
     .await?;
@@ -3123,6 +3131,10 @@ struct NewNamespace {
     description: Option<String>,
     /// The language of its node texts: `en` or `es`.
     language: Option<String>,
+    /// Its indexing policy (`{"mode": "automatic"}`, ...): the server's
+    /// default without one.
+    #[serde(default)]
+    indexing: Option<grafeno::IndexingPolicy>,
 }
 
 /// Creates an empty namespace: 201, or 409 if it exists.
@@ -3144,6 +3156,9 @@ async fn create_namespace(
         tx.create_namespace(&input.name, input.description.as_deref())?;
         if language.is_some() {
             tx.set_namespace_language(&input.name, language)?;
+        }
+        if let Some(indexing) = &input.indexing {
+            tx.set_namespace_indexing(&input.name, indexing.clone())?;
         }
         tx.namespace(&input.name)?
             .ok_or_else(|| Error::NamespaceNotFound(input.name.clone()))
@@ -3182,6 +3197,10 @@ struct NamespacePatch {
     /// `en`, `es`, or `null` for none: the node texts are indexed again.
     #[serde(default, deserialize_with = "present")]
     language: Option<Option<String>>,
+    /// A new indexing policy: indexes already there stay, and none is
+    /// built for data already there (the storage migration does that).
+    #[serde(default)]
+    indexing: Option<grafeno::IndexingPolicy>,
 }
 
 /// Sets the description and the language of the node texts (`null`
@@ -3204,6 +3223,9 @@ async fn describe_namespace(
         }
         if let Some(language) = language {
             tx.set_namespace_language(&ns, language)?;
+        }
+        if let Some(indexing) = &input.indexing {
+            tx.set_namespace_indexing(&ns, indexing.clone())?;
         }
         tx.namespace(&ns)?
             .ok_or_else(|| Error::NamespaceNotFound(ns.clone()))

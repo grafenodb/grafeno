@@ -77,6 +77,10 @@ pub struct MigrationOptions {
     /// there are some.
     #[serde(default)]
     pub retrain: bool,
+    /// Give each namespace this indexing policy, and create the indexes it
+    /// wants for the data already there (phase 6).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub indexing: Option<crate::IndexingPolicy>,
 }
 
 /// What a step does.
@@ -86,6 +90,9 @@ pub enum StepKind {
     /// Train the dictionaries the namespace (or the file's logs) has none
     /// of yet.
     Train,
+    /// Give the namespace the indexing policy, and create, one per batch,
+    /// the indexes it wants for the data there.
+    Index,
     Reencode,
     Reindex,
     Verify,
@@ -507,6 +514,10 @@ impl Grafeno {
             }
             // Rebuilding writes records the way every write does: it goes
             // before the reencoding, so that what that writes stays.
+            if let Some(policy) = &options.indexing {
+                policy.validate()?;
+                steps.push(step(StepKind::Index, 0));
+            }
             if options.reindex {
                 steps.push(step(StepKind::Reindex, read.index_defs(ns)?.len() as u64));
             }
@@ -760,6 +771,7 @@ fn migration_batch(
     batch: usize,
     encoding: Encoding,
 ) -> Result<bool> {
+    let indexing = migration.options.indexing.clone();
     migration.state = MigrationState::InProgress;
     migration.updated_at = Timestamp::now();
     let step = &mut migration.steps[index];
@@ -767,6 +779,7 @@ fn migration_batch(
     let ns = step.namespace.clone();
     let finished = match step.kind {
         StepKind::Reencode => reencode_batch(tx, step, &ns, batch, encoding)?,
+        StepKind::Index => index_batch(tx, step, &ns, indexing.as_ref())?,
         StepKind::Reindex => {
             tx.rebuild_indexes(&ns)?;
             step.done = tx.index_defs(&ns)?.len() as u64;
@@ -823,6 +836,59 @@ fn verify(
         }
     }
     Ok(result)
+}
+
+/// One batch of an index step: the first sets the policy and plans the
+/// indexes (kept in the step's result), each after creates one.
+fn index_batch(
+    tx: &mut WriteTx,
+    step: &mut MigrationStep,
+    ns: &str,
+    policy: Option<&crate::IndexingPolicy>,
+) -> Result<bool> {
+    let Some(policy) = policy else {
+        return Ok(true);
+    };
+    type Planned = Vec<(String, String, Vec<crate::IndexKind>)>;
+    let planned: Planned = match (&step.cursor, &step.result) {
+        (Some(_), Some(result)) => serde_json::from_str(result)
+            .map_err(|e| Error::Serialization(format!("a migration's planned indexes: {e}")))?,
+        _ => {
+            crate::namespace::set_policy(tx, ns, Some(policy.clone()))?;
+            let planned = tx.planned_indexes(ns)?;
+            step.estimate = planned.len() as u64;
+            step.result = Some(
+                serde_json::to_string(&planned).map_err(|e| Error::Serialization(e.to_string()))?,
+            );
+            step.cursor = Some(("planned".into(), format!("{:032x}", 0)));
+            return Ok(planned.is_empty());
+        }
+    };
+    let at = step
+        .cursor
+        .as_ref()
+        .and_then(|(_, at)| usize::from_str_radix(at, 16).ok())
+        .unwrap_or(0);
+    if let Some((label, property, kinds)) = planned.get(at) {
+        let made = tx.apply_planned(ns, label, property, kinds)?;
+        step.done += made.len() as u64;
+    }
+    let next = at + 1;
+    step.cursor = Some(("planned".into(), format!("{next:032x}")));
+    if next >= planned.len() {
+        let names: Vec<String> = planned
+            .iter()
+            .map(|(label, property, kinds)| format!("{label}.{property} {kinds:?}"))
+            .collect();
+        step.result = Some(if names.is_empty() {
+            "no index to create".into()
+        } else {
+            format!("indexes for {}", names.join(", "))
+        });
+        step.cursor = None;
+        return Ok(true);
+    }
+    Ok(false)
 }
 
 /// Rewrites up to `batch` values of `ns` (the file's logs for "") after the
@@ -1227,7 +1293,8 @@ impl WriteTx {
 /// Something the storage could do, or a migration that waits.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct Pending {
-    /// `migration` (paused, in progress, failed), `train` (namespaces
+    /// `migration` (paused, in progress, failed), `indexing` (namespaces
+    /// of an earlier release, without a policy), `train` (namespaces
     /// without compression dictionaries), `compact` (free pages), `pack`
     /// (space lost inside pages).
     pub kind: String,
@@ -1257,6 +1324,28 @@ impl Grafeno {
                 detail: format!("migration {} {what}", migration.id),
                 bytes: None,
             });
+        }
+        if self.default_indexing() != crate::IndexingMode::Manual {
+            let older: Vec<String> = self
+                .begin_read()?
+                .namespaces()?
+                .into_iter()
+                .filter(|info| info.indexing.is_none() && info.nodes > 0)
+                .map(|info| info.name)
+                .collect();
+            if !older.is_empty() {
+                let shown: Vec<&str> = older.iter().take(3).map(String::as_str).collect();
+                out.push(Pending {
+                    kind: "indexing".into(),
+                    detail: format!(
+                        "{} namespace(s) made by an earlier release index only what CREATE INDEX made ({}{}): `grafeno storage apply --indexing automatic` gives them the policy and the indexes it wants",
+                        older.len(),
+                        shown.join(", "),
+                        if older.len() > 3 { ", …" } else { "" }
+                    ),
+                    bytes: None,
+                });
+            }
         }
         if self.compression() == crate::Compression::Auto {
             let read = self.begin_read()?;

@@ -939,6 +939,7 @@ impl ReadTx {
         after: Option<&IndexPosition>,
         limit: usize,
     ) -> Result<Vec<IndexPosition>> {
+        self.shared.index_uses.note(ns, name);
         if self
             .view()
             .is_some_and(|view| view.per_record(ns) || !view.reads(ns))

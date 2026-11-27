@@ -1974,3 +1974,34 @@ in `docs/data/compression.csv`, against the redb 5 run of
 The other operations are within ±5% (full list in the CSV). Reads that
 go through many records pay for decompressing each one: 8–12%.
 
+## Automatic indexing (phase 6)
+
+The storage suite with every namespace automatic (`INDEXING=automatic`,
+`docs/data/indexing.csv`) against the same suite with manual namespaces
+(`docs/data/compression.csv`), compression on in both. Every result
+matches the fixtures.
+
+| dataset | load s manual | automatic | stored MiB manual | automatic |
+| --- | ---: | ---: | ---: | ---: |
+| catalog | 53.6 | 59.1 | 277.3 | 308.5 |
+| documents | 76.6 | 78.9 | 425.2 | 427.5 |
+| rows | 8.6 | 18.4 | 95.0 | 151.3 |
+| graph | 13.8 | 14.6 | 185.8 | 188.2 |
+| hyperedges | 4.7 | 5.2 | 27.2 | 27.2 |
+| memory | 67.5 | 72.9 | 13.9 | 13.9 |
+
+| dataset | operation | p50 ms manual | automatic |
+| --- | --- | ---: | ---: |
+| rows | unindexed filter, count | 136.2 | 0.104 |
+| graph | two hops, count | 14.50 | 0.316 |
+| rows | an order by number | 0.040 | 0.059 |
+| catalog | write a node | 1.577 | 1.800 |
+| documents | write a node | 1.533 | 1.793 |
+| rows | write a node | 1.613 | 1.740 |
+| graph | write a node | 1.533 | 1.660 |
+
+Queries on properties nobody indexed by hand become lookups; the rows
+dataset, whose records are scalar properties, pays for it in loading time (rows:
+twice as long) and space (rows: 59% more, in index entries). A single
+write costs 5–17% more, for the index entries of its properties.
+

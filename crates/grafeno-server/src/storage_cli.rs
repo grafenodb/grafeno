@@ -22,6 +22,7 @@ pub struct Request {
     pub backup: bool,
     pub json: bool,
     pub retrain: bool,
+    pub indexing: Option<grafeno::IndexingPolicy>,
 }
 
 fn open(path: &Path) -> Result<Grafeno, String> {
@@ -79,6 +80,7 @@ fn options(request: &Request) -> MigrationOptions {
         verify: request.verify,
         batch_size: request.batch_size,
         retrain: request.retrain,
+        indexing: request.indexing.clone(),
     }
 }
 

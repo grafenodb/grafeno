@@ -115,6 +115,9 @@ pub struct OpenOptions {
     pub copy_before_upgrade: bool,
     /// Whether writes compress values (on: [`crate::Compression::Auto`]).
     pub compression: crate::Compression,
+    /// The indexing mode of namespaces without one of their own (phase 6):
+    /// [`crate::IndexingMode::Default`] is manual; a server sets automatic.
+    pub indexing: crate::IndexingMode,
 }
 
 /// The default page cache: 256 MiB.
@@ -128,6 +131,7 @@ impl Default for OpenOptions {
             vector_cache_bytes: crate::vector::DEFAULT_VECTOR_CACHE,
             copy_before_upgrade: true,
             compression: crate::Compression::Auto,
+            indexing: crate::IndexingMode::Default,
         }
     }
 }
@@ -321,7 +325,18 @@ impl Grafeno {
             .set_projection_budget(options.projection_cache_bytes);
         self.vector_cache = options.vector_cache_bytes;
         self.shared.compression.set(options.compression);
+        self.shared.indexing.set_default(options.indexing);
         self
+    }
+
+    /// The indexing mode of namespaces without one of their own.
+    pub fn default_indexing(&self) -> crate::IndexingMode {
+        self.shared.indexing.default_mode()
+    }
+
+    /// Sets it, for writes from now on.
+    pub fn set_default_indexing(&self, mode: crate::IndexingMode) {
+        self.shared.indexing.set_default(mode);
     }
 
     /// Whether writes compress values.
@@ -622,6 +637,9 @@ impl Grafeno {
             deferred_rules: None,
             marked_hyperedge_layout: false,
             wrote_envelope: std::cell::Cell::new(false),
+            indexing_dirty: std::collections::HashSet::new(),
+            indexing_decided: std::collections::HashSet::new(),
+            deciding_indexes: true,
             subscription_cache: None,
             log_changes: self.shared.changes.retention().enabled,
             pending_changes: crate::changes::Pending::default(),
@@ -674,6 +692,7 @@ impl Grafeno {
         let tx = self.db.begin_write().map_err(storage)?;
         let entries = crate::backup::restore_into(&from, &tx)?;
         self.shared.compression.load(&tx)?;
+        self.shared.indexing.clear();
         let replication = tx
             .open_table(META)
             .map_err(storage)?
@@ -828,6 +847,8 @@ fn migrate_to_6(tx: &WriteTransaction) -> Result<()> {
         created_at: Timestamp::now(),
         description: None,
         language: None,
+        // An earlier release's namespace: manual until migrated.
+        indexing: None,
     })?;
     for name in &names {
         if registry.get(name.as_str()).map_err(storage)?.is_none() {
@@ -1573,6 +1594,13 @@ pub struct WriteTx {
     /// This transaction wrote a value in an envelope: the file becomes
     /// layout 20 when it commits.
     pub(crate) wrote_envelope: std::cell::Cell<bool>,
+    /// Namespaces whose indexing policy or decisions this transaction
+    /// changed: their cached ones are forgotten when it commits.
+    pub(crate) indexing_dirty: std::collections::HashSet<String>,
+    /// Pairs of label and property decided in this transaction.
+    pub(crate) indexing_decided: std::collections::HashSet<String>,
+    /// Off while indexes are rebuilt: writes decide nothing.
+    pub(crate) deciding_indexes: bool,
     /// The event subscriptions of a namespace, read once (16.10).
     pub(crate) subscription_cache: Option<(String, Arc<Vec<crate::subscriptions::Subscription>>)>,
     /// Whether commits append to the change log.
@@ -1744,8 +1772,17 @@ impl WriteTx {
         }
         let touched = self.write_changes()?;
         let marking = self.mark_envelope_layout()?;
+        let dirty = std::mem::take(&mut self.indexing_dirty);
+        let applied = self.applying;
         let Self { tx, shared, .. } = self;
         shared.committing(|| tx.commit().map_err(storage))?;
+        // Replicated entries may change policies and decisions anywhere.
+        if applied {
+            shared.indexing.clear();
+        }
+        for ns in &dirty {
+            shared.indexing.forget(ns);
+        }
         if marking {
             shared
                 .compression
@@ -2264,6 +2301,7 @@ impl WriteTx {
         node: &Node,
         previous: Option<&Node>,
     ) -> Result<()> {
+        self.decide_indexes(ns, node)?;
         let bytes = self.pack(ns, crate::compress::StoredKind::Node, encode(node)?);
         let id = node.id.as_u128();
         self.note(Touch::Node(ns.to_owned(), id));

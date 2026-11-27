@@ -577,6 +577,10 @@ pub(crate) struct Shared {
     pub(crate) hyperedge_layout: std::sync::atomic::AtomicBool,
     /// What writes compress values with (phase 5 of the storage roadmap).
     pub(crate) compression: crate::compress::State,
+    /// Indexing policies and decisions, per namespace (phase 6).
+    pub(crate) indexing: crate::indexing::Cache,
+    /// Reads that used each index (6.5).
+    pub(crate) index_uses: crate::indexing::Uses,
 }
 
 impl Default for Shared {
@@ -597,6 +601,8 @@ impl Default for Shared {
             ),
             hyperedge_layout: std::sync::atomic::AtomicBool::new(false),
             compression: crate::compress::State::default(),
+            indexing: crate::indexing::Cache::default(),
+            index_uses: crate::indexing::Uses::default(),
         }
     }
 }

@@ -467,11 +467,18 @@ fn constraint_cells(constraint: &grafeno::Constraint) -> Vec<Value> {
 /// properties by `, `), then what an index is on, whether it is a key, its
 /// kind (`value`, `fuzzy`, `fulltext` or `vector`) and its state
 /// (`online`, or `building` in the background).
-const INDEX_COLUMNS: [&str; 10] = [
+const INDEX_COLUMNS: [&str; 12] = [
     "name", "label", "property", "unique", "entries", "fuzzy", "on", "key", "kind", "state",
+    "origin", "uses",
 ];
 
-fn index_row(def: &IndexDef, entries: u64) -> Vec<Value> {
+/// A namespace's indexing policy from its GQ map.
+fn indexing_policy(json: &serde_json::Value) -> Result<grafeno::IndexingPolicy, QueryError> {
+    serde_json::from_value(json.clone())
+        .map_err(|e| QueryError::runtime(format!("the indexing policy: {e}")))
+}
+
+fn index_row(def: &IndexDef, entries: u64, uses: u64) -> Vec<Value> {
     vec![
         Value::Str(def.name.clone()),
         Value::Str(def.labels().join("|")),
@@ -505,6 +512,14 @@ fn index_row(def: &IndexDef, entries: u64) -> Vec<Value> {
             }
             .into(),
         ),
+        Value::Str(
+            match def.origin {
+                grafeno::IndexOrigin::Manual => "manual",
+                grafeno::IndexOrigin::Auto => "auto",
+            }
+            .into(),
+        ),
+        Value::Int(uses as i64),
     ]
 }
 
@@ -716,6 +731,7 @@ fn run_schema(
                     name,
                     if_not_exists,
                     comment,
+                    indexing,
                 } => {
                     if tx.namespace(name)?.is_some() {
                         if !*if_not_exists {
@@ -725,15 +741,27 @@ fn run_schema(
                         }
                     } else {
                         tx.create_namespace(name, comment.as_deref())?;
+                        if let Some(indexing) = indexing {
+                            tx.set_namespace_indexing(name, indexing_policy(indexing)?)?;
+                        }
                         stats.namespaces_created += 1;
                     }
                     tx.namespace(name)?.map(row).into_iter().collect()
                 }
-                NamespaceOp::Alter { name, comment } => {
+                NamespaceOp::Alter {
+                    name,
+                    comment,
+                    indexing,
+                } => {
                     if tx.namespace(name)?.is_none() {
                         return Err(grafeno::Error::NamespaceNotFound(name.clone()).into());
                     }
-                    tx.describe_namespace(name, comment.as_deref())?;
+                    match indexing {
+                        Some(indexing) => {
+                            tx.set_namespace_indexing(name, indexing_policy(indexing)?)?
+                        }
+                        None => tx.describe_namespace(name, comment.as_deref())?,
+                    }
                     tx.namespace(name)?.map(row).into_iter().collect()
                 }
                 NamespaceOp::CreateAlias { .. }
@@ -858,7 +886,7 @@ fn run_schema(
         Schema::Show { constraints: false } => Ok(table(
             read.indexes(ns)?
                 .into_iter()
-                .map(|info| index_row(&info.def, info.entries))
+                .map(|info| index_row(&info.def, info.entries, info.uses))
                 .collect(),
         )),
         Schema::Constrain {
@@ -912,7 +940,7 @@ fn run_schema(
                 return Ok(if def.unique {
                     constraint_table(vec![key_row(&existing)])
                 } else {
-                    table(vec![index_row(&existing, 0)])
+                    table(vec![index_row(&existing, 0, 0)])
                 });
             }
             let entries = tx.create_index(ns, def.clone())?;
@@ -923,7 +951,7 @@ fn run_schema(
                 result.columns.push("entries".into());
                 result
             } else {
-                table(vec![index_row(&def, entries)])
+                table(vec![index_row(&def, entries, 0)])
             })
         }
         Schema::Drop {
@@ -959,7 +987,7 @@ fn run_schema(
                     Ok(if *constraint {
                         constraint_table(vec![key_row(&def)])
                     } else {
-                        table(vec![index_row(&def, 0)])
+                        table(vec![index_row(&def, 0, 0)])
                     })
                 }
             }

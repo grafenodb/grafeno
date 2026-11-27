@@ -108,6 +108,7 @@ impl ServerSettings {
             memory: grafeno::OpenOptions {
                 copy_before_upgrade: config.copy_before_upgrade.unwrap_or(true),
                 compression: config.storage.compression.unwrap_or_default(),
+                indexing: config.indexing.mode(),
                 ..config.memory.options()
             },
             writer: config.writer.options(),
@@ -151,6 +152,9 @@ impl ServerSettings {
             "copy_before_upgrade": self.memory.copy_before_upgrade,
             "storage": {
                 "compression": self.memory.compression,
+            },
+            "indexing": {
+                "mode": self.memory.indexing,
             },
             "query": {
                 "timeout_secs": secs(self.limits.timeout),

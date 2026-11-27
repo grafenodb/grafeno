@@ -14,6 +14,27 @@ upgraded in place, with a copy kept first.
 
 ## Unreleased
 
+- **Added**: indexing policies per namespace. In `automatic` mode, the
+  first value of a label's property decides its index as it is written:
+  a string of up to 256 characters, a number or a boolean get a property
+  index (equality, ranges, prefixes), a longer string a full-text index;
+  lists, maps and nulls none, nor do properties starting with `@` or `_`.
+  `hybrid` adds rules and exclusions (a rule for the label's property,
+  then an exclusion, then a rule for the property in any label, then the
+  automatic decision); `manual` indexes only what `CREATE INDEX` makes.
+  Automatic indexes are ordinary ones named `auto_Label_property`, at most
+  32 a label; one dropped is not made again. A server's namespaces are
+  automatic unless they say otherwise (`[indexing] mode`); the library's
+  are manual (`OpenOptions::indexing`); namespaces made by an earlier
+  release stay manual until `grafeno storage apply --indexing automatic`
+  gives them the policy and builds the indexes it wants for their data
+  (`grafeno storage status` lists them). Changing a namespace's mode
+  builds nothing: only properties it has not seen get indexes. Set with
+  `CREATE NAMESPACE … OPTIONS {indexing: {...}}`, `ALTER NAMESPACE … SET
+  INDEXING {...}` or `indexing` in `POST`/`PATCH /v1/namespaces`; a node
+  written over HTTP may name the indexes it wants (`indexes`). `SHOW
+  INDEXES` has two more columns: `origin` (`manual`, `auto`) and `uses`,
+  the reads that used each index since the server started.
 - **Added**: storage migrations. `grafeno storage status`, `plan`,
   `apply`, `resume` and `verify` (the server stopped) rebuild indexes
   (`--reindex-existing`), rewrite records, texts and logs into another

@@ -1032,6 +1032,15 @@ struct MigrateArgs {
     /// there are some.
     #[arg(long)]
     retrain: bool,
+    /// Give the namespaces this indexing mode and create the indexes it
+    /// wants for their data: `automatic`, `hybrid` (with
+    /// `--indexing-policy`) or `manual`.
+    #[arg(long, value_parser = ["automatic", "hybrid", "manual"])]
+    indexing: Option<String>,
+    /// A whole indexing policy, as JSON (`{"mode": "hybrid", "exclude":
+    /// ["raw"]}`), instead of `--indexing`.
+    #[arg(long, conflicts_with = "indexing")]
+    indexing_policy: Option<String>,
     /// Pack the file afterwards (`vacuum --maximum`).
     #[arg(long)]
     compact: bool,
@@ -1064,8 +1073,8 @@ impl StorageFile {
 }
 
 impl MigrateArgs {
-    fn request(&self, backup: bool) -> grafeno_server::storage_cli::Request {
-        grafeno_server::storage_cli::Request {
+    fn request(&self, backup: bool) -> Result<grafeno_server::storage_cli::Request, String> {
+        Ok(grafeno_server::storage_cli::Request {
             namespaces: self.namespaces.clone(),
             reindex: self.reindex_existing,
             encoding: self.encoding.as_deref().map(|e| match e {
@@ -1074,12 +1083,25 @@ impl MigrateArgs {
                 _ => grafeno::Encoding::Json,
             }),
             retrain: self.retrain,
+            indexing: match (&self.indexing, &self.indexing_policy) {
+                (_, Some(json)) => Some(
+                    serde_json::from_str(json).map_err(|e| format!("--indexing-policy: {e}"))?,
+                ),
+                (Some(mode), None) => {
+                    Some(grafeno::IndexingPolicy::with_mode(match mode.as_str() {
+                        "automatic" => grafeno::IndexingMode::Automatic,
+                        "hybrid" => grafeno::IndexingMode::Hybrid,
+                        _ => grafeno::IndexingMode::Manual,
+                    }))
+                }
+                (None, None) => None,
+            },
             verify: self.verify,
             compact: self.compact,
             batch_size: self.batch_size,
             backup,
             json: self.json,
-        }
+        })
     }
 }
 
@@ -1630,7 +1652,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         } => grafeno_server::storage_cli::status(&file.path()?, json)?,
         Command::Storage {
             action: StorageAction::Plan { file, migrate },
-        } => grafeno_server::storage_cli::plan(&file.path()?, &migrate.request(false))?,
+        } => grafeno_server::storage_cli::plan(&file.path()?, &migrate.request(false)?)?,
         Command::Storage {
             action:
                 StorageAction::Apply {
@@ -1638,7 +1660,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                     migrate,
                     no_backup,
                 },
-        } => grafeno_server::storage_cli::apply(&file.path()?, &migrate.request(!no_backup))?,
+        } => grafeno_server::storage_cli::apply(&file.path()?, &migrate.request(!no_backup)?)?,
         Command::Storage {
             action: StorageAction::Resume { file, json },
         } => grafeno_server::storage_cli::resume(&file.path()?, json)?,

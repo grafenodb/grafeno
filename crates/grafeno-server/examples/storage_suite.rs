@@ -22,6 +22,8 @@
 //! and every value rewritten, as `grafeno storage apply --encoding
 //! compressed` does, before its sizes and latencies are measured.
 //! `COMPRESSION=off` writes and measures values as they are, as before.
+//! `INDEXING=automatic` makes every namespace automatic (phase 6), to
+//! measure what automatic indexes cost loads, writes and space.
 
 use std::collections::BTreeMap;
 use std::io::Write as _;
@@ -39,11 +41,21 @@ fn compression() -> grafeno::Compression {
     }
 }
 
+/// `INDEXING=automatic` loads every dataset into automatic namespaces
+/// (phase 6): their properties get indexes as they appear.
+fn indexing() -> grafeno::IndexingMode {
+    match std::env::var("INDEXING").as_deref() {
+        Ok("automatic") => grafeno::IndexingMode::Automatic,
+        _ => grafeno::IndexingMode::Manual,
+    }
+}
+
 fn open_db(path: &Path) -> Grafeno {
     Grafeno::open_with(
         path,
         &grafeno::OpenOptions {
             compression: compression(),
+            indexing: indexing(),
             ..grafeno::OpenOptions::default()
         },
     )

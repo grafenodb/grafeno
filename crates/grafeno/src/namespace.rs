@@ -48,6 +48,11 @@ pub(crate) struct NamespaceMeta {
     /// The language of its node texts (their words are stemmed in it).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) language: Option<crate::text::Language>,
+    /// Its indexing policy (phase 6). A namespace an earlier release made
+    /// has none: it indexes nothing by itself until a migration gives it
+    /// one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) indexing: Option<crate::IndexingPolicy>,
 }
 
 pub(crate) fn read_meta(
@@ -73,6 +78,7 @@ pub(crate) fn ensure(tx: &WriteTransaction, ns: &str) -> Result<()> {
             created_at: Timestamp::now(),
             description: None,
             language: None,
+            indexing: Some(crate::IndexingPolicy::default()),
         };
         table
             .insert(ns, encode(&meta)?.as_slice())
@@ -159,6 +165,7 @@ impl ReadTx {
             created_at: meta.created_at,
             description: meta.description,
             language: meta.language,
+            indexing: meta.indexing,
         }))
     }
 }
@@ -181,6 +188,7 @@ impl WriteTx {
                 .filter(|d| !d.is_empty())
                 .map(str::to_owned),
             language: None,
+            indexing: Some(crate::IndexingPolicy::default()),
         };
         table
             .insert(ns, encode(&meta)?.as_slice())
@@ -204,7 +212,11 @@ impl WriteTx {
             created_at: existing.as_ref().map_or(created_at, |meta| meta.created_at),
             description,
             // Its texts stay indexed in the language they were.
-            language: existing.and_then(|meta| meta.language),
+            language: existing.as_ref().and_then(|meta| meta.language),
+            indexing: match existing {
+                Some(meta) => meta.indexing,
+                None => Some(crate::IndexingPolicy::default()),
+            },
         };
         table
             .insert(ns, encode(&meta)?.as_slice())
@@ -247,6 +259,7 @@ impl WriteTx {
             created_at: meta.created_at,
             description: meta.description,
             language: meta.language,
+            indexing: meta.indexing,
         }))
     }
 
@@ -396,4 +409,33 @@ impl WriteTx {
             edges: info.edges,
         })
     }
+}
+
+/// The indexing policy of `ns` as written so far: `None` for a namespace
+/// of an earlier release; a namespace not registered yet will get the
+/// default one.
+pub(crate) fn policy_of(tx: &WriteTransaction, ns: &str) -> Result<Option<crate::IndexingPolicy>> {
+    let table = tx.open_table(NAMESPACES).map_err(storage)?;
+    Ok(match read_meta(&table, ns)? {
+        Some(meta) => meta.indexing,
+        None => Some(crate::IndexingPolicy::default()),
+    })
+}
+
+/// Stores the indexing policy of `ns` (registering it if needed).
+pub(crate) fn set_policy(
+    tx: &mut WriteTx,
+    ns: &str,
+    policy: Option<crate::IndexingPolicy>,
+) -> Result<()> {
+    check_namespace(ns)?;
+    tx.note(crate::replication::Touch::Namespace(ns.to_owned()));
+    ensure(&tx.tx, ns)?;
+    let mut table = tx.tx.open_table(NAMESPACES).map_err(storage)?;
+    let mut meta = read_meta(&table, ns)?.ok_or_else(|| Error::NamespaceNotFound(ns.to_owned()))?;
+    meta.indexing = policy;
+    table
+        .insert(ns, encode(&meta)?.as_slice())
+        .map_err(storage)?;
+    Ok(())
 }
