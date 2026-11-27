@@ -16,6 +16,7 @@
 //!
 //! Records keep their ids and timestamps. Embeddings are exported normalized.
 
+use redb::ReadableTable;
 use std::collections::BTreeSet;
 use std::io::{BufRead, Write};
 

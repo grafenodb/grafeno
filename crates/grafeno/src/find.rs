@@ -9,6 +9,7 @@
 //! Equal values go in id order (reversed when descending), so that every
 //! node has one place and a cursor says where a page ended.
 
+use redb::ReadableTable;
 use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashSet};
 use std::ops::Bound;

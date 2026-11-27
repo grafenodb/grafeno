@@ -261,6 +261,10 @@ enum Command {
         /// The settings file of the server whose database to compact.
         #[arg(long)]
         config: Option<PathBuf>,
+        /// Also pack partly filled pages: the space lost inside pages comes
+        /// back too (slower; inserts are slower for a while afterwards).
+        #[arg(long)]
+        maximum: bool,
     },
     /// Check the file (every page against its checksum), then that indexes
     /// and counters agree with the records. Fails if not.
@@ -1493,7 +1497,11 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 print!("{}", grafeno_server::http::storage_text(&report));
             }
         }
-        Command::Vacuum { db, config } => {
+        Command::Vacuum {
+            db,
+            config,
+            maximum,
+        } => {
             let config = config.or_else(grafeno_server::packaged::settings);
             let path = match (db, config) {
                 (Some(db), _) => db,
@@ -1502,7 +1510,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                     .ok_or_else(|| format!("{} keeps its data in memory", settings.display()))?,
                 (None, None) => return Err("give --db <file> or --config <settings>".into()),
             };
-            let done = Grafeno::vacuum(&path)?;
+            let done = Grafeno::vacuum_with(&path, maximum)?;
             let mib = |bytes: u64| bytes as f64 / (1024.0 * 1024.0);
             println!(
                 "{}: {:.1} MiB before, {:.1} MiB after ({:.1} MiB given back).",

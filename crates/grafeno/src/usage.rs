@@ -10,7 +10,7 @@
 use std::path::PathBuf;
 
 use grafeno_core::Result;
-use redb::{ReadableDatabase, ReadableTableMetadata, TableHandle};
+use redb::{ReadableDatabase, ReadableTable, ReadableTableMetadata, TableHandle};
 use serde::Serialize;
 
 use crate::db::{Grafeno, ReadTx};

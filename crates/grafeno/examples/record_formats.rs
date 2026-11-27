@@ -22,7 +22,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use grafeno::{Direction, Edge, EdgeFilter, Grafeno, NewEdge, NewNode, Node, NodeId, Timestamp};
-use redb::{ReadableDatabase, TableDefinition};
+use redb::{ReadableDatabase, ReadableTable, TableDefinition};
 use serde::Deserialize;
 use serde::de::IgnoredAny;
 use serde_json::json;

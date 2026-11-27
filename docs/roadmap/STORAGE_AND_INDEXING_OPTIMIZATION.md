@@ -1,7 +1,7 @@
 # Storage and indexing optimization
 
 **Status: approved on 2026-11-26, with the answers proposed in
-[section 14](#14-questions-for-approval); phase 1 done, phase 2 next.** This
+[section 14](#14-questions-for-approval); phases 1 and 2 done, phase 3 next.** This
 document is its source of truth: every step done or left is recorded
 here, in [Progress](#progress), as the work goes on.
 
@@ -201,7 +201,10 @@ full-text index on title and definition (Spanish), a vector index on
   records.
 
 These numbers are the first line of the baseline (phase 1 makes it a
-repeatable benchmark on several datasets).
+repeatable benchmark on several datasets). Its embeddings repeat: a
+hundred distinct vectors, a thousand copies of each, which leaves the
+HNSW graph unable to reach most of them (`check` says so; HNSW cannot
+keep copies apart). The phase 1 suite uses distinct vectors.
 
 ## 4. Findings
 
@@ -258,11 +261,10 @@ one), planner statistics, and export/import as the logical escape hatch.
     integrity checks on open, smaller new files, several repair and
     `check_integrity` fixes.
 - Minimum Rust: 1.90 (raise `rust-version` from 1.88; CI already 1.99.1).
-- The physical file format of existing tables is otherwise unchanged:
-  files written by 4.4 open with 5.0 (to be proven on every fixture);
-  files written by 5.0 must not be opened by Grafeno builds with redb 4
-  — the layout version is bumped with the upgrade so that older Grafeno
-  builds refuse such a file instead of guessing.
+- The physical file format is unchanged (redb's file format 3 in both):
+  files written by 4.4 open with 5.0, and files written by 5.0 open with
+  4.4. Verified in phase 2 with the 0.5.3 build and this one, both ways,
+  `check` clean each time, so the layout version stays as it is.
 
 ## 6. Target architecture
 
@@ -467,7 +469,7 @@ Detailed in [section 9](#9-migration-of-existing-databases).
 | D6 | Compression per value with a minimum size and gain, codecs by benchmark. | Small values grow when compressed; hot paths need cheap decoders. |
 | D7 | The indexing policy produces ordinary `IndexDef`s marked by origin. | One index system: no second subsystem to replicate, export, check or plan. |
 | D8 | Automatic indexing builds new indexes in the background and the planner ignores them until complete. | A write never waits for an index build; a query never reads half an index. |
-| D9 | Physical changes bump the layout version; logical formats (export, replication `Entry`) stay as they are. | Old builds refuse new files instead of misreading them; members of a cluster upgrade one at a time. |
+| D9 | A physical change bumps the layout version when older builds would misread the file; logical formats (export, replication `Entry`) stay as they are. | Old builds refuse such files instead of misreading them; members of a cluster upgrade one at a time. A change older builds read correctly (redb 5, phase 2) keeps the layout, so a downgrade keeps working. |
 | D10 | Migrations are recorded in a `migrations` table, idempotent and resumable by checkpoint. | Millions of records cannot be rewritten in one transaction, and an interruption must not restart from zero. |
 | D11 | Mandatory changes (needed to open the file) run at open, as today; optional optimizations run only when an administrator asks. | No surprise rewrites at start. |
 | D12 | Names as numeric ids in keys come last, and only if still worth it. | The widest change; the others may make it unnecessary. |
@@ -893,6 +895,12 @@ The initiative is complete when, measured against the phase-1 baseline:
 | 2026-11-26 | 1.1 Benchmark suite | done | `crates/grafeno-server/examples/storage_suite.rs`: six datasets (catalogue, documents, rows, graph, hyperedges, agent memory through MCP), sizes, `vacuum`, latencies; numbers in `docs/benchmarks.md` ("Storage baseline") and `docs/data/storage_baseline.csv`. Two full runs, 18 and 10 minutes: sizes identical, latencies not within ±10% (the first ran on a locked, throttled machine) |
 | 2026-11-26 | 1.2 Storage statistics | done | `Grafeno::storage_usage`, `ReadTx::namespace_usage` (`crates/grafeno/src/usage.rs`), `GET /v1/storage` (owners, `?namespaces=true`), `grafeno storage stats [--namespaces] [--json]`. Not added to `/v1/metrics`: redb's page counts need a write transaction, too dear for every scrape |
 | 2026-11-26 | 1.3 Result fixtures | done | `docs/data/storage_fixtures/*.json`: full-text results with BM25 scores, node text results, lookups, aggregates, traversals, hyperedges, recall sets, vector recall@10 (a lower bound); `COMPARE=` fails on any difference (numbers within a relative 1e-9, the precision JSON keeps) |
-| | 1.1 Latency baseline on an idle machine | pending | to repeat at the start of phase 2, together with redb 5's run, so that both use the same conditions; CPU per operation is measured in phase 3 (3.1) |
-| | Phase 2 | next | redb 5.0 |
+| 2026-11-26 | 1.1 Latency baseline on an idle machine | done | run 3 of `docs/data/storage_baseline.csv` (redb 4.4), every result matching the fixtures; CPU per operation is measured in phase 3 (3.1) |
+| 2026-11-26 | 2.1 redb 5.0 | done | `redb = "5"`; the API changes were few: `ReadableTable` imported where ranges are read, `compact(CompactionMode)`, one typed range. `rust-version` 1.90 |
+| 2026-11-26 | 2.2 Old layouts | done | the upgrade tests open and upgrade every fixture (layouts 1–19); no table uses the `Option` types redb 5 encodes differently; 678 tests green |
+| 2026-11-26 | 2.3 Layout 20 | **not needed** | redb 5 keeps file format 3: a file written by this build was opened, written and checked by the 0.5.3 build (redb 4.4), and the other way round. Bumping the layout would only stop a downgrade that works; the layout stays 18/19 (decision D9 revised: a physical change bumps the layout only when older builds would misread it) |
+| 2026-11-26 | 2.4 `vacuum --maximum` | done | `Grafeno::vacuum_with`; 1,028 → 403 MiB on the section 3 file (555 with `vacuum`) |
+| 2026-11-26 | Phase 2 benchmarks | done | `docs/benchmarks.md` ("redb 5.0"), `docs/data/redb5.csv`: same bytes, same results, files grown more sparingly, times within noise |
+| | 2.5 Platforms | in CI | Linux musl x64/arm64, Windows x64/arm64, container, MSIX, `.deb`/`.rpm` build in the Installers workflow on push |
+| | Phase 3 | next | cheaper indexing |
 | | Phases 2–14 | pending | |

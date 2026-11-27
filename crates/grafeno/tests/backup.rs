@@ -350,3 +350,52 @@ fn vacuum_gives_back_freed_space_and_keeps_the_data() {
     drop(db);
     let _ = std::fs::remove_file(&path);
 }
+
+#[test]
+fn vacuum_maximum_also_gives_back_the_space_inside_pages() {
+    let path = temp("vacuum-maximum");
+    {
+        let db = Grafeno::open(&path).unwrap();
+        db.write(|tx| {
+            for i in 0..6000i64 {
+                tx.create_node(
+                    "n",
+                    NewNode::new("Item")
+                        .prop("i", i)
+                        .prop("pad", "x".repeat(200)),
+                )?;
+            }
+            Ok(())
+        })
+        .unwrap();
+        // Every other node goes: pages are left half full.
+        db.write(|tx| {
+            for node in tx.nodes_page("n", None, None, 10_000)? {
+                if node.props["i"].as_i64().unwrap() % 2 == 0 {
+                    tx.delete_node("n", node.id)?;
+                }
+            }
+            Ok(())
+        })
+        .unwrap();
+    }
+    let copy = temp("vacuum-maximum-copy");
+    std::fs::copy(&path, &copy).unwrap();
+    let balanced = Grafeno::vacuum(&path).unwrap();
+    let maximum = Grafeno::vacuum_with(&copy, true).unwrap();
+    assert!(
+        maximum.after < balanced.after,
+        "{} bytes with maximum, {} without",
+        maximum.after,
+        balanced.after
+    );
+    for file in [&path, &copy] {
+        let db = Grafeno::open(file).unwrap();
+        let read = db.begin_read().unwrap();
+        assert_eq!(read.stats("n").unwrap().nodes, 3000);
+        assert!(read.check("n").unwrap().is_ok());
+        drop(read);
+        drop(db);
+        let _ = std::fs::remove_file(file);
+    }
+}

@@ -1781,3 +1781,32 @@ What it shows for the roadmap:
   documents: its terms are few and shared by most entries (a skew of the
   synthetic text, and a case phase 9 has to measure on the real
   catalogue).
+
+### redb 5.0 (phase 2)
+
+The same suite on an idle machine, redb 4.4.0 and then 5.0.0
+(`docs/data/redb5.csv`; the 4.4.0 run is also the idle latency baseline,
+run 3 of `docs/data/storage_baseline.csv`). Every result matched the
+fixtures on both; the bytes stored, fragmented and after `vacuum` were
+the same to the tenth of a MiB.
+
+| Dataset | File MiB, 4.4 → 5.0 | Load s, 4.4 → 5.0 | Operation | p50 ms, 4.4 → 5.0 | p99 ms, 4.4 → 5.0 |
+| --- | --- | --- | --- | --- | --- |
+| catalogue | 1,028 → 544 | 69 → 59 | lookup by code | 0.060 → 0.061 | 0.130 → 0.122 |
+| catalogue | | | full-text search | 41.5 → 37.2 | 68.6 → 65.7 |
+| catalogue | | | vector search | 1.05 → 0.69 | 3.10 → 3.01 |
+| catalogue | | | write a node | 1.96 → 1.60 | 3.50 → 2.58 |
+| documents | 2,056 → 2,176 | 111 → 101 | full-text search | 2.48 → 2.65 | 3.50 → 4.72 |
+| documents | | | node text search | 1.57 → 1.43 | 3.38 → 2.39 |
+| rows | 268 → 272 | 11.1 → 10.3 | a country's latest 20 | 7.82 → 6.77 | 12.8 → 11.7 |
+| rows | | | unindexed filter, count | 128 → 125 | 129 → 143 |
+| graph | 514 → 544 | 16.5 → 16.8 | two hops, count | 13.4 → 13.0 | 22.5 → 18.7 |
+| hyperedges | 129 → 68 | 6.2 → 6.0 | a hyperedge by property | 0.037 → 0.034 | 0.051 → 0.073 |
+| memory | 42 → 31 | 90 → 75 | `context` | 6.75 → 5.99 | 10.6 → 8.95 |
+
+The data takes the same; the files differ by how redb grows them (4.6
+starts a file small and grows it as it is written), not by what they
+hold. Times move within run-to-run noise, a little faster on the whole.
+`vacuum --maximum` (redb 5's `CompactionMode::Maximum`) takes the
+catalogue file of section 3 from 1,028 MiB to 403 MiB, against 555 with
+the plain `vacuum`: the fragmented bytes went from 166 MiB to 17.

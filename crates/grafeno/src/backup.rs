@@ -84,6 +84,20 @@ impl Grafeno {
     /// open (stop the server first); each step is a transaction of its own,
     /// so an interrupted vacuum leaves a whole file, compacted or not.
     pub fn vacuum(path: &Path) -> Result<Vacuumed> {
+        Self::vacuum_with(path, false)
+    }
+
+    /// [`Grafeno::vacuum`]; with `maximum`, the entries of partly filled
+    /// pages are also packed into fewer pages (redb's
+    /// `CompactionMode::Maximum`): the space lost inside pages comes back
+    /// too. Slower, and inserts are slower afterwards until the packed
+    /// pages have split again.
+    pub fn vacuum_with(path: &Path, maximum: bool) -> Result<Vacuumed> {
+        let mode = if maximum {
+            redb::CompactionMode::Maximum
+        } else {
+            redb::CompactionMode::Balanced
+        };
         let before = std::fs::metadata(path).map_err(storage)?.len();
         let mut db = redb::Database::open(path).map_err(|error| match error {
             redb::DatabaseError::DatabaseAlreadyOpen => Error::Storage(format!(
@@ -92,7 +106,7 @@ impl Grafeno {
             )),
             other => storage(other),
         })?;
-        while db.compact().map_err(storage)? {}
+        while db.compact(mode).map_err(storage)? {}
         drop(db);
         let after = std::fs::metadata(path).map_err(storage)?.len();
         Ok(Vacuumed { before, after })

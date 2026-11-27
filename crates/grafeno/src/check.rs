@@ -853,7 +853,7 @@ fn page<R: serde::de::DeserializeOwned>(
     };
     let mut out = Vec::new();
     for item in table
-        .range::<(&str, u128)>((start, Bound::Unbounded))
+        .range((start, Bound::<(&str, u128)>::Unbounded))
         .map_err(storage)?
     {
         let (key, value) = item.map_err(storage)?;

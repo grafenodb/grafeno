@@ -14,6 +14,15 @@ upgraded in place, with a copy kept first.
 
 ## Unreleased
 
+- **Changed**: redb 5.0 (from 4.4). Files stay interchangeable both ways:
+  this build opens files of earlier releases as they are, and earlier
+  releases (redb 4.4) open the files it writes, so going back after an
+  upgrade still works. On Linux, a build with redb 4.2 or older must not
+  open a file while this one has it open (their file locks differ).
+  Building Grafeno now needs Rust 1.90.
+- **Added**: `grafeno vacuum --maximum` also packs partly filled pages:
+  the space lost inside pages comes back too. On 100,000 catalogue
+  entities, 403 MiB against 555 with `vacuum` (1,028 before).
 - **Added**: what a database takes on disk. `GET /v1/storage` (owners)
   and `grafeno storage stats` give each table's entries, stored bytes,
   B-tree metadata and space lost inside pages, the file's size, the pages

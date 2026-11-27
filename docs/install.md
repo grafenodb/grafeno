@@ -588,6 +588,14 @@ there it mostly shrinks the file's apparent size, which copies and
 backups of the file see. On a 6.1 GB file of two catalogue loads it took
 81 seconds and left 4.2 GB.
 
+Pages that are only partly filled stay as they are. `grafeno vacuum
+--maximum` also packs them, so that the space lost inside pages comes
+back too (`grafeno storage stats` shows it as fragmented): a file of
+100,000 catalogue entities went from 1,028 MiB to 555 MiB with `vacuum`
+and to 403 MiB with `--maximum`, in about 6 seconds either way. Inserts
+into the packed tables are slower for a while afterwards, until their
+pages have split again.
+
 To move a namespace to or from other tools (spreadsheets, graph drawing
 and analysis programs, other databases), use CSV or GraphML. They hold current knowledge, without
 retracted facts or the history behind them, so they do not replace a

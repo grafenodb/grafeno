@@ -614,6 +614,14 @@ ya ocupaban poco disco real; ahí sobre todo reduce el tamaño aparente del
 archivo, el que ven las copias y los respaldos. En un archivo de 6,1 GB con
 dos cargas de catálogo tardó 81 segundos y lo dejó en 4,2 GB.
 
+Las páginas que están solo en parte llenas se quedan como están. `grafeno
+vacuum --maximum` también las compacta, de modo que vuelve además el
+espacio perdido dentro de las páginas (`grafeno storage stats` lo muestra
+como fragmentado): un archivo de 100.000 entidades de catálogo pasó de
+1.028 MiB a 555 MiB con `vacuum` y a 403 MiB con `--maximum`, en unos 6
+segundos en ambos casos. Las inserciones en las tablas compactadas van más
+lentas un tiempo, hasta que sus páginas vuelven a dividirse.
+
 Para llevar un namespace a otras herramientas o traerlo de ellas (hojas de
 cálculo, programas de dibujo y análisis de grafos, otras bases de datos),
 usa CSV o GraphML. Guardan el conocimiento actual, sin los hechos retractados

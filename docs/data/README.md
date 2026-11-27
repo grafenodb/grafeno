@@ -68,6 +68,7 @@ build unless the file says otherwise; on E1, runs vary by about ±20%.
 | `many_connections.csv` | 1 000 to 4 000 HTTP connections at once, reads, GQ and writes mixed, before and after writes give their turn back; and with 1 024 open files | `crates/grafeno-server/examples/many_connections.rs` (`tools/bench-http/Dockerfile`) | E2 (musl, mimalloc, no memory limit) | 2026-11-26 | requests per second and p99 per connections, before / after |
 | `import_pressure.csv` | An agent's write latency and a reader's GQ latency over HTTP during a 4 000 000-record import and other loads, before and after CSV and GraphML imports use the bulk lane | `crates/grafeno-server/examples/import_pressure.rs` | E1-disk | 2026-11-26 | bars of agent p99 and max per load, log scale |
 | `storage_baseline.csv` | The storage baseline: six datasets (catalogue, documents, rows, graph, hyperedges, agent memory), their load time, file and stored sizes, size after vacuum, and read and write latency; two runs | `crates/grafeno-server/examples/storage_suite.rs` | E1-disk | 2026-11-26 | stacked bars of stored, fragmented and free MiB per dataset |
+| `redb5.csv` | The storage baseline on redb 4.4.0 and 5.0.0, same machine, idle | `crates/grafeno-server/examples/storage_suite.rs` | E1-disk | 2026-11-26 | paired bars per dataset: file MiB, load s, p50 per operation |
 
 `python docs/charts/build.py` draws the charts of
 [performance](../performance.md) from these files (light and dark SVG in
