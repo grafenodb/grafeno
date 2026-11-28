@@ -610,7 +610,7 @@ impl WriteTx {
         self.delete_node(ns, id)
     }
 
-    /// Marks the file layout 19 (see [`crate::SCHEMA_VERSION`]) in this
+    /// Marks the file layout 19 (see [`crate::HYPEREDGE_LAYOUT`]) in this
     /// transaction, before it writes anything only that layout holds: a
     /// hyperedge, or an index or rule on them. Grafeno 0.4 then refuses the
     /// file instead of misreading it.

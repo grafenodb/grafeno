@@ -358,6 +358,16 @@ impl WriteTx {
             (ns, ""),
             (end.as_str(), "")
         );
+        if crate::compress::has_table(
+            tx,
+            redb::TableHandle::name(&crate::fulltext::FULLTEXT_POSTINGS),
+        )? {
+            clear!(
+                crate::fulltext::FULLTEXT_POSTINGS,
+                (ns, "", "", 0u128),
+                (end.as_str(), "", "", 0u128)
+            );
+        }
         clear!(crate::resolve::MATCH_RULES, (ns, ""), (end.as_str(), ""));
         clear!(
             crate::constraints::CONSTRAINTS,

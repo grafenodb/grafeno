@@ -8,11 +8,24 @@
 //!
 //! A full-text index is an [`IndexDef`] with `fulltext` set, so it is
 //! declared, replicated, exported, rebuilt and dropped as any index. Its
-//! entries share the index table: one per term, field and node, the key
-//! holding the term, the field, the field's length in terms, the term's
-//! frequency and its first positions. The documents and terms per field,
+//! postings are stored in one of two formats, chosen when it is built and
+//! kept with its statistics (a member's own, never exported or
+//! replicated):
+//!
+//! - **postings** (phase 9 of the storage roadmap, the default): one entry
+//!   per term and node in `fulltext_postings`, keyed by namespace, index,
+//!   term and node; the value holds, per field with the term, the field's
+//!   length, the term's frequency and its first positions, as varints
+//!   (positions as gaps). The table exists from the first such index on,
+//!   which makes the file layout 21.
+//! - **entries** (until phase 9): one entry per term, field and node in the
+//!   index table, the key holding all of it, fixed-width.
+//!
+//! Both score alike (BM25 per field, the same sums in the same order); a
+//! rebuild writes an index in the database's format
+//! ([`crate::OpenOptions::fulltext`]). The documents and terms per field,
 //! which BM25 needs, are kept in `fulltext_stats`, derived on every member
-//! as the entries are.
+//! as the postings are.
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
@@ -31,6 +44,113 @@ use crate::store::storage;
 /// `(ns, index) -> FieldStats` (JSON): documents and terms per field.
 pub(crate) const FULLTEXT_STATS: TableDefinition<(&str, &str), &[u8]> =
     TableDefinition::new("fulltext_stats");
+
+/// `(ns, index, term, node) -> postings of the term in the node's fields`
+/// (the postings format).
+pub(crate) const FULLTEXT_POSTINGS: TableDefinition<PostingsKey, &[u8]> =
+    TableDefinition::new("fulltext_postings");
+
+pub(crate) type PostingsKey = (&'static str, &'static str, &'static str, u128);
+
+/// How full-text indexes keep their postings (see the module's notes).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FulltextFormat {
+    /// One entry per term and node, the fields in a varint value.
+    #[default]
+    Postings,
+    /// One key per term, field and node (before phase 9).
+    Entries,
+}
+
+impl FulltextFormat {
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "postings" => Some(FulltextFormat::Postings),
+            "entries" => Some(FulltextFormat::Entries),
+            _ => None,
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            FulltextFormat::Postings => "postings",
+            FulltextFormat::Entries => "entries",
+        }
+    }
+}
+
+fn put_varint(out: &mut Vec<u8>, mut value: u32) {
+    while value >= 0x80 {
+        out.push((value as u8) | 0x80);
+        value >>= 7;
+    }
+    out.push(value as u8);
+}
+
+fn take_varint(bytes: &mut &[u8]) -> Option<u32> {
+    let mut value = 0u32;
+    for shift in (0..35).step_by(7) {
+        let (&byte, rest) = bytes.split_first()?;
+        *bytes = rest;
+        value |= u32::from(byte & 0x7F).checked_shl(shift)?;
+        if byte & 0x80 == 0 {
+            return Some(value);
+        }
+    }
+    None
+}
+
+/// One field of a postings value: field, its length, the term's frequency
+/// and its first positions (gaps, as varints).
+struct FieldPosting<'a> {
+    field: usize,
+    length: u32,
+    frequency: u32,
+    positions: &'a [u8],
+}
+
+impl FieldPosting<'_> {
+    fn positions(&self) -> Vec<u32> {
+        let mut bytes = self.positions;
+        let mut at = 0u32;
+        let mut out = Vec::new();
+        while !bytes.is_empty() {
+            let Some(gap) = take_varint(&mut bytes) else {
+                break;
+            };
+            at = at.wrapping_add(gap);
+            out.push(at);
+        }
+        out
+    }
+}
+
+/// Calls `each` with every field of a postings value, in field order,
+/// without allocating; stops at a damaged value.
+fn each_field<'a>(value: &'a [u8], mut each: impl FnMut(FieldPosting<'a>)) {
+    let mut rest = value;
+    while let Some((&field, after)) = rest.split_first() {
+        rest = after;
+        let (Some(length), Some(frequency), Some(bytes)) = (
+            take_varint(&mut rest),
+            take_varint(&mut rest),
+            take_varint(&mut rest),
+        ) else {
+            return;
+        };
+        let Some((positions, after)) = rest.split_at_checked(bytes as usize) else {
+            return;
+        };
+        rest = after;
+        each(FieldPosting {
+            field: field as usize,
+            length,
+            frequency,
+            positions,
+        });
+    }
+}
 
 /// The tag of full-text entries in the index table.
 const TERM: u8 = 5;
@@ -284,11 +404,14 @@ fn texts_of(value: &Json) -> Vec<&str> {
 pub(crate) struct Doc {
     /// Terms per field.
     pub lengths: Vec<u32>,
-    /// Its entries.
+    /// Its entries (the entries format).
     pub entries: Vec<Vec<u8>>,
+    /// Its postings by term, sorted (the postings format).
+    pub postings: Vec<(String, Vec<u8>)>,
 }
 
-/// What `def` holds of a node with these properties (`None`: no terms).
+/// What `def` holds of a node with these properties (`None`: no terms), in
+/// the index's format.
 pub(crate) fn doc_of(def: &IndexDef, fulltext: &Fulltext, props: &Props) -> Option<Doc> {
     let keys = def.keys();
     let mut lengths = vec![0u32; keys.len()];
@@ -312,6 +435,40 @@ pub(crate) fn doc_of(def: &IndexDef, fulltext: &Fulltext, props: &Props) -> Opti
     if lengths.iter().all(|length| *length == 0) {
         return None;
     }
+    if def.postings() {
+        let mut by_term: std::collections::BTreeMap<String, Vec<(usize, Vec<u32>)>> =
+            std::collections::BTreeMap::new();
+        for ((term, field), at) in positions {
+            by_term.entry(term).or_default().push((field, at));
+        }
+        let postings = by_term
+            .into_iter()
+            .map(|(term, mut fields)| {
+                fields.sort_by_key(|(field, _)| *field);
+                let mut value = Vec::new();
+                for (field, at) in fields {
+                    value.push(field as u8);
+                    put_varint(&mut value, lengths[field]);
+                    put_varint(&mut value, at.len() as u32);
+                    // The positions' bytes first, so that scoring skips them.
+                    let mut gaps = Vec::new();
+                    let mut last = 0u32;
+                    for p in at.iter().take(MAX_POSITIONS) {
+                        put_varint(&mut gaps, p - last);
+                        last = *p;
+                    }
+                    put_varint(&mut value, gaps.len() as u32);
+                    value.extend_from_slice(&gaps);
+                }
+                (term, value)
+            })
+            .collect();
+        return Some(Doc {
+            lengths,
+            entries: Vec::new(),
+            postings,
+        });
+    }
     let mut entries: Vec<Vec<u8>> = positions
         .into_iter()
         .map(|((term, field), at)| {
@@ -328,7 +485,11 @@ pub(crate) fn doc_of(def: &IndexDef, fulltext: &Fulltext, props: &Props) -> Opti
         })
         .collect();
     entries.sort();
-    Some(Doc { lengths, entries })
+    Some(Doc {
+        lengths,
+        entries,
+        postings: Vec::new(),
+    })
 }
 
 /// One entry, read back.
@@ -379,11 +540,24 @@ fn parse_counts(bytes: &[u8]) -> Option<(usize, u32, u32)> {
     Some((field, number(1)?, number(5)?))
 }
 
-/// Documents and terms per field of one index.
+/// Documents and terms per field of one index, and the format of its
+/// postings.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub(crate) struct FieldStats {
     pub documents: u64,
     pub terms: Vec<u64>,
+    /// In `fulltext_postings` (the postings format), not the index table.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub postings: bool,
+}
+
+/// Whether index `name` keeps the postings format.
+pub(crate) fn is_postings(
+    table: &impl ReadableTable<(&'static str, &'static str), &'static [u8]>,
+    ns: &str,
+    name: &str,
+) -> Result<bool> {
+    Ok(read_stats(table, ns, name)?.postings)
 }
 
 fn read_stats(
@@ -434,6 +608,62 @@ pub(crate) fn update_stats(
     Ok(())
 }
 
+/// The postings of index `name` that differ between `old` and `new` (both
+/// in the postings format): removed, then written.
+pub(crate) fn update_postings(
+    tx: &redb::WriteTransaction,
+    ns: &str,
+    name: &str,
+    id: u128,
+    old: Option<&Doc>,
+    new: Option<&Doc>,
+) -> Result<()> {
+    let empty = Vec::new();
+    let before = old.map_or(&empty, |doc| &doc.postings);
+    let after = new.map_or(&empty, |doc| &doc.postings);
+    if before == after {
+        return Ok(());
+    }
+    let mut table = tx.open_table(FULLTEXT_POSTINGS).map_err(storage)?;
+    let wanted: HashMap<&str, &[u8]> = after
+        .iter()
+        .map(|(term, value)| (term.as_str(), value.as_slice()))
+        .collect();
+    for (term, _) in before {
+        if !wanted.contains_key(term.as_str()) {
+            table
+                .remove((ns, name, term.as_str(), id))
+                .map_err(storage)?;
+        }
+    }
+    let had: HashMap<&str, &[u8]> = before
+        .iter()
+        .map(|(term, value)| (term.as_str(), value.as_slice()))
+        .collect();
+    for (term, value) in after {
+        if had.get(term.as_str()) != Some(&value.as_slice()) {
+            table
+                .insert((ns, name, term.as_str(), id), value.as_slice())
+                .map_err(storage)?;
+        }
+    }
+    Ok(())
+}
+
+/// Removes every posting of index `name` (dropped, or rebuilt).
+pub(crate) fn drop_postings(tx: &redb::WriteTransaction, ns: &str, name: &str) -> Result<()> {
+    if !crate::compress::has_table(tx, redb::TableHandle::name(&FULLTEXT_POSTINGS))? {
+        return Ok(());
+    }
+    tx.open_table(FULLTEXT_POSTINGS)
+        .map_err(storage)?
+        .retain_in((ns, name, "", 0u128).., |key, _| {
+            key.0 != ns || key.1 != name
+        })
+        .map_err(storage)?;
+    Ok(())
+}
+
 /// Removes the statistics of index `name` (dropped).
 pub(crate) fn drop_stats(tx: &redb::WriteTransaction, ns: &str, name: &str) -> Result<()> {
     tx.open_table(FULLTEXT_STATS)
@@ -443,14 +673,18 @@ pub(crate) fn drop_stats(tx: &redb::WriteTransaction, ns: &str, name: &str) -> R
     Ok(())
 }
 
-/// Writes the statistics of a new index.
+/// Writes the statistics of a new index, and its format.
 pub(crate) fn set_stats(
     tx: &redb::WriteTransaction,
     ns: &str,
     name: &str,
     docs: &[Doc],
+    postings: bool,
 ) -> Result<()> {
-    let mut stats = FieldStats::default();
+    let mut stats = FieldStats {
+        postings,
+        ..FieldStats::default()
+    };
     for doc in docs {
         stats.documents += 1;
         stats
@@ -805,6 +1039,8 @@ pub struct Fragment {
 /// One index's postings and statistics, while a query is evaluated.
 struct Searcher<'a, T: ReadableTable<IndexKey, ()>> {
     table: &'a T,
+    /// `fulltext_postings`, for an index in the postings format.
+    postings: Option<&'a redb::ReadOnlyTable<PostingsKey, &'static [u8]>>,
     ns: &'a str,
     def: &'a IndexDef,
     fulltext: &'a Fulltext,
@@ -848,6 +1084,29 @@ impl<T: ReadableTable<IndexKey, ()>> Searcher<'_, T> {
 
     /// Every entry of `term`: node, field, its length, frequency, positions.
     fn postings(&self, term: &str) -> Result<Vec<Entry>> {
+        if let Some(table) = self.postings {
+            let mut out = Vec::new();
+            for item in table
+                .range(
+                    (self.ns, self.def.name.as_str(), term, 0u128)
+                        ..=(self.ns, self.def.name.as_str(), term, u128::MAX),
+                )
+                .map_err(storage)?
+            {
+                let (key, value) = item.map_err(storage)?;
+                let id = key.value().3;
+                each_field(value.value(), |field| {
+                    out.push((
+                        id,
+                        field.field,
+                        field.length,
+                        field.frequency,
+                        field.positions(),
+                    ));
+                });
+            }
+            return Ok(out);
+        }
         let mut low = vec![TERM];
         low.extend_from_slice(term.as_bytes());
         low.push(0);
@@ -872,6 +1131,29 @@ impl<T: ReadableTable<IndexKey, ()>> Searcher<'_, T> {
     /// The distinct terms that start with `prefix`, in order, at most
     /// `limit`: one range read each, skipping past every term's entries.
     fn terms_from(&self, prefix: &str, limit: usize) -> Result<Vec<String>> {
+        if let Some(table) = self.postings {
+            let (ns, name) = (self.ns, self.def.name.as_str());
+            let mut out: Vec<String> = Vec::new();
+            while out.len() < limit {
+                // Past the last term's postings, or from the prefix.
+                let low = match out.last() {
+                    Some(last) => std::ops::Bound::Excluded((ns, name, last.as_str(), u128::MAX)),
+                    None => std::ops::Bound::Included((ns, name, prefix, 0u128)),
+                };
+                let high: std::ops::Bound<(&str, &str, &str, u128)> = std::ops::Bound::Unbounded;
+                let mut range = table.range((low, high)).map_err(storage)?;
+                let Some(item) = range.next() else {
+                    break;
+                };
+                let (key, _) = item.map_err(storage)?;
+                let (key_ns, key_name, term, _) = key.value();
+                if key_ns != ns || key_name != name || !term.starts_with(prefix) {
+                    break;
+                }
+                out.push(term.to_owned());
+            }
+            return Ok(out);
+        }
         let mut out = Vec::new();
         let mut low = vec![TERM];
         low.extend_from_slice(prefix.as_bytes());
@@ -939,26 +1221,45 @@ impl<T: ReadableTable<IndexKey, ()>> Searcher<'_, T> {
         if let Some(scores) = self.scored.get(&(field, term.to_owned())) {
             return Ok(scores.clone());
         }
+        let mut entries: Vec<(u128, usize, u32, u32)> = Vec::new();
+        if let Some(table) = self.postings {
+            for item in table
+                .range(
+                    (self.ns, self.def.name.as_str(), term, 0u128)
+                        ..=(self.ns, self.def.name.as_str(), term, u128::MAX),
+                )
+                .map_err(storage)?
+            {
+                let (key, value) = item.map_err(storage)?;
+                let id = key.value().3;
+                each_field(value.value(), |posting| {
+                    if field.is_none_or(|field| field == posting.field) {
+                        entries.push((id, posting.field, posting.length, posting.frequency));
+                    }
+                });
+            }
+        }
         let mut low = vec![TERM];
         low.extend_from_slice(term.as_bytes());
         low.push(0);
         let mut high = low.clone();
         high.push(0xFF);
-        let mut entries: Vec<(u128, usize, u32, u32)> = Vec::new();
-        for item in self
-            .table
-            .range(
-                (self.ns, self.def.name.as_str(), low.as_slice(), 0u128)
-                    ..=(self.ns, self.def.name.as_str(), high.as_slice(), u128::MAX),
-            )
-            .map_err(storage)?
-        {
-            let (key, _) = item.map_err(storage)?;
-            let (_, _, bytes, id) = key.value();
-            if let Some((entry_field, length, frequency)) = parse_counts(bytes)
-                && field.is_none_or(|field| field == entry_field)
+        if self.postings.is_none() {
+            for item in self
+                .table
+                .range(
+                    (self.ns, self.def.name.as_str(), low.as_slice(), 0u128)
+                        ..=(self.ns, self.def.name.as_str(), high.as_slice(), u128::MAX),
+                )
+                .map_err(storage)?
             {
-                entries.push((id, entry_field, length, frequency));
+                let (key, _) = item.map_err(storage)?;
+                let (_, _, bytes, id) = key.value();
+                if let Some((entry_field, length, frequency)) = parse_counts(bytes)
+                    && field.is_none_or(|field| field == entry_field)
+                {
+                    entries.push((id, entry_field, length, frequency));
+                }
             }
         }
         let mut documents: Vec<u128> = entries.iter().map(|entry| entry.0).collect();
@@ -1204,6 +1505,99 @@ fn fragments(
     out
 }
 
+impl crate::WriteTx {
+    /// Marks the file layout 21 before it writes its first postings,
+    /// keeping the layout it had.
+    pub(crate) fn postings_layout(&mut self) -> Result<()> {
+        mark_postings_layout(&self.tx)
+    }
+
+    /// When no full-text index keeps the postings format any more: drops
+    /// `fulltext_postings` and gives the file the layout it had without
+    /// them. `Err` says why not.
+    pub(crate) fn leave_postings_layout(&mut self) -> Result<std::result::Result<u64, String>> {
+        use redb::ReadableTableMetadata;
+        {
+            let stats = self.tx.open_table(FULLTEXT_STATS).map_err(storage)?;
+            for item in stats.iter().map_err(storage)? {
+                let (key, value) = item.map_err(storage)?;
+                let found: FieldStats = serde_json::from_slice(value.value())
+                    .map_err(|e| Error::Serialization(e.to_string()))?;
+                if found.postings {
+                    let (ns, name) = key.value();
+                    return Ok(Err(format!(
+                        "index {name} of {ns} keeps the postings format"
+                    )));
+                }
+            }
+        }
+        if crate::compress::has_table(&self.tx, redb::TableHandle::name(&FULLTEXT_POSTINGS))? {
+            self.tx.delete_table(FULLTEXT_POSTINGS).map_err(storage)?;
+        }
+        let hyperedges = self
+            .tx
+            .open_table(crate::hyperedge::HYPEREDGES)
+            .map_err(storage)?
+            .len()
+            .map_err(storage)?
+            > 0;
+        let mut meta = self.tx.open_table(crate::store::META).map_err(storage)?;
+        let stored = meta
+            .get(crate::db::SCHEMA_KEY)
+            .map_err(storage)?
+            .map_or(crate::BASE_LAYOUT, |guard| guard.value());
+        if stored != crate::POSTINGS_LAYOUT {
+            return Ok(Ok(stored));
+        }
+        let before = meta
+            .remove(crate::db::LAYOUT_BEFORE_POSTINGS)
+            .map_err(storage)?
+            .map_or(crate::BASE_LAYOUT, |guard| guard.value());
+        let layout = if hyperedges {
+            before.max(crate::HYPEREDGE_LAYOUT)
+        } else {
+            before
+        };
+        meta.insert(crate::db::SCHEMA_KEY, layout)
+            .map_err(storage)?;
+        Ok(Ok(layout))
+    }
+}
+
+/// Marks the file layout 21, keeping the layout it had.
+pub(crate) fn mark_postings_layout(tx: &redb::WriteTransaction) -> Result<()> {
+    let mut meta = tx.open_table(crate::store::META).map_err(storage)?;
+    let stored = meta
+        .get(crate::db::SCHEMA_KEY)
+        .map_err(storage)?
+        .map_or(crate::BASE_LAYOUT, |guard| guard.value());
+    if stored < crate::POSTINGS_LAYOUT {
+        meta.insert(crate::db::LAYOUT_BEFORE_POSTINGS, stored)
+            .map_err(storage)?;
+        meta.insert(crate::db::SCHEMA_KEY, crate::POSTINGS_LAYOUT)
+            .map_err(storage)?;
+    }
+    Ok(())
+}
+
+/// How many postings index `name` holds (the postings format).
+pub(crate) fn count_postings(
+    table: &impl ReadableTable<PostingsKey, &'static [u8]>,
+    ns: &str,
+    name: &str,
+) -> Result<u64> {
+    let mut count = 0;
+    for item in table.range((ns, name, "", 0u128)..).map_err(storage)? {
+        let (key, _) = item.map_err(storage)?;
+        let (key_ns, key_name, _, _) = key.value();
+        if key_ns != ns || key_name != name {
+            break;
+        }
+        count += 1;
+    }
+    Ok(count)
+}
+
 impl ReadTx {
     /// Up to `limit` nodes of full-text index `index` that match `query`,
     /// best first (BM25 per field, weighted), with the fragments that
@@ -1262,6 +1656,11 @@ impl ReadTx {
             .collect();
         let mut searcher = Searcher {
             table: &self.index_entries,
+            postings: if stats.postings {
+                self.fulltext_postings.as_ref()
+            } else {
+                None
+            },
             ns,
             def: &def,
             fulltext: &fulltext,

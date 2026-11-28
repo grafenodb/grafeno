@@ -101,7 +101,7 @@ fn values_compress_with_dictionaries_and_read_the_same() {
             .unwrap()
             .is_empty()
     );
-    assert_eq!(db.layout().unwrap(), grafeno::SCHEMA_VERSION);
+    assert_eq!(db.layout().unwrap(), grafeno::ENVELOPE_LAYOUT);
 
     // What was stored before rewrites with them.
     let plan = db
@@ -197,7 +197,7 @@ fn back_to_json_gives_the_file_its_earlier_layout() {
     db.train_dictionaries(&TrainOptions::default()).unwrap();
     catalogue(&db, "more", 1_500);
     let before = (digests(&db, "shop"), digests(&db, "more"));
-    assert_eq!(db.layout().unwrap(), grafeno::SCHEMA_VERSION);
+    assert_eq!(db.layout().unwrap(), grafeno::ENVELOPE_LAYOUT);
     drop(db);
 
     let db = open(&path, Compression::Off);

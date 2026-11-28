@@ -81,6 +81,11 @@ pub struct MigrationOptions {
     /// wants for the data already there (phase 6).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub indexing: Option<crate::IndexingPolicy>,
+    /// Build full-text indexes in this format from now on (phase 9); with
+    /// `reindex`, the existing ones are rebuilt in it. Entries over the
+    /// whole file gives it back the layout it had without postings.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fulltext: Option<crate::FulltextFormat>,
 }
 
 /// What a step does.
@@ -654,6 +659,9 @@ fn run(
     } else {
         migration.options.batch_size
     };
+    if let Some(format) = migration.options.fulltext {
+        db.set_fulltext_format(format);
+    }
     let mut batches = 0usize;
     let stopped = |batches: usize| {
         control
@@ -746,7 +754,7 @@ fn run(
             Ok(_) => db.shared.compression.forget(),
             Err(why) => {
                 if let Some(step) = migration.steps.last_mut() {
-                    let note = format!("the layout stays {}: {why}", crate::SCHEMA_VERSION);
+                    let note = format!("the layout stays {}: {why}", crate::ENVELOPE_LAYOUT);
                     step.result = Some(match &step.result {
                         Some(result) => format!("{result}; {note}"),
                         None => note,
@@ -754,6 +762,19 @@ fn run(
                 }
             }
         }
+    }
+    // Every full-text index rebuilt as entries: the layout without postings.
+    if migration.options.fulltext == Some(crate::FulltextFormat::Entries)
+        && migration.options.reindex
+        && migration.options.namespaces.is_empty()
+        && let Err(why) = db.write(|tx| tx.leave_postings_layout())?
+        && let Some(step) = migration.steps.last_mut()
+    {
+        let note = format!("the layout stays {}: {why}", crate::POSTINGS_LAYOUT);
+        step.result = Some(match &step.result {
+            Some(result) => format!("{result}; {note}"),
+            None => note,
+        });
     }
     migration.layout_after = Some(db.layout()?);
     migration.state = MigrationState::Completed;
@@ -1266,6 +1287,16 @@ impl WriteTx {
             before
         }
         .min(crate::HYPEREDGE_LAYOUT);
+        let stored = meta
+            .get(crate::db::SCHEMA_KEY)
+            .map_err(storage)?
+            .map_or(crate::BASE_LAYOUT, |guard| guard.value());
+        if stored == crate::POSTINGS_LAYOUT {
+            // Full-text postings stay: 21, with this layout without them.
+            meta.insert(crate::db::LAYOUT_BEFORE_POSTINGS, layout)
+                .map_err(storage)?;
+            return Ok(Ok(crate::POSTINGS_LAYOUT));
+        }
         meta.insert(crate::db::SCHEMA_KEY, layout)
             .map_err(storage)?;
         Ok(Ok(layout))

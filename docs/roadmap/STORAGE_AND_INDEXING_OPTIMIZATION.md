@@ -1,7 +1,7 @@
 # Storage and indexing optimization
 
 **Status: approved on 2026-11-26, with the answers proposed in
-[section 14](#14-questions-for-approval); phases 1 to 7 done, phase 9 next.** This
+[section 14](#14-questions-for-approval); phases 1 to 7 and 9 done, phase 10 next.** This
 document is its source of truth: every step done or left is recorded
 here, in [Progress](#progress), as the work goes on.
 
@@ -483,6 +483,7 @@ Detailed in [section 9](#9-migration-of-existing-databases).
 | D21 | No background builder for property indexes: a pair of label and property is decided before the record that brings it is written, so its index is filled from the records that already have the property, none in a namespace that was always automatic. Turning a namespace with data automatic records its pairs as decided (`existing`); the migration's `--indexing` builds their indexes, one per batch. | A write never waits for a build (D8) without a second way of filling indexes, and the planner never sees a partial index. |
 | D22 | Only node properties are indexed automatically; not edge or hyperedge properties, nor `@embedding` (a vector index stays explicit), nor properties starting with `@` or `_`. A `CREATE INDEX` like an automatic one replaces it. | Nodes are what lookups start from; vector indexes need a dimension and parameters chosen on purpose. |
 | D23 | Phase 7: imports, document ingestion and a `CALL { … } IN TRANSACTIONS` whose subquery only creates and sets hold their automatic decisions back and build the new indexes after the load, the indexes of one label sharing one read of its records; the export's own indexes, but unique ones and keys, are created after the records too. An `IN TRANSACTIONS` that matches or merges decides as it goes. A load that fails leaves its pairs undecided (the next write that brings one decides it) and, for an import in chunks, the export's indexes over what it loaded. | A load that looks records up by property needs their indexes while it runs; a unique index must refuse the line that breaks it, not the end of the load; a decision is only kept with the index it made. |
+| D24 | Phase 9: full-text postings in a table of their own, `fulltext_postings`, keyed `(ns, index, term, node)`, the value per field: field, length, frequency, the positions' byte length and the positions as gaps, all varints. The format of each index is kept with its statistics (a member's own, never exported or replicated) and read with the definition (`IndexDef::storage`, left out of comparisons); new and rebuilt indexes take the database's format (`OpenOptions::fulltext`, `[storage] fulltext`). The first index in it makes the file layout 21 (`layout_before_postings` keeps the layout without it); rebuilding every index as entries (`grafeno storage apply --fulltext entries --reindex-existing`) drops the table and gives that layout back. | The same scores come from the same sums in the same order; a separate table leaves the property indexes as they are and lets both formats live in one file while indexes are rebuilt one by one; earlier builds refuse a file whose postings they would not see. |
 | D17 | 6.3 (binary header, lazy properties) moves after phase 5, to be decided on CPU. | Dictionaries took the size of records to 15–40%, the gain 6.3 was for; what is left is decoding CPU, measured with the latencies below. |
 
 ## 8. Phases and tasks
@@ -618,7 +619,7 @@ with its tests and benchmarks green and this document updated.
   JSON round-trips exactly (numbers keep integer/float distinction).
 - Depends on: 5. **Acceptance**: fixtures identical; records smaller.
 
-### Phase 9 — Full-text index storage (P1, L)
+### Phase 9 — Full-text index storage (P1, L) — done (9.1; 9.2 and 9.3 not taken, see Progress)
 
 - 9.1 One entry per term and node, fields in the value, varint and delta
   positions (6.4); rebuilt per index, old and new readable until rebuilt.
@@ -949,5 +950,9 @@ The initiative is complete when, measured against the phase-1 baseline:
 | 2026-11-27 | Phase 7 acceptance | done | `crates/grafeno-server/examples/bulk_indexing.rs` (`docs/data/bulk_indexing.csv`, two runs in the Linux container): a bulk load into an automatic namespace took less than the same load into a manual one followed by the same `CREATE INDEX`es, on every path: rows (300,000, six properties) import 8.6–8.8 s against 10.2–10.3, `IN TRANSACTIONS` 9.8–10.4 against 11.9; documents (50,000, a full-text index) import 3.5–3.6 against 3.7–3.8, `IN TRANSACTIONS` 8.6–8.8 against 9.0–9.2. Record by record (phase 6's loads) took 12.3 and 4.5 s. Same indexes and entries in every case (`docs/benchmarks.md`, "Automatic indexing at bulk speed") |
 | 2026-11-27 | 7.2 List entries | not needed now | phase 6 did not show the need: no dataset of the suite queries items of lists; lists stay unindexed by the automatic policy |
 | 2026-11-27 | 6.3 `indexes` in GQ `CREATE … OPTIONS` | left | imports carry their indexes as index lines and are covered; a GQ form is not needed for phase 7's loads |
-| | Phase 9 | next | full-text index storage (order of Q7: 9, 10, 8, 11 by measured gain) |
-| | Phases 8–14 | pending | |
+| 2026-11-27 | 9.1 Postings | done | `fulltext.rs` (`FULLTEXT_POSTINGS`, `FulltextFormat`, varint values, `update_postings`, reads in `Searcher`), `index.rs` (builds with terms shared per index and inserted in order; `Physical`), `check` compares the postings, backups, namespace drops, rebuilds and migrations know the table; layout 21 (D24). `crates/grafeno/tests/fulltext_postings.rs`: every query of both formats gives the same nodes, order and score bits; conversion both ways with the layout following, with compression in either order; backups; drops |
+| 2026-11-27 | Phase 9 acceptance | done | the storage suite (catalogue and documents) matches every fixture, BM25 scores included. Same session, both formats twice (`FULLTEXT=entries`): full-text index catalogue 105.0 → 83.6 MiB, documents 236.5 → 196.5 MiB; stored catalogue 277.7 → 260.0, documents 425.3 → 386.1 MiB; documents load 60–61 → 46–50 s; full-text search p50 catalogue 32.5–34.4 → 31.9–32.8 ms, documents 2.56–2.59 → 2.69–2.72 ms (+5%, with the node text search, which phase 9 does not touch, +4% in the same runs); writes alike. `crates/grafeno/examples/fulltext_storage.rs` (100,000 documents, `docs/data/fulltext_storage.csv`): index 335.0 → 264.4 MiB, build 22.9 → 18.2 s, a body rewritten 4.0 → 3.8 ms, searches 9–12% faster. Found on the way: a first build allocated a string per posting and was 7–18% slower than the entries build; terms are shared per index now. The documents file holds more space inside its pages after a record-by-record load (288 → 402 MiB fragmented, 482.8 → 457.8 MiB after `vacuum`): for compaction (phase 11) |
+| 2026-11-27 | 9.2 Node text postings | not taken | the length cannot leave a posting without one lookup per matching node on every search; packing `(frequency, length)` as varints would save about 5 bytes of a 45-byte entry (some 17 MiB of the documents dataset's 386) for a new table, a layout and a migration |
+| 2026-11-27 | 9.3 Posting blocks | not taken (P3) | the full-text index is still the largest structure (documents: 196.5 MiB), but blocks rewrite a block of many nodes on every change of one; left for after compaction (phase 11) shows what fragmentation leaves |
+| | Phase 10 | next | adjacency and vector structures (order of Q7: 9, 10, 8, 11 by measured gain) |
+| | Phases 8, 10–14 | pending | |

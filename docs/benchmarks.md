@@ -1974,6 +1974,37 @@ in `docs/data/compression.csv`, against the redb 5 run of
 The other operations are within ±5% (full list in the CSV). Reads that
 go through many records pay for decompressing each one: 8–12%.
 
+## Full-text index storage (phase 9)
+
+The storage suite on the catalogue and documents datasets, both formats
+in one session, twice each (`FULLTEXT=entries` keeps the format before
+phase 9); every result matches the fixtures, BM25 scores included
+(`docs/data/fulltext_postings.csv` holds one whole run in the postings
+format).
+
+| dataset | full-text index MiB entries | postings | stored MiB entries | postings | load s entries | postings | full-text search p50 ms entries | postings |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| catalog (100,000) | 105.0 | 83.6 | 277.7 | 260.0 | 54.4–56.1 | 55.7–56.6 | 32.5–34.4 | 31.9–32.8 |
+| documents (20,000) | 236.5 | 196.5 | 425.3 | 386.1 | 60.4–60.9 | 46.3–50.2 | 2.56–2.59 | 2.69–2.72 |
+
+The documents' full-text search is 5% slower at p50, within what the
+node text search (code phase 9 leaves alone) moved in the same runs
+(+4%). Writing a node costs the same in both (p50 1.1–1.2 ms); its p99
+varies from run to run in both formats.
+
+`crates/grafeno/examples/fulltext_storage.rs`, 100,000 documents of a
+title and 40–100 words, one full-text index (`docs/data/fulltext_storage.csv`):
+
+| format | postings | index MiB | in pages, unused MiB | build s | a body rewritten | words p50 | phrase p50 | fuzzy p50 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| entries | 7,272,684 | 335.0 | 197.4 | 22.9 | 4.0 ms | 2.46 ms | 6.13 ms | 8.30 ms |
+| postings | 7,248,434 | 264.4 | 188.0 | 18.2 | 3.8 ms | 2.18 ms | 5.46 ms | 7.38 ms |
+
+Almost every term of a document is in one field, so the count of postings
+barely changes; what shrinks is each one: the namespace and index once
+per term and node, the frequency and length as varints, positions as
+gaps of a byte or two instead of four.
+
 ## Automatic indexing at bulk speed (phase 7)
 
 `crates/grafeno-server/examples/bulk_indexing.rs`, release build in the

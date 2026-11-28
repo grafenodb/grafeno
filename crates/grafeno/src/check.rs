@@ -90,6 +90,10 @@ impl ReadTx {
         let (mut labels_expected, mut names_expected, mut index_expected) =
             (Print::default(), Print::default(), Print::default());
         let mut index_counts: BTreeMap<String, u64> = BTreeMap::new();
+        // Full-text indexes in the postings format (phase 9).
+        let postings_defs: Vec<&crate::IndexDef> =
+            defs.iter().filter(|def| def.postings()).collect();
+        let mut postings_expected = Print::default();
         let mut unique_seen: Vec<HashMap<String, String>> = vec![HashMap::new(); defs.len()];
         for item in self.nodes.range((ns, 0u128)..).map_err(storage)? {
             let (key, value) = item.map_err(storage)?;
@@ -125,6 +129,19 @@ impl ReadTx {
             for (def, bytes) in entries_of(&defs, &node) {
                 *index_counts.entry(def.name.clone()).or_default() += 1;
                 index_expected.add(&(def.name.as_str(), bytes.as_slice(), id.as_u128()));
+            }
+            for def in postings_defs.iter().filter(|def| def.covers(&node.labels)) {
+                let fulltext = def.fulltext.as_ref().expect("a full-text index");
+                if let Some(doc) = crate::fulltext::doc_of(def, fulltext, &node.props) {
+                    for (term, value) in &doc.postings {
+                        postings_expected.add(&(
+                            def.name.as_str(),
+                            term.as_str(),
+                            id.as_u128(),
+                            value.as_slice(),
+                        ));
+                    }
+                }
             }
             unique_clash(
                 &defs,
@@ -262,6 +279,23 @@ impl ReadTx {
             }
             index_stored.add(&(name, bytes, id));
             *stored_counts.entry(name.to_owned()).or_default() += 1;
+        }
+        let mut postings_stored = Print::default();
+        if let Some(table) = &self.fulltext_postings {
+            for item in table.range((ns, "", "", 0u128)..).map_err(storage)? {
+                let (key, value) = item.map_err(storage)?;
+                let (key_ns, name, term, id) = key.value();
+                if key_ns != ns {
+                    break;
+                }
+                postings_stored.add(&(name, term, id, value.value()));
+            }
+        }
+        if postings_stored != postings_expected {
+            problems.push(format!(
+                "full-text postings do not match the nodes ({} stored, {} expected)",
+                postings_stored.count, postings_expected.count
+            ));
         }
         let mut adjacency_stored = [Print::default(), Print::default()];
         for (table, print) in [&self.out, &self.inn]
@@ -714,6 +748,30 @@ impl WriteTx {
             .map_err(storage)?
             .retain_in((ns, "").., |key, _| other(key.0))
             .map_err(storage)?;
+        // Full-text indexes are rebuilt in the database's format (phase 9).
+        if crate::compress::has_table(
+            tx,
+            redb::TableHandle::name(&crate::fulltext::FULLTEXT_POSTINGS),
+        )? {
+            tx.open_table(crate::fulltext::FULLTEXT_POSTINGS)
+                .map_err(storage)?
+                .retain_in((ns, "", "", 0u128).., |key, _| other(key.0))
+                .map_err(storage)?;
+        }
+        let postings = self.shared.fulltext_postings();
+        let fulltext: Vec<String> = self
+            .index_defs(ns)?
+            .into_iter()
+            .filter(|def| def.fulltext.is_some() && !def.edges && !def.hyperedges)
+            .map(|def| def.name)
+            .collect();
+        if postings && !fulltext.is_empty() {
+            crate::fulltext::mark_postings_layout(tx)?;
+        }
+        for name in &fulltext {
+            crate::fulltext::set_stats(tx, ns, name, &[], postings)?;
+        }
+        self.forget_index_defs();
         // Memory states are records too: only those of missing nodes go.
         tx.open_table(MEMORY)
             .map_err(storage)?

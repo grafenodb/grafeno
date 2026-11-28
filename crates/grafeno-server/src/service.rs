@@ -108,6 +108,7 @@ impl ServerSettings {
             memory: grafeno::OpenOptions {
                 copy_before_upgrade: config.copy_before_upgrade.unwrap_or(true),
                 compression: config.storage.compression.unwrap_or_default(),
+                fulltext: config.storage.fulltext.unwrap_or_default(),
                 indexing: config.indexing.mode(),
                 ..config.memory.options()
             },

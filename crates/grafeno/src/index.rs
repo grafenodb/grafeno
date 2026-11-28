@@ -92,6 +92,24 @@ pub struct IndexDef {
     /// namespace's indexing policy (phase 6).
     #[serde(default, skip_serializing_if = "crate::IndexOrigin::is_manual")]
     pub origin: crate::IndexOrigin,
+    /// Physical, read with the definition: a full-text index keeps the
+    /// postings format (phase 9). Never stored, exported or replicated
+    /// with it, and left out of comparisons.
+    #[serde(skip)]
+    pub storage: Physical,
+}
+
+/// How an index is stored on this member: ignored when definitions are
+/// compared (two members may store the same index differently).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Physical {
+    pub(crate) postings: bool,
+}
+
+impl PartialEq for Physical {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
 }
 
 impl IndexDef {
@@ -197,6 +215,11 @@ impl IndexDef {
     /// kept to the nodes with its labels.
     pub fn on_embedding(&self) -> bool {
         self.vector.is_some() && self.key == crate::vindex::EMBEDDING_KEY
+    }
+
+    /// A full-text index in the postings format (phase 9).
+    pub(crate) fn postings(&self) -> bool {
+        self.fulltext.is_some() && self.storage.postings
     }
 
     /// Every property, in order.
@@ -605,6 +628,9 @@ pub(crate) fn record_entries<'a, S: AsRef<str>>(
         .filter(|def| def.kind() == kind && def.covers(labels))
     {
         if let Some(fulltext) = &def.fulltext {
+            if def.postings() {
+                continue;
+            }
             if let Some(doc) = crate::fulltext::doc_of(def, fulltext, props) {
                 out.extend(doc.entries.into_iter().map(|bytes| (def, bytes)));
             }
@@ -726,6 +752,7 @@ fn fuzzy_def(defs: Vec<IndexDef>, label: &str, key: &str) -> Result<IndexDef> {
 
 fn defs_in(
     table: &impl ReadableTable<(&'static str, &'static str), &'static [u8]>,
+    stats: &impl ReadableTable<(&'static str, &'static str), &'static [u8]>,
     ns: &str,
 ) -> Result<Vec<IndexDef>> {
     let mut out = Vec::new();
@@ -734,7 +761,11 @@ fn defs_in(
         if key.value().0 != ns {
             break;
         }
-        out.push(decode(value.value())?);
+        let mut def: IndexDef = decode(value.value())?;
+        if def.fulltext.is_some() {
+            def.storage.postings = crate::fulltext::is_postings(stats, ns, &def.name)?;
+        }
+        out.push(def);
     }
     Ok(out)
 }
@@ -832,7 +863,7 @@ pub(crate) fn count_entries(
 impl ReadTx {
     /// The indexes of a namespace, in name order.
     pub fn index_defs(&self, ns: &str) -> Result<Vec<IndexDef>> {
-        defs_in(&self.indexes, ns)
+        defs_in(&self.indexes, &self.fulltext_stats, ns)
     }
 
     /// The indexes with how many nodes each holds (counts every entry).
@@ -842,6 +873,11 @@ impl ReadTx {
             .map(|def| {
                 let entries = if def.vector.is_some() {
                     self.vector_count(ns, &def)?
+                } else if def.postings() {
+                    match &self.fulltext_postings {
+                        Some(table) => crate::fulltext::count_postings(table, ns, &def.name)?,
+                        None => 0,
+                    }
                 } else {
                     self.index_entry_count(ns, &def.name)?
                 };
@@ -1048,7 +1084,14 @@ impl WriteTx {
         {
             return Ok(defs.clone());
         }
-        let defs = Arc::new(defs_in(&self.tx.open_table(INDEXES).map_err(storage)?, ns)?);
+        let defs = Arc::new(defs_in(
+            &self.tx.open_table(INDEXES).map_err(storage)?,
+            &self
+                .tx
+                .open_table(crate::fulltext::FULLTEXT_STATS)
+                .map_err(storage)?,
+            ns,
+        )?);
         *cache = Some((ns.to_owned(), defs.clone()));
         Ok(defs)
     }
@@ -1329,8 +1372,20 @@ impl WriteTx {
                 .map_err(storage)?;
             return Ok(count);
         }
+        let mut def = def;
+        // A new full-text index takes the database's format.
+        def.storage.postings = def.fulltext.is_some()
+            && def.kind() == RecordKind::Node
+            && self.shared.fulltext_postings();
+        if def.postings() {
+            self.postings_layout()?;
+        }
         let mut seen: HashMap<Vec<u8>, (u128, Props)> = HashMap::new();
         let mut entries = Vec::new();
+        // Terms shared by every posting that has them (a few thousand
+        // terms for millions of postings).
+        let mut terms: HashMap<String, Arc<str>> = HashMap::new();
+        let mut postings: Vec<(Arc<str>, u128, Vec<u8>)> = Vec::new();
         let mut docs = Vec::new();
         let what = format!("{}s", def.kind().name());
         for (id, props, live) in records.iter() {
@@ -1347,8 +1402,19 @@ impl WriteTx {
                 )));
             }
             if let Some(fulltext) = &def.fulltext {
-                if let Some(doc) = crate::fulltext::doc_of(&def, fulltext, props) {
+                if let Some(mut doc) = crate::fulltext::doc_of(&def, fulltext, props) {
                     entries.extend(doc.entries.iter().map(|bytes| (bytes.clone(), *id)));
+                    for (term, value) in std::mem::take(&mut doc.postings) {
+                        let shared = match terms.get(&term) {
+                            Some(shared) => shared.clone(),
+                            None => {
+                                let shared: Arc<str> = Arc::from(term.as_str());
+                                terms.insert(term, shared.clone());
+                                shared
+                            }
+                        };
+                        postings.push((shared, *id, value));
+                    }
                     docs.push(doc);
                 }
                 continue;
@@ -1388,15 +1454,27 @@ impl WriteTx {
                 .map_err(storage)?;
         }
         drop(table);
+        if !postings.is_empty() {
+            postings.sort_unstable_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
+            let mut table = self
+                .tx
+                .open_table(crate::fulltext::FULLTEXT_POSTINGS)
+                .map_err(storage)?;
+            for (term, id, value) in &postings {
+                table
+                    .insert((ns, def.name.as_str(), &**term, *id), value.as_slice())
+                    .map_err(storage)?;
+            }
+        }
         if def.fulltext.is_some() {
-            crate::fulltext::set_stats(&self.tx, ns, &def.name, &docs)?;
+            crate::fulltext::set_stats(&self.tx, ns, &def.name, &docs, def.postings())?;
         }
         self.tx
             .open_table(INDEXES)
             .map_err(storage)?
             .insert((ns, def.name.as_str()), encode(&def)?.as_slice())
             .map_err(storage)?;
-        Ok(entries.len() as u64)
+        Ok(entries.len() as u64 + postings.len() as u64)
     }
 
     /// Removes an index and its entries. Returns whether it existed.
@@ -1428,6 +1506,7 @@ impl WriteTx {
             })
             .map_err(storage)?;
         crate::fulltext::drop_stats(&self.tx, ns, name)?;
+        crate::fulltext::drop_postings(&self.tx, ns, name)?;
         let space = crate::vindex::space_of(ns, name);
         crate::vindex::clear_space(&self.tx, &space)?;
         self.vectors.forget(&space);
@@ -1606,6 +1685,17 @@ impl WriteTx {
                     before.as_ref(),
                     after.as_ref(),
                 )?;
+                if def.postings() {
+                    crate::fulltext::update_postings(
+                        &self.tx,
+                        ns,
+                        &def.name,
+                        id,
+                        before.as_ref(),
+                        after.as_ref(),
+                    )?;
+                    continue;
+                }
                 if let Some(doc) = before {
                     old_entries.extend(doc.entries.into_iter().map(|bytes| (def, bytes)));
                 }

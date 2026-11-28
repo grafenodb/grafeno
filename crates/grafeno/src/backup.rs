@@ -239,6 +239,14 @@ pub(crate) fn restore_into(from: &ReadTransaction, to: &WriteTransaction) -> Res
         )*};
     }
     replace_if_present!(crate::compress::DICTIONARIES, crate::store::TEXT_VALUES);
+    // Of layout 21.
+    to.delete_table(crate::fulltext::FULLTEXT_POSTINGS)
+        .map_err(storage)?;
+    match from.open_table(crate::fulltext::FULLTEXT_POSTINGS) {
+        Ok(_) => entries += copy(from, to, crate::fulltext::FULLTEXT_POSTINGS)?,
+        Err(redb::TableError::TableDoesNotExist(_)) => {}
+        Err(error) => return Err(storage(error)),
+    }
     Ok(entries)
 }
 
@@ -295,6 +303,7 @@ impl ReadTx {
                 crate::hyperedge::HYPEREDGE_LABELS.name(),
                 crate::compress::DICTIONARIES.name(),
                 crate::store::TEXT_VALUES.name(),
+                crate::fulltext::FULLTEXT_POSTINGS.name(),
             ];
             for table in from.list_tables().map_err(storage)? {
                 if !known.contains(&table.name()) {
@@ -348,6 +357,8 @@ impl ReadTx {
                     entries += copy(from, &tx, crate::compress::DICTIONARIES)?;
                 } else if table.name() == crate::store::TEXT_VALUES.name() {
                     entries += copy(from, &tx, crate::store::TEXT_VALUES)?;
+                } else if table.name() == crate::fulltext::FULLTEXT_POSTINGS.name() {
+                    entries += copy(from, &tx, crate::fulltext::FULLTEXT_POSTINGS)?;
                 }
             }
             tx.commit().map_err(storage)?;

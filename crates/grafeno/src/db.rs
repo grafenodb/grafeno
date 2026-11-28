@@ -76,7 +76,24 @@ use crate::{Hit, text, vector};
 ///     writes its first envelope; the layout it had is kept under
 ///     `layout_before_envelopes`, and `grafeno storage apply --encoding
 ///     json` over the whole file brings it back to it.
-pub const SCHEMA_VERSION: u64 = 20;
+/// 21. Full-text postings (`fulltext_postings`, phase 9): one entry per term
+///     and node, which an older Grafeno would not see. A file is marked 21
+///     by the transaction that builds its first full-text index in that
+///     format; the layout it would have without them is kept under
+///     `layout_before_postings`, and rebuilding every full-text index in the
+///     entries format (`grafeno storage apply --fulltext entries
+///     --reindex-existing`) brings it back.
+pub const SCHEMA_VERSION: u64 = 21;
+
+/// The layout of a file that holds full-text postings.
+pub const POSTINGS_LAYOUT: u64 = 21;
+
+/// The layout of a file that holds values in envelopes (and no postings).
+pub const ENVELOPE_LAYOUT: u64 = 20;
+
+/// The `meta` key keeping the layout a file at 21 would have without its
+/// full-text postings.
+pub(crate) const LAYOUT_BEFORE_POSTINGS: &str = "layout_before_postings";
 
 /// The layout of a file that holds hyperedges (and no envelopes).
 pub const HYPEREDGE_LAYOUT: u64 = 19;
@@ -87,6 +104,20 @@ pub(crate) const LAYOUT_BEFORE_ENVELOPES: &str = "layout_before_envelopes";
 /// The layout of a file that has never held hyperedges: new files and
 /// upgraded ones get this one, and Grafeno 0.4 reads it.
 pub const BASE_LAYOUT: u64 = 18;
+
+/// Whether a file at `layout` is marked for envelopes: 20, or 21 when the
+/// layout it would have without postings is 20.
+pub(crate) fn envelope_layout(tx: &redb::WriteTransaction, layout: u64) -> Result<bool> {
+    if layout != POSTINGS_LAYOUT {
+        return Ok(layout >= ENVELOPE_LAYOUT);
+    }
+    Ok(tx
+        .open_table(META)
+        .map_err(storage)?
+        .get(LAYOUT_BEFORE_POSTINGS)
+        .map_err(storage)?
+        .is_some_and(|guard| guard.value() >= ENVELOPE_LAYOUT))
+}
 
 /// The tables replaced in version 3, by name (their types no longer matter).
 const OLD_ADJ_OUT: TableDefinition<AdjKey, u128> = TableDefinition::new("adj_out");
@@ -118,6 +149,8 @@ pub struct OpenOptions {
     /// The indexing mode of namespaces without one of their own (phase 6):
     /// [`crate::IndexingMode::Default`] is manual; a server sets automatic.
     pub indexing: crate::IndexingMode,
+    /// How new and rebuilt full-text indexes keep their postings (phase 9).
+    pub fulltext: crate::FulltextFormat,
 }
 
 /// The default page cache: 256 MiB.
@@ -132,6 +165,7 @@ impl Default for OpenOptions {
             copy_before_upgrade: true,
             compression: crate::Compression::Auto,
             indexing: crate::IndexingMode::Default,
+            fulltext: crate::FulltextFormat::Postings,
         }
     }
 }
@@ -326,7 +360,25 @@ impl Grafeno {
         self.vector_cache = options.vector_cache_bytes;
         self.shared.compression.set(options.compression);
         self.shared.indexing.set_default(options.indexing);
+        self.set_fulltext_format(options.fulltext);
         self
+    }
+
+    /// How new and rebuilt full-text indexes keep their postings.
+    pub fn fulltext_format(&self) -> crate::FulltextFormat {
+        if self.shared.fulltext_postings() {
+            crate::FulltextFormat::Postings
+        } else {
+            crate::FulltextFormat::Entries
+        }
+    }
+
+    /// Sets it, for indexes built from now on (existing ones keep theirs
+    /// until rebuilt).
+    pub fn set_fulltext_format(&self, format: crate::FulltextFormat) {
+        self.shared
+            .fulltext_entries
+            .store(format == crate::FulltextFormat::Entries, Ordering::Relaxed);
     }
 
     /// The indexing mode of namespaces without one of their own.
@@ -515,10 +567,11 @@ impl Grafeno {
             .is_some_and(|guard| guard.value() == 1);
         let shared: Arc<Shared> = Arc::default();
         shared.compression.load(&tx)?;
+        let envelopes = envelope_layout(&tx, layout)?;
         shared
             .compression
             .layout_marked
-            .store(layout >= SCHEMA_VERSION, Ordering::Relaxed);
+            .store(envelopes, Ordering::Relaxed);
         tx.commit().map_err(storage)?;
         shared.replication.store(replication, Ordering::Relaxed);
         shared
@@ -602,6 +655,11 @@ impl Grafeno {
             fulltext_stats: tx
                 .open_table(crate::fulltext::FULLTEXT_STATS)
                 .map_err(storage)?,
+            fulltext_postings: match tx.open_table(crate::fulltext::FULLTEXT_POSTINGS) {
+                Ok(table) => Some(table),
+                Err(redb::TableError::TableDoesNotExist(_)) => None,
+                Err(error) => return Err(storage(error)),
+            },
             registry: tx.open_table(NAMESPACES).map_err(storage)?,
             merges: tx.open_table(MERGES).map_err(storage)?,
             match_rules: tx.open_table(MATCH_RULES).map_err(storage)?,
@@ -685,7 +743,8 @@ impl Grafeno {
             .get(SCHEMA_KEY)
             .map_err(storage)?
             .map_or(0, |guard| guard.value());
-        // 18 until a file holds hyperedges, 19 after, 20 with envelopes.
+        // 18 until a file holds hyperedges, 19 after, 20 with envelopes, 21
+        // with full-text postings.
         if !(BASE_LAYOUT..=SCHEMA_VERSION).contains(&version) {
             return Err(Error::Invalid(format!(
                 "the backup has layout version {version}, this Grafeno {BASE_LAYOUT} or {SCHEMA_VERSION}"
@@ -694,6 +753,7 @@ impl Grafeno {
         let tx = self.db.begin_write().map_err(storage)?;
         let entries = crate::backup::restore_into(&from, &tx)?;
         self.shared.compression.load(&tx)?;
+        let envelopes = envelope_layout(&tx, version)?;
         self.shared.indexing.clear();
         let replication = tx
             .open_table(META)
@@ -712,7 +772,7 @@ impl Grafeno {
         self.shared
             .compression
             .layout_marked
-            .store(version >= SCHEMA_VERSION, Ordering::Relaxed);
+            .store(envelopes, Ordering::Relaxed);
         Ok(entries)
     }
 
@@ -1021,6 +1081,9 @@ pub struct ReadTx {
     pub(crate) hyperedge_incidence: ReadOnlyTable<AdjKey, ()>,
     pub(crate) hyperedge_labels: ReadOnlyTable<(&'static str, &'static str, u128), ()>,
     pub(crate) fulltext_stats: ReadOnlyTable<(&'static str, &'static str), &'static [u8]>,
+    /// `fulltext_postings`, in files that have it (layout 21).
+    pub(crate) fulltext_postings:
+        Option<ReadOnlyTable<crate::fulltext::PostingsKey, &'static [u8]>>,
     pub(crate) registry: ReadOnlyTable<&'static str, &'static [u8]>,
     pub(crate) merges: ReadOnlyTable<RecordKey, &'static [u8]>,
     pub(crate) match_rules: ReadOnlyTable<(&'static str, &'static str), &'static [u8]>,

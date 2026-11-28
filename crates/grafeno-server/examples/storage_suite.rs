@@ -22,6 +22,7 @@
 //! and every value rewritten, as `grafeno storage apply --encoding
 //! compressed` does, before its sizes and latencies are measured.
 //! `COMPRESSION=off` writes and measures values as they are, as before.
+//! `FULLTEXT=entries` keeps full-text indexes in the format before phase 9.
 //! `INDEXING=automatic` makes every namespace automatic (phase 6), to
 //! measure what automatic indexes cost loads, writes and space.
 
@@ -41,6 +42,14 @@ fn compression() -> grafeno::Compression {
     }
 }
 
+/// `FULLTEXT=entries` builds full-text indexes as before phase 9.
+fn fulltext() -> grafeno::FulltextFormat {
+    match std::env::var("FULLTEXT").as_deref() {
+        Ok("entries") => grafeno::FulltextFormat::Entries,
+        _ => grafeno::FulltextFormat::Postings,
+    }
+}
+
 /// `INDEXING=automatic` loads every dataset into automatic namespaces
 /// (phase 6): their properties get indexes as they appear.
 fn indexing() -> grafeno::IndexingMode {
@@ -56,6 +65,7 @@ fn open_db(path: &Path) -> Grafeno {
         &grafeno::OpenOptions {
             compression: compression(),
             indexing: indexing(),
+            fulltext: fulltext(),
             ..grafeno::OpenOptions::default()
         },
     )

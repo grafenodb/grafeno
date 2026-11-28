@@ -687,6 +687,21 @@ ejecuten esta versión: un miembro envía a otro que se ha quedado atrás una
 instantánea de su archivo, y un archivo comprimido es uno que las versiones
 anteriores rechazan.
 
+Los índices de texto completo guardan sus postings en un formato más
+pequeño (una entrada por término y nodo): los índices nuevos y los
+reconstruidos lo usan, y el primero lleva el archivo al layout 21, que las
+versiones anteriores rechazan. `--reindex-existing` reconstruye en él los
+índices que ya existen. `[storage] fulltext = "entries"` sigue
+construyendo el formato anterior, y esto devuelve un archivo a su layout
+anterior:
+
+```bash
+grafeno storage apply --config /etc/grafeno/grafeno.toml --fulltext entries --reindex-existing --verify
+```
+
+En un clúster, deja `fulltext = "entries"` hasta que todos los miembros
+ejecuten esta versión, por la misma razón que la compresión.
+
 Un servidor en marcha también planifica y ejecuta migraciones en
 `/v1/storage/migrations` (propietarios), a través de su escritor, entre las
 demás escrituras. En un clúster, migra el archivo de cada miembro con su
@@ -756,6 +771,7 @@ vector_cache_mb = 128       # vectors decoded while inserting embeddings
 
 [storage]
 compression = "auto"        # compress values where it pays; "off" writes them as they are
+fulltext = "postings"       # full-text indexes built from now on; "entries" as earlier releases
 
 [indexing]
 mode = "automatic"          # of namespaces without one: automatic, manual or hybrid

@@ -75,17 +75,19 @@ pub use constraints::{
     Action, Constraint, ConstraintEvent, HistoryEntry, OnConflict, PropertyType, Scope,
 };
 pub use db::{
-    Actor, BASE_LAYOUT, DEFAULT_CACHE, Durability, FileIntegrity, Grafeno, HYPEREDGE_LAYOUT,
-    OpenOptions, ReadTx, SCHEMA_VERSION, WriteTx, upgrade_copies, upgrade_copy_path,
+    Actor, BASE_LAYOUT, DEFAULT_CACHE, Durability, ENVELOPE_LAYOUT, FileIntegrity, Grafeno,
+    HYPEREDGE_LAYOUT, OpenOptions, POSTINGS_LAYOUT, ReadTx, SCHEMA_VERSION, WriteTx,
+    upgrade_copies, upgrade_copy_path,
 };
 pub use dump::{DumpStats, EXPORT_FORMAT, EXPORT_VERSION, ImportOptions, Record};
 pub use find::{Cmp, Filter, Find, FindPage, IndexPosition, MAX_FIND_LIMIT, OrderBy, ValueKind};
 pub use fulltext::{
-    Analyzer, Fragment, Fulltext, FulltextHit, Fusion, SearchHit, SearchMode, SearchRequest, fuse,
+    Analyzer, Fragment, Fulltext, FulltextFormat, FulltextHit, Fusion, SearchHit, SearchMode,
+    SearchRequest, fuse,
 };
 pub use grafeno_core::*;
 pub use hyperedge::{DEFAULT_MAX_PARTICIPANTS, HyperEdgeFilter, OnHyperEdges, ParticipantMatch};
-pub use index::{FuzzyHit, IndexDef, IndexInfo, IndexRange, RecordKind};
+pub use index::{FuzzyHit, IndexDef, IndexInfo, IndexRange, Physical, RecordKind};
 pub use indexing::{
     DeferredIndexes, IndexKind, IndexOrigin, IndexingMode, IndexingPolicy, LabelRule,
     MAX_AUTO_PER_LABEL, MAX_EXACT_CHARS,

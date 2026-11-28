@@ -581,6 +581,17 @@ pub(crate) struct Shared {
     pub(crate) indexing: crate::indexing::Cache,
     /// Reads that used each index (6.5).
     pub(crate) index_uses: crate::indexing::Uses,
+    /// New full-text indexes keep the entries format, not postings (phase 9).
+    pub(crate) fulltext_entries: std::sync::atomic::AtomicBool,
+}
+
+impl Shared {
+    /// Whether new and rebuilt full-text indexes keep the postings format.
+    pub(crate) fn fulltext_postings(&self) -> bool {
+        !self
+            .fulltext_entries
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
 }
 
 impl Default for Shared {
@@ -603,6 +614,7 @@ impl Default for Shared {
             compression: crate::compress::State::default(),
             indexing: crate::indexing::Cache::default(),
             index_uses: crate::indexing::Uses::default(),
+            fulltext_entries: std::sync::atomic::AtomicBool::new(false),
         }
     }
 }

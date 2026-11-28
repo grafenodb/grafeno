@@ -23,6 +23,7 @@ pub struct Request {
     pub json: bool,
     pub retrain: bool,
     pub indexing: Option<grafeno::IndexingPolicy>,
+    pub fulltext: Option<grafeno::FulltextFormat>,
 }
 
 fn open(path: &Path) -> Result<Grafeno, String> {
@@ -81,6 +82,7 @@ fn options(request: &Request) -> MigrationOptions {
         batch_size: request.batch_size,
         retrain: request.retrain,
         indexing: request.indexing.clone(),
+        fulltext: request.fulltext,
     }
 }
 

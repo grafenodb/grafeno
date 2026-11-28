@@ -658,6 +658,20 @@ On a cluster, keep `compression = "off"` until every member runs this
 release: a member sends a lagging one a snapshot of its file, and a
 compressed file is one an earlier release refuses.
 
+Full-text indexes keep their postings in a smaller format (one entry per
+term and node): new and rebuilt indexes take it, and the first one makes
+the file layout 21, which earlier releases refuse. `--reindex-existing`
+rebuilds existing indexes in it. `[storage] fulltext = "entries"` keeps
+building the earlier format, and this brings a file back to its earlier
+layout:
+
+```bash
+grafeno storage apply --config /etc/grafeno/grafeno.toml --fulltext entries --reindex-existing --verify
+```
+
+On a cluster, keep `fulltext = "entries"` until every member runs this
+release, for the same reason as compression.
+
 A running server also
 plans and runs migrations at `/v1/storage/migrations` (owners), through
 its writer, between other writes. On a cluster, migrate each member's file
@@ -728,6 +742,7 @@ vector_cache_mb = 128       # vectors decoded while inserting embeddings
 
 [storage]
 compression = "auto"        # compress values where it pays; "off" writes them as they are
+fulltext = "postings"       # full-text indexes built from now on; "entries" as earlier releases
 
 [indexing]
 mode = "automatic"          # of namespaces without one: automatic, manual or hybrid

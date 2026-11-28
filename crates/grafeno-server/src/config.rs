@@ -33,6 +33,7 @@
 //!
 //! [storage]
 //! compression = "auto"   # compress values where it pays; "off" writes them as they are
+//! fulltext = "postings"  # full-text indexes built from now on; "entries": as earlier releases
 //!
 //! [indexing]
 //! mode = "automatic"     # of namespaces without one: automatic, manual or hybrid
@@ -391,6 +392,11 @@ pub struct StorageConfig {
     /// them as they are. Values written either way stay readable.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compression: Option<grafeno::Compression>,
+    /// How full-text indexes built from now on keep their postings:
+    /// `postings` (the default) or `entries`, as earlier releases, whose
+    /// files stay readable by them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fulltext: Option<grafeno::FulltextFormat>,
 }
 
 /// `[indexing]`: the indexing mode of namespaces that have none of their

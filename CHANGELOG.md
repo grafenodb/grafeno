@@ -14,6 +14,19 @@ upgraded in place, with a copy kept first.
 
 ## Unreleased
 
+- **Changed**: full-text indexes take a fifth less space. Their postings
+  move to a table of their own, one entry per term and node with the
+  fields, frequencies, lengths and positions packed as varints, instead
+  of one key per term, field and node. Searches return the same nodes, in
+  the same order, with the same scores. On the storage suite the
+  catalogue's full-text index went from 105 to 84 MiB and the documents'
+  from 237 to 197 MiB; building one is 20% faster. New and rebuilt indexes
+  take the new format; existing ones keep theirs until rebuilt (`grafeno
+  storage apply --reindex-existing`). The first index in it makes the file
+  layout 21, which earlier releases refuse; `[storage] fulltext =
+  "entries"` (`OpenOptions::fulltext`) keeps building the earlier format,
+  and `grafeno storage apply --fulltext entries --reindex-existing` brings
+  a file back to its earlier layout.
 - **Changed**: bulk loads into an automatic namespace build their
   automatic indexes after the load instead of record by record: imports
   (`grafeno import`, `POST /v1/import`), document ingestion and a `CALL

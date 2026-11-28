@@ -1041,6 +1041,12 @@ struct MigrateArgs {
     /// ["raw"]}`), instead of `--indexing`.
     #[arg(long, conflicts_with = "indexing")]
     indexing_policy: Option<String>,
+    /// How full-text indexes keep their postings: `postings` (the default
+    /// for new indexes) or `entries` (earlier releases). With
+    /// `--reindex-existing` the existing ones are rebuilt in it; `entries`
+    /// over every namespace gives the file back its earlier layout.
+    #[arg(long, value_parser = ["postings", "entries"])]
+    fulltext: Option<String>,
     /// Pack the file afterwards (`vacuum --maximum`).
     #[arg(long)]
     compact: bool,
@@ -1096,6 +1102,10 @@ impl MigrateArgs {
                 }
                 (None, None) => None,
             },
+            fulltext: self
+                .fulltext
+                .as_deref()
+                .and_then(grafeno::FulltextFormat::from_name),
             verify: self.verify,
             compact: self.compact,
             batch_size: self.batch_size,

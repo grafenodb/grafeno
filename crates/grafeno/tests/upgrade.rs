@@ -294,10 +294,11 @@ fn every_past_layout_upgrades() {
         assert_eq!(found.len(), 1, "v{version}");
         assert!(read.check(NS).unwrap().is_ok());
         drop((read, db));
-        // The hyperedge made it layout 19.
+        // The hyperedge made it layout 19, the full-text index (in the
+        // postings format) 21.
         assert_eq!(
             Grafeno::file_layout(&path).unwrap(),
-            Some(grafeno::HYPEREDGE_LAYOUT)
+            Some(grafeno::POSTINGS_LAYOUT)
         );
         assert_eq!(grafeno::upgrade_copies(&path), copies);
         std::fs::remove_file(&path).unwrap();
