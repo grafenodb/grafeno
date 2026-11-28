@@ -14,6 +14,16 @@ upgraded in place, with a copy kept first.
 
 ## Unreleased
 
+- **Changed**: bulk loads into an automatic namespace build their
+  automatic indexes after the load instead of record by record: imports
+  (`grafeno import`, `POST /v1/import`), document ingestion and a `CALL
+  { … } IN TRANSACTIONS` whose subquery only creates. The new indexes of
+  a label are filled from one read of its records; an import's own
+  indexes (but unique ones) are created after its records too. Loading
+  300,000 rows with six automatic indexes took 8.6 s against 12.3, and
+  less than loading them into a manual namespace and creating the same
+  indexes afterwards (10.2 s). An `IN TRANSACTIONS` that matches or merges
+  still decides as it goes, since it looks records up.
 - **Added**: indexing policies per namespace. In `automatic` mode, the
   first value of a label's property decides its index as it is written:
   a string of up to 256 characters, a number or a boolean get a property

@@ -1,7 +1,7 @@
 # Storage and indexing optimization
 
 **Status: approved on 2026-11-26, with the answers proposed in
-[section 14](#14-questions-for-approval); phases 1 to 3 done, phase 4 next.** This
+[section 14](#14-questions-for-approval); phases 1 to 7 done, phase 9 next.** This
 document is its source of truth: every step done or left is recorded
 here, in [Progress](#progress), as the work goes on.
 
@@ -482,6 +482,7 @@ Detailed in [section 9](#9-migration-of-existing-databases).
 | D20 | One full-text index per label and property (`auto_Label_property_text`), not one per label with fields added. | Adding a field to a full-text index rebuilds it over every node of the label, inside the write that brought the field. |
 | D21 | No background builder for property indexes: a pair of label and property is decided before the record that brings it is written, so its index is filled from the records that already have the property, none in a namespace that was always automatic. Turning a namespace with data automatic records its pairs as decided (`existing`); the migration's `--indexing` builds their indexes, one per batch. | A write never waits for a build (D8) without a second way of filling indexes, and the planner never sees a partial index. |
 | D22 | Only node properties are indexed automatically; not edge or hyperedge properties, nor `@embedding` (a vector index stays explicit), nor properties starting with `@` or `_`. A `CREATE INDEX` like an automatic one replaces it. | Nodes are what lookups start from; vector indexes need a dimension and parameters chosen on purpose. |
+| D23 | Phase 7: imports, document ingestion and a `CALL { … } IN TRANSACTIONS` whose subquery only creates and sets hold their automatic decisions back and build the new indexes after the load, the indexes of one label sharing one read of its records; the export's own indexes, but unique ones and keys, are created after the records too. An `IN TRANSACTIONS` that matches or merges decides as it goes. A load that fails leaves its pairs undecided (the next write that brings one decides it) and, for an import in chunks, the export's indexes over what it loaded. | A load that looks records up by property needs their indexes while it runs; a unique index must refuse the line that breaks it, not the end of the load; a decision is only kept with the index it made. |
 | D17 | 6.3 (binary header, lazy properties) moves after phase 5, to be decided on CPU. | Dictionaries took the size of records to 15–40%, the gain 6.3 was for; what is left is decoding CPU, measured with the latencies below. |
 
 ## 8. Phases and tasks
@@ -600,7 +601,7 @@ with its tests and benchmarks green and this document updated.
   properties use the index once built; write cost increase reported and
   approved (Q3).
 
-### Phase 7 — Automatic indexing at bulk speed (P0, M)
+### Phase 7 — Automatic indexing at bulk speed (P0, M) — done
 
 - 7.1 Imports, ingestion and `IN TRANSACTIONS` decide policies per batch,
   not per record, and build new indexes after the load (one pass) rather
@@ -944,5 +945,9 @@ The initiative is complete when, measured against the phase-1 baseline:
 | 2026-11-27 | 6.6 Measure | done | the storage suite with `INDEXING=automatic` (`docs/data/indexing.csv`) against compressed manual (`docs/data/compression.csv`), every result matching the fixtures: stored MiB catalogue 277.3 → 308.5, documents 425.2 → 427.5, rows 95.0 → 151.3, graph 185.8 → 188.2, hyperedges and memory unchanged; load s catalogue 53.6 → 59.1, rows 8.6 → 18.4, the others within 10%; one write 5–17% dearer; queries on properties nobody indexed: the unindexed count 136.2 → 0.10 ms, two hops in the graph 14.5 → 0.32 ms (`docs/benchmarks.md`, "Automatic indexing") |
 | 2026-11-27 | Phase 6 checks | done | `tests/indexing.rs`, `grafeno-query/tests/indexing_policy.rs`; found on the way: `CREATE INDEX` after an automatic index of the same shape failed (now it replaces it) |
 | 2026-11-27 | Q3 for new namespaces | approved | a server's new namespaces are automatic by default, for the write cost measured in 6.6; `[indexing] mode = "manual"` keeps the earlier behavior |
-| | Phase 7 | next | automatic indexing at bulk speed |
-| | Phases 6–14 | pending | |
+| 2026-11-27 | 7.1 Bulk loads | done | `DeferredIndexes`, `WriteTx::defer_index_decisions`, `take_deferred_indexes`, `apply_deferred_indexes`, `with_deferred_indexes` (`indexing.rs`); `WriteTx::create_indexes` and builds sharing one read of a label's records (`index.rs`, `BuildRecords`); imports (one transaction, in chunks, through the writer's bulk lane), `ingest_document`, `CALL { … } IN TRANSACTIONS` whose subquery only creates (`only_creates` in `exec.rs`). D23. `crates/grafeno/tests/bulk_indexing.rs`, `grafeno-query/tests/indexing_policy.rs` |
+| 2026-11-27 | Phase 7 acceptance | done | `crates/grafeno-server/examples/bulk_indexing.rs` (`docs/data/bulk_indexing.csv`, two runs in the Linux container): a bulk load into an automatic namespace took less than the same load into a manual one followed by the same `CREATE INDEX`es, on every path: rows (300,000, six properties) import 8.6–8.8 s against 10.2–10.3, `IN TRANSACTIONS` 9.8–10.4 against 11.9; documents (50,000, a full-text index) import 3.5–3.6 against 3.7–3.8, `IN TRANSACTIONS` 8.6–8.8 against 9.0–9.2. Record by record (phase 6's loads) took 12.3 and 4.5 s. Same indexes and entries in every case (`docs/benchmarks.md`, "Automatic indexing at bulk speed") |
+| 2026-11-27 | 7.2 List entries | not needed now | phase 6 did not show the need: no dataset of the suite queries items of lists; lists stay unindexed by the automatic policy |
+| 2026-11-27 | 6.3 `indexes` in GQ `CREATE … OPTIONS` | left | imports carry their indexes as index lines and are covered; a GQ form is not needed for phase 7's loads |
+| | Phase 9 | next | full-text index storage (order of Q7: 9, 10, 8, 11 by measured gain) |
+| | Phases 8–14 | pending | |

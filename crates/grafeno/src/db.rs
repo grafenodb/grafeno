@@ -640,6 +640,8 @@ impl Grafeno {
             indexing_dirty: std::collections::HashSet::new(),
             indexing_decided: std::collections::HashSet::new(),
             deciding_indexes: true,
+            deferred_indexes: None,
+            build_records: None,
             subscription_cache: None,
             log_changes: self.shared.changes.retention().enabled,
             pending_changes: crate::changes::Pending::default(),
@@ -1601,6 +1603,11 @@ pub struct WriteTx {
     pub(crate) indexing_decided: std::collections::HashSet<String>,
     /// Off while indexes are rebuilt: writes decide nothing.
     pub(crate) deciding_indexes: bool,
+    /// A bulk load's automatic decisions, held back until it ends.
+    pub(crate) deferred_indexes: Option<crate::indexing::DeferredIndexes>,
+    /// Records read for index builds, shared by the builds of one batch
+    /// (by kind and labels).
+    pub(crate) build_records: Option<crate::index::BuildRecords>,
     /// The event subscriptions of a namespace, read once (16.10).
     pub(crate) subscription_cache: Option<(String, Arc<Vec<crate::subscriptions::Subscription>>)>,
     /// Whether commits append to the change log.

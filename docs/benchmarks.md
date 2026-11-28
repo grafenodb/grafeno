@@ -1974,6 +1974,27 @@ in `docs/data/compression.csv`, against the redb 5 run of
 The other operations are within ±5% (full list in the CSV). Reads that
 go through many records pay for decompressing each one: 8–12%.
 
+## Automatic indexing at bulk speed (phase 7)
+
+`crates/grafeno-server/examples/bulk_indexing.rs`, release build in the
+Linux container, `docs/data/bulk_indexing.csv` (second run within 6% of
+the first). A bulk load into an automatic namespace holds its decisions
+back and builds the indexes after it; against the same load into a
+manual namespace followed by the `CREATE INDEX`es the policy made, and
+against loading record by record with automatic indexing (what a load did
+in phase 6). Every case ends with the same indexes and entries.
+
+| data | path | automatic, after the load | manual, then `CREATE INDEX` (load + indexes) | automatic, record by record |
+| --- | --- | ---: | ---: | ---: |
+| rows: 300,000, six properties | import | 8.6 s | 10.2 s (4.9 + 5.3) | 12.3 s |
+| rows | `IN TRANSACTIONS` | 10.4 s | 11.9 s (6.7 + 5.2) | |
+| documents: 50,000, a long text | import | 3.6 s | 3.7 s (1.0 + 2.7) | 4.5 s |
+| documents | `IN TRANSACTIONS` | 8.8 s | 9.0 s (6.3 + 2.8) | |
+
+The indexes of one label are filled from a single read of its records
+(decompressed once, not once per index), which is what takes the
+automatic load under the manual one plus its `CREATE INDEX`es.
+
 ## Automatic indexing (phase 6)
 
 The storage suite with every namespace automatic (`INDEXING=automatic`,

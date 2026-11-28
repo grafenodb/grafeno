@@ -310,10 +310,16 @@ impl Grafeno {
     pub fn import_with(&self, input: impl BufRead, options: &ImportOptions) -> Result<DumpStats> {
         let Some(chunk) = options.chunk else {
             return self.write(|tx| {
-                let mut import = Import::default();
+                let mut import = Import {
+                    defer_indexes: true,
+                    ..Import::default()
+                };
+                import.begin_chunk(tx);
                 for (index, line) in input.lines().enumerate() {
                     import.line(tx, index + 1, line)?;
                 }
+                import.end_chunk(tx);
+                import.build_indexes(tx)?;
                 import.finish()
             });
         };
@@ -322,24 +328,31 @@ impl Grafeno {
         let outcome = (|| {
             let mut import = Import {
                 defer_texts: true,
+                defer_indexes: true,
                 ..Import::default()
             };
             let mut tx = self.begin_write()?;
+            import.begin_chunk(&mut tx);
             let mut pending = 0;
             for (index, line) in input.lines().enumerate() {
                 if let Err(error) = import.line(&mut tx, index + 1, line) {
                     tx.abort()?;
+                    import.rescue_indexes(self);
                     return Err(error);
                 }
                 pending += 1;
                 if pending >= chunk.max(1) {
                     import.index_texts(&mut tx)?;
+                    import.end_chunk(&mut tx);
                     tx.commit()?;
                     tx = self.begin_write()?;
+                    import.begin_chunk(&mut tx);
                     pending = 0;
                 }
             }
             import.index_texts(&mut tx)?;
+            import.end_chunk(&mut tx);
+            import.build_indexes(&mut tx)?;
             tx.commit()?;
             import.finish()
         })();
@@ -359,6 +372,7 @@ impl crate::Writer {
     pub fn import(&self, input: impl BufRead, chunk: usize) -> Result<DumpStats> {
         let state = std::sync::Arc::new(std::sync::Mutex::new(Import {
             defer_texts: true,
+            defer_indexes: true,
             ..Import::default()
         }));
         let mut lines = input.lines();
@@ -379,24 +393,48 @@ impl crate::Writer {
             let last = part.len() < chunk.max(1);
             let shared = state.clone();
             let part = std::sync::Arc::new(part);
-            self.write_bulk(move |tx| {
+            let written = self.write_bulk(move |tx| {
                 // A failed attempt must leave the state as it was: work on a
                 // copy and keep it only on success.
                 let mut import = shared.lock().expect("not poisoned").clone();
+                import.begin_chunk(tx);
                 for (number, line) in part.iter() {
                     import.line(tx, *number, Ok(line.clone()))?;
                 }
                 import.index_texts(tx)?;
+                import.end_chunk(tx);
                 *shared.lock().expect("not poisoned") = import;
                 Ok(())
-            })?;
+            });
+            if let Err(error) = written {
+                self.rescue_import_indexes(&state);
+                return Err(error);
+            }
             if last {
                 break;
             }
         }
+        // The indexes held back, filled in one pass after the records.
+        let shared = state.clone();
+        self.write_bulk(move |tx| {
+            let mut import = shared.lock().expect("not poisoned").clone();
+            import.build_indexes(tx)?;
+            *shared.lock().expect("not poisoned") = import;
+            Ok(())
+        })?;
         self.flush()?;
         let import = std::mem::take(&mut *state.lock().expect("not poisoned"));
         import.finish()
+    }
+}
+
+impl crate::Writer {
+    /// After a failed bulk import: the export's indexes over what it loaded.
+    fn rescue_import_indexes(&self, state: &std::sync::Arc<std::sync::Mutex<Import>>) {
+        let indexes = std::mem::take(&mut state.lock().expect("not poisoned").indexes);
+        if !indexes.is_empty() {
+            let _ = self.write_bulk(move |tx| tx.create_indexes(indexes.clone()).map(|_| ()));
+        }
     }
 }
 
@@ -409,6 +447,14 @@ struct Import {
     /// Index texts in batches (bulk loading) instead of one by one.
     defer_texts: bool,
     texts: std::collections::BTreeMap<String, Vec<(NodeId, String)>>,
+    /// Create the export's indexes (but unique ones and keys, which refuse
+    /// a line) and the automatic ones after the records, each filled in
+    /// one pass (phase 7).
+    defer_indexes: bool,
+    /// The export's indexes, held back.
+    indexes: Vec<(String, IndexDef)>,
+    /// The automatic decisions, held back.
+    deferred: crate::indexing::DeferredIndexes,
 }
 
 impl Import {
@@ -474,6 +520,9 @@ impl Import {
                     .map_err(|e| at(e.to_string()))?;
                 self.namespaces.insert(ns);
             }
+            Record::Index { ns, index } if self.defer_indexes && !index.unique => {
+                self.indexes.push((ns, index));
+            }
             Record::Index { ns, index } => {
                 tx.create_index(&ns, index).map_err(|e| at(e.to_string()))?;
             }
@@ -490,6 +539,37 @@ impl Import {
             }
         }
         Ok(())
+    }
+
+    /// Starts a transaction of the load: its decisions are held back.
+    fn begin_chunk(&mut self, tx: &mut WriteTx) {
+        if self.defer_indexes {
+            tx.defer_index_decisions(std::mem::take(&mut self.deferred));
+        }
+    }
+
+    /// Ends one: what it held back is kept for the end.
+    fn end_chunk(&mut self, tx: &mut WriteTx) {
+        if self.defer_indexes {
+            self.deferred = tx.take_deferred_indexes();
+        }
+    }
+
+    /// The export's indexes, then the automatic ones, filled from the
+    /// records.
+    fn build_indexes(&mut self, tx: &mut WriteTx) -> Result<()> {
+        tx.create_indexes(std::mem::take(&mut self.indexes))?;
+        tx.apply_deferred_indexes(std::mem::take(&mut self.deferred))?;
+        Ok(())
+    }
+
+    /// After a failed bulk import: the export's indexes over what it
+    /// loaded (the automatic decisions are left to later writes).
+    fn rescue_indexes(&mut self, db: &Grafeno) {
+        let indexes = std::mem::take(&mut self.indexes);
+        if !indexes.is_empty() {
+            let _ = db.write(|tx| tx.create_indexes(indexes.clone()).map(|_| ()));
+        }
     }
 
     /// Indexes the texts gathered so far.

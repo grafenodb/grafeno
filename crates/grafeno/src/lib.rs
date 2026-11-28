@@ -87,8 +87,8 @@ pub use grafeno_core::*;
 pub use hyperedge::{DEFAULT_MAX_PARTICIPANTS, HyperEdgeFilter, OnHyperEdges, ParticipantMatch};
 pub use index::{FuzzyHit, IndexDef, IndexInfo, IndexRange, RecordKind};
 pub use indexing::{
-    IndexKind, IndexOrigin, IndexingMode, IndexingPolicy, LabelRule, MAX_AUTO_PER_LABEL,
-    MAX_EXACT_CHARS,
+    DeferredIndexes, IndexKind, IndexOrigin, IndexingMode, IndexingPolicy, LabelRule,
+    MAX_AUTO_PER_LABEL, MAX_EXACT_CHARS,
 };
 pub use interchange::{IMPORT_ID, InterchangeOptions, InterchangeStats};
 pub use memory::{DEFAULT_IMPORTANCE, MemoryState, names_of, normalize_name};

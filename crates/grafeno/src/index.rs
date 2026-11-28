@@ -1321,7 +1321,7 @@ impl WriteTx {
         }
         let records = self.records_of(ns, &def)?;
         if def.vector.is_some() {
-            let count = self.fill_vector_index(ns, &def, &records)?;
+            let count = self.fill_vector_index(ns, &def, records.as_slice())?;
             self.tx
                 .open_table(INDEXES)
                 .map_err(storage)?
@@ -1333,7 +1333,7 @@ impl WriteTx {
         let mut entries = Vec::new();
         let mut docs = Vec::new();
         let what = format!("{}s", def.kind().name());
-        for (id, props, live) in &records {
+        for (id, props, live) in records.iter() {
             if def.required
                 && *live
                 && let Some(missing) = missing_key(&def, props)
@@ -1715,9 +1715,53 @@ impl WriteTx {
         }
     }
 
+    /// Runs `build` with the records index builds read kept, so that
+    /// indexes on the same labels read them once.
+    pub(crate) fn with_build_records<T>(
+        &mut self,
+        build: impl FnOnce(&mut Self) -> Result<T>,
+    ) -> Result<T> {
+        let outer = self.build_records.replace(BuildRecords::new());
+        let out = build(self);
+        self.build_records = outer;
+        out
+    }
+
+    /// Creates several indexes, filled from records read once per kind and
+    /// labels (a bulk load's indexes, after it).
+    pub fn create_indexes(&mut self, indexes: Vec<(String, IndexDef)>) -> Result<u64> {
+        self.with_build_records(|tx| {
+            let mut held = 0;
+            for (ns, def) in indexes {
+                held += tx.create_index(&ns, def)?;
+            }
+            Ok(held)
+        })
+    }
+
+    /// The records an index covers (read once per kind and labels while
+    /// builds share them).
+    pub(crate) fn records_of(&mut self, ns: &str, def: &IndexDef) -> Result<Arc<Records>> {
+        let Some(cache) = &self.build_records else {
+            return Ok(Arc::new(self.read_records_of(ns, def)?));
+        };
+        let mut labels: Vec<String> = def.labels().into_iter().map(str::to_owned).collect();
+        labels.sort_unstable();
+        labels.dedup();
+        let key = (ns.to_owned(), def.kind().name().to_owned(), labels);
+        if let Some(found) = cache.get(&key) {
+            return Ok(found.clone());
+        }
+        let records = Arc::new(self.read_records_of(ns, def)?);
+        if let Some(cache) = self.build_records.as_mut() {
+            cache.insert(key, records.clone());
+        }
+        Ok(records)
+    }
+
     /// The records an index covers: id, properties, and whether it is
     /// current (a retracted edge is not).
-    pub(crate) fn records_of(&self, ns: &str, def: &IndexDef) -> Result<Vec<(u128, Props, bool)>> {
+    fn read_records_of(&self, ns: &str, def: &IndexDef) -> Result<Records> {
         let mut out = Vec::new();
         if def.hyperedges {
             let table = self
@@ -1765,6 +1809,12 @@ impl WriteTx {
         Ok(out)
     }
 }
+
+/// Records an index build reads: id, properties, whether current.
+pub(crate) type Records = Vec<(u128, Props, bool)>;
+
+/// Records read for index builds, by namespace, kind and sorted labels.
+pub(crate) type BuildRecords = HashMap<(String, String, Vec<String>), Arc<Records>>;
 
 /// The first property of a key that a record lacks, holds as `null`, or
 /// holds as a value the index cannot keep (a list, a map).

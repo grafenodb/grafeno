@@ -1,0 +1,11 @@
+shape,records,path,how,load_s,index_s,total_s,indexes,entries
+rows,300000,import,"automatic, after the load",8.624,0.000,8.624,6,1800000
+rows,300000,import,"manual, then CREATE INDEX",4.861,5.311,10.172,6,1800000
+rows,300000,writes,"automatic, record by record",12.304,0.000,12.304,6,1800000
+rows,300000,in transactions,"automatic, after the load",10.345,0.000,10.345,6,1800000
+rows,300000,in transactions,"manual, then CREATE INDEX",6.677,5.210,11.887,6,1800000
+docs,50000,import,"automatic, after the load",3.566,0.000,3.566,3,700000
+docs,50000,import,"manual, then CREATE INDEX",1.021,2.687,3.708,3,700000
+docs,50000,writes,"automatic, record by record",4.446,0.000,4.446,3,700000
+docs,50000,in transactions,"automatic, after the load",8.748,0.000,8.748,3,700000
+docs,50000,in transactions,"manual, then CREATE INDEX",6.251,2.748,8.999,3,700000

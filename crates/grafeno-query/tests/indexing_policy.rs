@@ -93,3 +93,41 @@ fn alter_namespace_sets_the_policy() {
     .to_string();
     assert!(error.contains("indexing policy"), "{error}");
 }
+
+#[test]
+fn in_transactions_that_only_create_build_indexes_after_the_last_batch() {
+    let db = Grafeno::in_memory().unwrap();
+    db.set_default_indexing(grafeno::IndexingMode::Automatic);
+    let made = run(
+        &db,
+        "bulk",
+        "UNWIND range(1, 1000) AS i CALL { WITH i CREATE (:Row {n: i, kind: 'k' + toString(i % 3)}) } IN TRANSACTIONS OF 100 ROWS",
+    )
+    .to_json();
+    assert_eq!(made["stats"]["transactions"], 10);
+    assert_eq!(
+        show(&db, "bulk", &["name", "origin", "entries"]),
+        json!([
+            ["auto_Row_kind", "auto", 1000],
+            ["auto_Row_n", "auto", 1000]
+        ])
+    );
+    let plan = rows(&db, "bulk", "EXPLAIN MATCH (r:Row {n: 500}) RETURN r");
+    assert!(plan.to_string().contains("auto_Row_n"), "{plan}");
+    assert_eq!(
+        rows(&db, "bulk", "MATCH (r:Row {n: 500}) RETURN r.kind"),
+        json!([["k2"]])
+    );
+    // One that merges looks records up as it goes: it decides at once,
+    // and its index is there for the next batch.
+    run(
+        &db,
+        "merge",
+        "UNWIND range(1, 300) AS i CALL { WITH i MERGE (:Key {k: i % 50}) } IN TRANSACTIONS OF 100 ROWS",
+    );
+    assert_eq!(
+        show(&db, "merge", &["name", "entries"]),
+        json!([["auto_Key_k", 50]])
+    );
+    assert!(db.begin_read().unwrap().check("bulk").unwrap().is_ok());
+}

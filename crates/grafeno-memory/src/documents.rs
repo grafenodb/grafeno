@@ -395,8 +395,13 @@ pub struct Ingested {
     pub replaced: usize,
 }
 
-/// Stores `new` as a whole and its chunks.
+/// Stores `new` as a whole and its chunks. The chunks' new properties are
+/// decided after them, each index filled in one pass (a bulk load).
 pub fn ingest_document(tx: &mut WriteTx, ns: &str, new: NewDocument) -> Result<Ingested> {
+    tx.with_deferred_indexes(|tx| ingest_document_now(tx, ns, new))
+}
+
+fn ingest_document_now(tx: &mut WriteTx, ns: &str, new: NewDocument) -> Result<Ingested> {
     let max = if new.max_chars == 0 {
         DEFAULT_CHUNK_CHARS
     } else {

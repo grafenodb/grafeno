@@ -4076,6 +4076,11 @@ pub type Committer<'a> = dyn FnMut(Batch) -> Result<WriteStats, QueryError> + Se
 #[derive(Clone)]
 pub struct Batch {
     inner: Arc<BatchInner>,
+    /// Automatic index decisions held back across the statement's batches
+    /// (phase 7), when its subquery only creates.
+    deferred: Option<Arc<std::sync::Mutex<grafeno::DeferredIndexes>>>,
+    /// Decides them and builds their indexes instead of running rows.
+    finish: bool,
 }
 
 struct BatchInner {
@@ -4132,6 +4137,8 @@ impl Batch {
                 params: params.clone(),
                 limits: limits.clone(),
             }),
+            deferred: None,
+            finish: false,
         }
     }
 
@@ -4148,6 +4155,21 @@ impl Batch {
     /// `read` is a recent snapshot for planning. On an error the caller
     /// must discard the transaction.
     pub fn run(&self, tx: &mut WriteTx, read: &ReadTx) -> Result<WriteStats, QueryError> {
+        let held = |shared: &Arc<std::sync::Mutex<grafeno::DeferredIndexes>>| {
+            shared.lock().unwrap_or_else(|e| e.into_inner()).clone()
+        };
+        if self.finish {
+            if let Some(shared) = &self.deferred {
+                tx.apply_deferred_indexes(held(shared))?;
+            }
+            return Ok(WriteStats {
+                transactions: 1,
+                ..WriteStats::default()
+            });
+        }
+        if let Some(shared) = &self.deferred {
+            tx.defer_index_decisions(held(shared));
+        }
         let inner = &self.inner;
         // Each node and edge as this transaction sees it; a row whose node
         // or edge went meanwhile is left out.
@@ -4190,9 +4212,28 @@ impl Batch {
         let mut stats = runner.stats;
         drop(runner);
         tx.check_deferred()?;
+        if let Some(shared) = &self.deferred {
+            *shared.lock().unwrap_or_else(|e| e.into_inner()) = tx.take_deferred_indexes();
+        }
         stats.transactions += 1;
         Ok(stats)
     }
+}
+
+/// Whether the subquery of a `CALL { … } IN TRANSACTIONS` only creates and
+/// sets: its batches may hold their automatic index decisions back. One
+/// that matches or merges looks records up, and needs the indexes as it
+/// goes.
+fn only_creates(clauses: &[Clause]) -> bool {
+    clauses.iter().all(|clause| match clause {
+        Clause::Unwind { .. }
+        | Clause::With(_)
+        | Clause::Create(_)
+        | Clause::CreateHyper(_)
+        | Clause::Set(_) => true,
+        Clause::Foreach { body, .. } => only_creates(body),
+        _ => false,
+    })
 }
 
 /// Whether a statement is a `CALL { … } IN TRANSACTIONS`, which commits
@@ -4247,6 +4288,21 @@ pub fn execute_in_transactions(
     };
     drop(read);
     let mut stats = result.stats;
+    // A subquery that only creates: its new properties are decided after
+    // the last batch, each index filled in one pass.
+    let deferring = statement.parts.iter().any(|part| {
+        matches!(part.clauses.last(), Some(Clause::InTransactions { query, .. }) if only_creates(&query.clauses))
+    });
+    let shared =
+        deferring.then(|| Arc::new(std::sync::Mutex::new(grafeno::DeferredIndexes::default())));
+    let finish = batches.first().map(|first| Batch {
+        inner: first.inner.clone(),
+        deferred: shared.clone(),
+        finish: true,
+    });
+    for batch in &mut batches {
+        batch.deferred = shared.clone();
+    }
     for batch in batches {
         if limits
             .cancel
@@ -4256,6 +4312,11 @@ pub fn execute_in_transactions(
             return Err(QueryError::limit("the query was cancelled"));
         }
         stats.add(&commit(batch)?);
+    }
+    if let (Some(shared), Some(finish)) = (&shared, finish)
+        && !shared.lock().unwrap_or_else(|e| e.into_inner()).is_empty()
+    {
+        commit(finish)?;
     }
     Ok(QueryResult { stats, ..result })
 }

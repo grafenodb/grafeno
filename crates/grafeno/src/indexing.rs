@@ -32,6 +32,13 @@
 //! namespace with data automatic records the pairs it already holds as
 //! decided, so nothing is built behind a write; the migration's
 //! `--indexing` plans indexes for existing data.
+//!
+//! Bulk loads (phase 7) hold their decisions back: the pairs a load brings
+//! are gathered as it writes ([`DeferredIndexes`]) and decided once, after
+//! it, when each new index is filled in one pass over the records, the
+//! indexes of a label sharing one read of them. A load that fails before
+//! the end leaves its pairs undecided; the next write that brings one
+//! decides it and fills its index from the records already there.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, Mutex};
@@ -213,6 +220,26 @@ pub fn decide(
     kinds
 }
 
+/// The pairs of label and property a bulk load brought that their
+/// namespaces had not decided, with the first value of each: decided
+/// together, after the load ([`WriteTx::apply_deferred_indexes`]).
+#[derive(Clone, Debug, Default)]
+pub struct DeferredIndexes {
+    /// Per namespace, `label \u{1f} property` to (label, property, value).
+    pairs: BTreeMap<String, BTreeMap<String, (String, String, Json)>>,
+}
+
+impl DeferredIndexes {
+    pub fn is_empty(&self) -> bool {
+        self.pairs.values().all(BTreeMap::is_empty)
+    }
+
+    /// How many pairs wait.
+    pub fn len(&self) -> usize {
+        self.pairs.values().map(BTreeMap::len).sum()
+    }
+}
+
 /// A namespace's policy and decisions, as a write uses them.
 pub(crate) struct NsIndexing {
     pub(crate) mode: IndexingMode,
@@ -379,6 +406,16 @@ impl WriteTx {
             }
         }
         if new.is_empty() {
+            return Ok(());
+        }
+        // A bulk load: gathered, decided after it.
+        if let Some(deferred) = self.deferred_indexes.as_mut() {
+            let pairs = deferred.pairs.entry(ns.to_owned()).or_default();
+            for (label, property, value) in new {
+                pairs
+                    .entry(pair(label, property))
+                    .or_insert_with(|| (label.to_owned(), property.to_owned(), value.clone()));
+            }
             return Ok(());
         }
         for (label, property, value) in new {
@@ -583,6 +620,76 @@ impl WriteTx {
         )?;
         self.record_decision(ns, label, property, kinds, false)?;
         Ok(made)
+    }
+
+    /// Holds this transaction's automatic decisions back, gathering them in
+    /// `deferred` (what earlier transactions of the same load gathered)
+    /// until [`WriteTx::take_deferred_indexes`].
+    pub fn defer_index_decisions(&mut self, deferred: DeferredIndexes) {
+        self.deferred_indexes = Some(deferred);
+    }
+
+    /// The decisions held back so far; writes decide again from now on.
+    pub fn take_deferred_indexes(&mut self) -> DeferredIndexes {
+        self.deferred_indexes.take().unwrap_or_default()
+    }
+
+    /// Decides the pairs a bulk load held back, as its writes would have,
+    /// and creates the indexes their policies want, filled from the
+    /// records: the indexes of one label share a single read of them.
+    /// Pairs decided meanwhile (by another write) are left as they are.
+    /// Returns the indexes created.
+    pub fn apply_deferred_indexes(&mut self, deferred: DeferredIndexes) -> Result<Vec<String>> {
+        if deferred.is_empty() {
+            return Ok(Vec::new());
+        }
+        let outer = self.deferred_indexes.take();
+        let made = self.with_build_records(|tx| {
+            let mut made = Vec::new();
+            for (ns, pairs) in deferred.pairs {
+                tx.indexing_dirty.insert(ns.clone());
+                let state = tx.ns_indexing(&ns)?;
+                if state.mode == IndexingMode::Manual {
+                    continue;
+                }
+                for (key, (label, property, value)) in pairs {
+                    if state.decided.contains(&key) || tx.indexing_decided.contains(&key) {
+                        continue;
+                    }
+                    let kinds = decide(&state.policy, state.mode, &label, &property, &value);
+                    made.extend(tx.declare_indexes(
+                        &ns,
+                        &label,
+                        &property,
+                        &kinds,
+                        crate::IndexOrigin::Auto,
+                        &state.policy,
+                    )?);
+                    tx.record_decision(&ns, &label, &property, &kinds, false)?;
+                }
+            }
+            Ok(made)
+        });
+        self.deferred_indexes = outer;
+        made
+    }
+
+    /// Runs `write` with its automatic decisions held back, then applies
+    /// them (in the same transaction). Inside another such write, the outer
+    /// one applies them.
+    pub fn with_deferred_indexes<T>(
+        &mut self,
+        write: impl FnOnce(&mut Self) -> Result<T>,
+    ) -> Result<T> {
+        if self.deferred_indexes.is_some() {
+            return write(self);
+        }
+        self.deferred_indexes = Some(DeferredIndexes::default());
+        let out = write(self);
+        let deferred = self.take_deferred_indexes();
+        let out = out?;
+        self.apply_deferred_indexes(deferred)?;
+        Ok(out)
     }
 
     /// The `indexes` of a write: declared as `CREATE INDEX` would, for
