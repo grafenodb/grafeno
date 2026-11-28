@@ -548,7 +548,7 @@ impl ReadTx {
         drop(changes);
         let (vectors, dangling_links, unreachable_vectors) = vector::check(
             &self.vectors,
-            &self.hnsw_links,
+            &self.graph(),
             &self.vector_meta,
             ns,
             &ids,
@@ -565,7 +565,7 @@ impl ReadTx {
             let mut found = Vec::new();
             let (count, _, _) = vector::check(
                 &self.vectors,
-                &self.hnsw_links,
+                &self.graph(),
                 &self.vector_meta,
                 &space,
                 &ids,
@@ -825,6 +825,7 @@ impl WriteTx {
             .map_err(storage)?
             .remove(ns)
             .map_err(storage)?;
+        crate::vnumbers::clear_space(tx, ns)?;
         tx.open_table(NS_COUNTS)
             .map_err(storage)?
             .remove(ns)
@@ -836,7 +837,7 @@ impl WriteTx {
         // again as the nodes are written back.
         for def in self.index_defs(ns)? {
             if def.vector.is_some() && !def.on_embedding() {
-                crate::vindex::reset_space(&self.tx, ns, &def)?;
+                crate::vindex::reset_space(&self.tx, ns, &def, self.vectors.numbered)?;
                 self.vectors.forget(&crate::vindex::space_of(ns, &def.name));
             }
         }
@@ -1108,7 +1109,7 @@ impl ReadTx {
         vector::estimate_recall(
             &self.vectors,
             &self.vectors_q8,
-            &self.hnsw_links,
+            &self.graph(),
             &self.vector_meta,
             ns,
             sample,
@@ -1201,8 +1202,15 @@ impl WriteTx {
                 })
                 .collect();
             let mut ignored = Vec::new();
+            let numbers = self.numbers_table()?;
+            let graph = vector::Graph {
+                links: &links,
+                ids: numbers.as_ref(),
+                numbers: &self.shared.vector_numbers,
+                committed: false,
+            };
             let (_, dangling, unreachable) =
-                vector::check(&vectors, &links, &meta, ns, &ids, &mut ignored)?;
+                vector::check(&vectors, &graph, &meta, ns, &ids, &mut ignored)?;
             (dangling, unreachable)
         };
         let mut all = Vec::new();
@@ -1235,9 +1243,21 @@ impl WriteTx {
         // The graph starts over with the space's own parameters (a named
         // index keeps its similarity and `m`) and no removals behind it.
         {
+            let meta = self.tx.open_table(VECTOR_META).map_err(storage)?;
+            let old = vector::read_meta(&meta, ns)?;
+            drop(meta);
+            // Renumbered (or back to ids), in the database's format.
+            crate::vnumbers::clear_space(&self.tx, ns)?;
+            let fresh = match old {
+                Some(old) => Some(vector::VectorMeta::fresh(
+                    &self.tx,
+                    old.dimension(),
+                    old.params(),
+                    self.vectors.numbered,
+                )?),
+                None => None,
+            };
             let mut meta = self.tx.open_table(VECTOR_META).map_err(storage)?;
-            let fresh = vector::read_meta(&meta, ns)?
-                .map(|old| vector::VectorMeta::new(old.dimension(), old.params()));
             match fresh {
                 Some(fresh) => meta.insert(ns, crate::store::encode(&fresh)?.as_slice()),
                 None => meta.remove(ns),
@@ -1256,7 +1276,14 @@ impl WriteTx {
             let meta = self.tx.open_table(VECTOR_META).map_err(storage)?;
             let ids: HashSet<u128> = all.iter().map(|(id, _)| id.as_u128()).collect();
             let mut ignored = Vec::new();
-            vector::check(&vectors, &links, &meta, ns, &ids, &mut ignored)?.2
+            let numbers = self.numbers_table()?;
+            let graph = vector::Graph {
+                links: &links,
+                ids: numbers.as_ref(),
+                numbers: &self.shared.vector_numbers,
+                committed: false,
+            };
+            vector::check(&vectors, &graph, &meta, ns, &ids, &mut ignored)?.2
         };
         Ok(CompactReport {
             vectors: all.len() as u64,

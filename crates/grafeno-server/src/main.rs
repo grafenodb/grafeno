@@ -1047,6 +1047,12 @@ struct MigrateArgs {
     /// over every namespace gives the file back its earlier layout.
     #[arg(long, value_parser = ["postings", "entries"])]
     fulltext: Option<String>,
+    /// How vector neighbor lists are kept: `numbers` (the default for new
+    /// spaces) or `ids` (earlier releases). Spaces in the other format are
+    /// compacted into it; `ids` over every namespace gives the file back
+    /// its earlier layout.
+    #[arg(long, value_parser = ["numbers", "ids"])]
+    vector_links: Option<String>,
     /// Pack the file afterwards (`vacuum --maximum`).
     #[arg(long)]
     compact: bool,
@@ -1106,6 +1112,10 @@ impl MigrateArgs {
                 .fulltext
                 .as_deref()
                 .and_then(grafeno::FulltextFormat::from_name),
+            vector_links: self
+                .vector_links
+                .as_deref()
+                .and_then(grafeno::LinkFormat::from_name),
             verify: self.verify,
             compact: self.compact,
             batch_size: self.batch_size,

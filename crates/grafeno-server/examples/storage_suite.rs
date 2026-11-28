@@ -23,6 +23,8 @@
 //! compressed` does, before its sizes and latencies are measured.
 //! `COMPRESSION=off` writes and measures values as they are, as before.
 //! `FULLTEXT=entries` keeps full-text indexes in the format before phase 9.
+//! `VECTOR_LINKS=ids` keeps vector links in the format before phase 10.
+//! `TABLES=1` prints every table's size after each load.
 //! `INDEXING=automatic` makes every namespace automatic (phase 6), to
 //! measure what automatic indexes cost loads, writes and space.
 
@@ -39,6 +41,14 @@ fn compression() -> grafeno::Compression {
     match std::env::var("COMPRESSION").as_deref() {
         Ok("off") => grafeno::Compression::Off,
         _ => grafeno::Compression::Auto,
+    }
+}
+
+/// `VECTOR_LINKS=ids` keeps vector neighbor lists as before phase 10.
+fn vector_links() -> grafeno::LinkFormat {
+    match std::env::var("VECTOR_LINKS").as_deref() {
+        Ok("ids") => grafeno::LinkFormat::Ids,
+        _ => grafeno::LinkFormat::Numbers,
     }
 }
 
@@ -66,6 +76,7 @@ fn open_db(path: &Path) -> Grafeno {
             compression: compression(),
             indexing: indexing(),
             fulltext: fulltext(),
+            vector_links: vector_links(),
             ..grafeno::OpenOptions::default()
         },
     )
@@ -174,6 +185,18 @@ fn sizes(db: &Grafeno, path: &Path, row: &mut Row) {
     row.file_mib = mib(usage.file_bytes.unwrap_or(0));
     row.stored_mib = mib(usage.stored_bytes);
     row.fragmented_mib = mib(usage.fragmented_bytes);
+    if std::env::var("TABLES").is_ok() {
+        for table in &usage.tables {
+            println!(
+                "table {} {} entries={} stored_mib={:.2} fragmented_mib={:.2}",
+                row.dataset,
+                table.name,
+                table.entries,
+                mib(table.stored_bytes),
+                mib(table.fragmented_bytes)
+            );
+        }
+    }
     row.largest = usage
         .tables
         .iter()

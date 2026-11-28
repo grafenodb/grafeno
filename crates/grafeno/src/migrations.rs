@@ -86,6 +86,11 @@ pub struct MigrationOptions {
     /// whole file gives it back the layout it had without postings.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fulltext: Option<crate::FulltextFormat>,
+    /// Keep vector neighbor lists in this format from now on (phase 10),
+    /// and compact every space in the other one into it. Ids over the
+    /// whole file gives it back the layout it had without numbers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vector_links: Option<crate::LinkFormat>,
 }
 
 /// What a step does.
@@ -662,6 +667,9 @@ fn run(
     if let Some(format) = migration.options.fulltext {
         db.set_fulltext_format(format);
     }
+    if let Some(format) = migration.options.vector_links {
+        db.set_link_format(format);
+    }
     let mut batches = 0usize;
     let stopped = |batches: usize| {
         control
@@ -775,6 +783,42 @@ fn run(
             Some(result) => format!("{result}; {note}"),
             None => note,
         });
+    }
+    // Vector spaces in the other links format, compacted into this one,
+    // one transaction each.
+    if let Some(format) = migration.options.vector_links {
+        let numbered = format == crate::LinkFormat::Numbers;
+        let namespaces: Vec<String> = if migration.options.namespaces.is_empty() {
+            db.begin_read()?
+                .namespaces()?
+                .into_iter()
+                .map(|info| info.name)
+                .collect()
+        } else {
+            migration.options.namespaces.clone()
+        };
+        let mut compacted = 0usize;
+        for ns in &namespaces {
+            for (space, links) in db.begin_read()?.vector_spaces(ns)? {
+                if links != numbered {
+                    db.write(|tx| tx.compact_vectors(&space))?;
+                    compacted += 1;
+                }
+            }
+        }
+        let mut note = format!("{compacted} vector spaces compacted into {}", format.name());
+        if !numbered
+            && migration.options.namespaces.is_empty()
+            && let Err(why) = db.write(|tx| tx.leave_numbers_layout())?
+        {
+            note = format!("{note}; the layout stays {}: {why}", crate::NUMBERS_LAYOUT);
+        }
+        if let Some(step) = migration.steps.last_mut() {
+            step.result = Some(match &step.result {
+                Some(result) => format!("{result}; {note}"),
+                None => note,
+            });
+        }
     }
     migration.layout_after = Some(db.layout()?);
     migration.state = MigrationState::Completed;
@@ -1269,37 +1313,12 @@ impl WriteTx {
                 .delete_table(crate::compress::DICTIONARIES)
                 .map_err(storage)?;
         }
-        let hyperedges = self
-            .tx
-            .open_table(crate::hyperedge::HYPEREDGES)
+        self.tx
+            .open_table(crate::store::META)
             .map_err(storage)?
-            .len()
-            .map_err(storage)?
-            > 0;
-        let mut meta = self.tx.open_table(crate::store::META).map_err(storage)?;
-        let before = meta
             .remove(crate::db::LAYOUT_BEFORE_ENVELOPES)
-            .map_err(storage)?
-            .map_or(crate::BASE_LAYOUT, |guard| guard.value());
-        let layout = if hyperedges {
-            before.max(crate::HYPEREDGE_LAYOUT)
-        } else {
-            before
-        }
-        .min(crate::HYPEREDGE_LAYOUT);
-        let stored = meta
-            .get(crate::db::SCHEMA_KEY)
-            .map_err(storage)?
-            .map_or(crate::BASE_LAYOUT, |guard| guard.value());
-        if stored == crate::POSTINGS_LAYOUT {
-            // Full-text postings stay: 21, with this layout without them.
-            meta.insert(crate::db::LAYOUT_BEFORE_POSTINGS, layout)
-                .map_err(storage)?;
-            return Ok(Ok(crate::POSTINGS_LAYOUT));
-        }
-        meta.insert(crate::db::SCHEMA_KEY, layout)
             .map_err(storage)?;
-        Ok(Ok(layout))
+        Ok(Ok(crate::db::settle_layout(&self.tx)?))
     }
 }
 

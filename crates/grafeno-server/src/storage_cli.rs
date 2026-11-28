@@ -24,6 +24,7 @@ pub struct Request {
     pub retrain: bool,
     pub indexing: Option<grafeno::IndexingPolicy>,
     pub fulltext: Option<grafeno::FulltextFormat>,
+    pub vector_links: Option<grafeno::LinkFormat>,
 }
 
 fn open(path: &Path) -> Result<Grafeno, String> {
@@ -83,6 +84,7 @@ fn options(request: &Request) -> MigrationOptions {
         retrain: request.retrain,
         indexing: request.indexing.clone(),
         fulltext: request.fulltext,
+        vector_links: request.vector_links,
     }
 }
 

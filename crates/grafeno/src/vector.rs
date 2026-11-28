@@ -165,6 +165,23 @@ pub(crate) struct VectorMeta {
     /// Link lists those removals rewrote.
     #[serde(default)]
     repaired: u64,
+    /// Neighbor lists are varints of numbers (phase 10), not ids.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    numbered: bool,
+    /// The space's epoch (a counter of the file): its numbers' generation.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    epoch: u64,
+    /// The number the next new node gets.
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    next_number: u32,
+}
+
+fn is_zero(value: &u64) -> bool {
+    *value == 0
+}
+
+fn is_zero_u32(value: &u32) -> bool {
+    *value == 0
 }
 
 impl VectorMeta {
@@ -178,7 +195,36 @@ impl VectorMeta {
             ef_construction: params.ef_construction,
             removed: 0,
             repaired: 0,
+            numbered: false,
+            epoch: 0,
+            next_number: 0,
         }
+    }
+
+    /// The metadata of a space starting over, in the links format `cache`
+    /// writes: a numbered space takes a new epoch.
+    pub(crate) fn fresh(
+        tx: &WriteTransaction,
+        dimension: usize,
+        params: Params,
+        numbered: bool,
+    ) -> Result<Self> {
+        let mut meta = Self::new(dimension, params);
+        if numbered {
+            meta.numbered = true;
+            meta.epoch = crate::vnumbers::next_epoch(tx)?;
+            crate::db::raise_layout(tx, crate::NUMBERS_LAYOUT)?;
+            // The tables exist from the first numbered space on.
+            tx.open_table(crate::vnumbers::VECTOR_NUMBERS)
+                .map_err(storage)?;
+            tx.open_table(crate::vnumbers::VECTOR_IDS)
+                .map_err(storage)?;
+        }
+        Ok(meta)
+    }
+
+    pub(crate) fn numbered(&self) -> bool {
+        self.numbered
     }
 
     pub(crate) fn params(&self) -> Params {
@@ -420,6 +466,10 @@ pub(crate) fn embedding(
 struct NamespaceCache {
     vectors: HashMap<u128, Option<Arc<[f32]>>>,
     links: HashMap<(u128, u8), Arc<[u128]>>,
+    /// Numbers of nodes in a numbered space, as this transaction knows
+    /// them, both ways.
+    numbers: HashMap<u128, u32>,
+    ids: HashMap<u32, u128>,
     /// The bytes it may take, roughly.
     budget: usize,
     /// The bytes of one cached vector, entry included (from the dimension).
@@ -431,6 +481,8 @@ impl NamespaceCache {
         Self {
             vectors: HashMap::new(),
             links: HashMap::new(),
+            numbers: HashMap::new(),
+            ids: HashMap::new(),
             budget,
             vector_bytes: 0,
         }
@@ -471,6 +523,10 @@ pub(crate) struct Cache {
     /// Spaces already flushed once in this transaction: a snapshot lacks
     /// what that flush linked.
     flushed: HashSet<String>,
+    /// New spaces store their links by number (phase 10).
+    pub(crate) numbered: bool,
+    /// Numbers back to nodes, shared by readers.
+    pub(crate) numbers: Arc<crate::vnumbers::Cache>,
 }
 
 impl Default for Cache {
@@ -488,6 +544,8 @@ impl Cache {
             removed: HashMap::new(),
             stale: HashSet::new(),
             flushed: HashSet::new(),
+            numbered: true,
+            numbers: Arc::default(),
         }
     }
 
@@ -503,6 +561,7 @@ impl Cache {
     /// directly: the vectors waiting to join its graph went with them.
     pub(crate) fn forget(&mut self, ns: &str) {
         self.namespaces.remove(ns);
+        // (Numbers of `ns` it knew go with its cache.)
         self.pending.retain(|(space, _, _)| space != ns);
         self.stale.insert(ns.to_owned());
     }
@@ -544,6 +603,8 @@ struct Space<'a, V, L> {
     cache: Option<&'a mut NamespaceCache>,
     /// `vectors` holds quantized vectors (searches).
     quantized: bool,
+    /// Lists by number: how numbers map back to nodes.
+    resolve: Option<&'a dyn crate::vnumbers::Resolve>,
 }
 
 impl<V, L> Space<'_, V, L>
@@ -589,12 +650,38 @@ where
         {
             return Ok(cached.clone());
         }
-        let links: Arc<[u128]> = self
-            .links
-            .get((self.ns, id, layer))
-            .map_err(storage)?
-            .map(|guard| bytes_links(guard.value()).into())
-            .unwrap_or_else(|| Arc::from([]));
+        let links: Arc<[u128]> = match self.links.get((self.ns, id, layer)).map_err(storage)? {
+            Some(guard) => match self.resolve {
+                Some(resolve) => {
+                    let numbers = crate::vnumbers::numbers_of(guard.value());
+                    let mut ids = Vec::with_capacity(numbers.len());
+                    match self.cache.as_mut() {
+                        // A write: what it knows first, and it learns the
+                        // numbers it will store again.
+                        Some(cache) => {
+                            for number in numbers {
+                                let id = match cache.ids.get(&number) {
+                                    Some(id) => Some(*id),
+                                    None => resolve.id(number)?,
+                                };
+                                if let Some(id) = id {
+                                    cache.numbers.insert(id, number);
+                                    cache.ids.insert(number, id);
+                                    ids.push(id);
+                                }
+                            }
+                        }
+                        None => {
+                            resolve.ids(&numbers, &mut ids)?;
+                            ids.retain(|id| *id != 0);
+                        }
+                    }
+                    ids.into()
+                }
+                None => bytes_links(guard.value()).into(),
+            },
+            None => Arc::from([]),
+        };
         if let Some(cache) = self.cache.as_mut() {
             cache.links.insert((id, layer), links.clone());
         }
@@ -740,9 +827,29 @@ pub(crate) fn insert(
     let query = params.similarity.prepare(vector)?;
     remove(tx, cache, ns, node)?;
 
+    let existing = {
+        let table = tx.open_table(VECTOR_META).map_err(storage)?;
+        read_meta(&table, ns)?
+    };
+    let mut meta = match existing {
+        Some(meta) => meta,
+        None => VectorMeta::fresh(tx, query.len(), params, cache.numbered)?,
+    };
+    let id = node.as_u128();
+    if meta.numbered {
+        let mut next = meta.next_number;
+        let space_cache = cache.namespace(ns);
+        crate::vnumbers::number_of(
+            tx,
+            ns,
+            id,
+            &mut next,
+            &mut space_cache.numbers,
+            &mut space_cache.ids,
+        )?;
+        meta.next_number = next;
+    }
     let mut meta_table = tx.open_table(VECTOR_META).map_err(storage)?;
-    let mut meta =
-        read_meta(&meta_table, ns)?.unwrap_or_else(|| VectorMeta::new(query.len(), params));
     if meta.count > 0 && meta.dimension != query.len() {
         return Err(Error::Invalid(format!(
             "{} stores vectors of dimension {}, got {}",
@@ -757,7 +864,6 @@ pub(crate) fn insert(
         .insert(ns, encode(&meta)?.as_slice())
         .map_err(storage)?;
 
-    let id = node.as_u128();
     tx.open_table(VECTORS)
         .map_err(storage)?
         .insert((ns, id), vector_bytes(&query).as_slice())
@@ -782,6 +888,9 @@ fn link(tx: &WriteTransaction, cache: &mut Cache, ns: &str, id: u128, query: &[f
         .ok_or_else(|| Error::Storage(format!("vector metadata missing for {ns:?}")))?;
     let (similarity, m) = (meta.similarity, meta.m);
     let node = NodeId::from_u128(id);
+    let writing = writing_resolver(tx, cache, ns, &meta)?;
+    let resolve = writing.as_ref().map(|w| w as &dyn crate::vnumbers::Resolve);
+    let numbered = meta.numbered;
     let vectors = tx.open_table(VECTORS).map_err(storage)?;
     let mut links = tx.open_table(HNSW_LINKS).map_err(storage)?;
     let cache = cache.namespace(ns);
@@ -797,6 +906,7 @@ fn link(tx: &WriteTransaction, cache: &mut Cache, ns: &str, id: u128, query: &[f
             links: &links,
             cache: Some(&mut *cache),
             quantized: false,
+            resolve,
         }
         .descend(query, entry, level.min(entry_level))?;
 
@@ -810,6 +920,7 @@ fn link(tx: &WriteTransaction, cache: &mut Cache, ns: &str, id: u128, query: &[f
                 links: &links,
                 cache: Some(&mut *cache),
                 quantized: false,
+                resolve,
             };
             let mut found = space.search_layer(query, &entries, meta.ef_construction, layer)?;
             // Links left pointing at this id (from before it lost its vector)
@@ -828,8 +939,9 @@ fn link(tx: &WriteTransaction, cache: &mut Cache, ns: &str, id: u128, query: &[f
             entries = found;
             // …then write them, to the table and the cache.
             for (node, list) in updates {
+                let bytes = stored_list(tx, ns, numbered, &list, &mut cache.numbers)?;
                 links
-                    .insert((ns, node, layer), links_bytes(&list).as_slice())
+                    .insert((ns, node, layer), bytes.as_slice())
                     .map_err(storage)?;
                 cache.links.insert((node, layer), list.into());
             }
@@ -993,6 +1105,7 @@ fn plan_and_apply(
         .min(items.len())
         .max(1);
     let budget = cache.budget / threads;
+    let numbers = cache.numbers.clone();
     let context = Planning {
         items,
         space,
@@ -1001,6 +1114,7 @@ fn plan_and_apply(
         ef,
         removed: &removed,
         new: &new,
+        numbers: &numbers,
     };
 
     // Each thread plans every `threads`-th vector on its own snapshot: all
@@ -1013,14 +1127,36 @@ fn plan_and_apply(
                     let read = database.begin_read().map_err(storage)?;
                     let vectors = read.open_table(VECTORS).map_err(storage)?;
                     let links = read.open_table(HNSW_LINKS).map_err(storage)?;
-                    let entry = {
+                    let snapshot_meta = {
                         let table = read.open_table(VECTOR_META).map_err(storage)?;
-                        read_meta(&table, context.space)?.and_then(|meta| meta.entry)
+                        read_meta(&table, context.space)?
                     };
+                    let entry = snapshot_meta.as_ref().and_then(|meta| meta.entry);
+                    let ids = match read.open_table(crate::vnumbers::VECTOR_IDS) {
+                        Ok(table) => Some(table),
+                        Err(redb::TableError::TableDoesNotExist(_)) => None,
+                        Err(error) => return Err(storage(error)),
+                    };
+                    let snapshot_resolver = match &snapshot_meta {
+                        Some(meta) if meta.numbered => Some(crate::vnumbers::Snapshot::new(
+                            context.numbers,
+                            context.space,
+                            meta.epoch,
+                            ids.as_ref(),
+                            true,
+                        )?),
+                        _ => None,
+                    };
+                    let resolve = snapshot_resolver
+                        .as_ref()
+                        .map(|r| r as &dyn crate::vnumbers::Resolve);
                     let mut local = NamespaceCache::new(budget);
                     let mut out = Vec::new();
                     for at in (first..context.items.len()).step_by(threads) {
-                        out.push((at, context.plan(at, entry, &vectors, &links, &mut local)?));
+                        out.push((
+                            at,
+                            context.plan(at, entry, &vectors, &links, &mut local, resolve)?,
+                        ));
                     }
                     Ok(out)
                 })
@@ -1043,6 +1179,8 @@ fn plan_and_apply(
     }
 
     // The writer's part: the lists, checked against what changed since.
+    let writing = writing_resolver(tx, cache, space, &meta)?;
+    let resolve = writing.as_ref().map(|w| w as &dyn crate::vnumbers::Resolve);
     let vectors = tx.open_table(VECTORS).map_err(storage)?;
     let mut links = tx.open_table(HNSW_LINKS).map_err(storage)?;
     let mut meta_table = tx.open_table(VECTOR_META).map_err(storage)?;
@@ -1061,6 +1199,7 @@ fn plan_and_apply(
                     links: &links,
                     cache: Some(&mut *ns_cache),
                     quantized: false,
+                    resolve,
                 };
                 // Its own list, with what earlier new vectors already linked
                 // to it.
@@ -1107,8 +1246,9 @@ fn plan_and_apply(
                 }
             }
             for (node, list) in writes {
+                let bytes = stored_list(tx, space, meta.numbered, &list, &mut ns_cache.numbers)?;
                 links
-                    .insert((space, node, layer), links_bytes(&list).as_slice())
+                    .insert((space, node, layer), bytes.as_slice())
                     .map_err(storage)?;
                 ns_cache.links.insert((node, layer), list.into());
             }
@@ -1139,6 +1279,7 @@ struct Planning<'a> {
     removed: &'a HashSet<u128>,
     /// The new vectors, by id.
     new: &'a HashMap<u128, Arc<[f32]>>,
+    numbers: &'a crate::vnumbers::Cache,
 }
 
 impl Planning<'_> {
@@ -1153,6 +1294,7 @@ impl Planning<'_> {
         vectors: &V,
         links: &L,
         local: &mut NamespaceCache,
+        resolve: Option<&dyn crate::vnumbers::Resolve>,
     ) -> Result<Plan>
     where
         V: ReadableTable<RecordKey, &'static [u8]>,
@@ -1169,6 +1311,7 @@ impl Planning<'_> {
             links,
             cache: Some(local),
             quantized: false,
+            resolve,
         };
         let mut found: Vec<Vec<Scored>> = vec![Vec::new(); level as usize + 1];
         if let Some(entry) = entry {
@@ -1277,22 +1420,33 @@ pub(crate) fn remove(
         .filter(|(space, _, _)| space == ns)
         .map(|(_, other, _)| *other)
         .collect();
-    let (similarity, m) = {
+    let space_meta = {
         let table = tx.open_table(VECTOR_META).map_err(storage)?;
-        read_meta(&table, ns)?.map_or((Similarity::Cosine, DEFAULT_M), |meta| {
-            (meta.similarity, meta.m)
-        })
+        read_meta(&table, ns)?
     };
+    let (similarity, m) = space_meta
+        .as_ref()
+        .map_or((Similarity::Cosine, DEFAULT_M), |meta| {
+            (meta.similarity, meta.m)
+        });
+    let numbered = space_meta.as_ref().is_some_and(|meta| meta.numbered);
+    let writing = match &space_meta {
+        Some(meta) => writing_resolver(tx, cache, ns, meta)?,
+        None => None,
+    };
+    let resolve = writing.as_ref().map(|w| w as &dyn crate::vnumbers::Resolve);
     let cache = cache.namespace(ns);
     cache.vectors.insert(id, None);
     let mut links = tx.open_table(HNSW_LINKS).map_err(storage)?;
     let mut repaired = 0u64;
     for layer in 0..=level_of(node, m) {
-        let own = links
-            .remove((ns, id, layer))
-            .map_err(storage)?
-            .map(|guard| bytes_links(guard.value()))
-            .unwrap_or_default();
+        let own = match links.remove((ns, id, layer)).map_err(storage)? {
+            Some(guard) => match resolve {
+                Some(resolve) => crate::vnumbers::ids_of(guard.value(), resolve)?,
+                None => bytes_links(guard.value()),
+            },
+            None => Vec::new(),
+        };
         cache.links.remove(&(id, layer));
         let mut space = Space {
             ns,
@@ -1302,6 +1456,7 @@ pub(crate) fn remove(
             links: &links,
             cache: Some(&mut *cache),
             quantized: false,
+            resolve,
         };
         // Who to repair: the removed node's neighbors, and the nodes two hops
         // away that link to it (links are not symmetric, and a link left
@@ -1408,8 +1563,9 @@ pub(crate) fn remove(
         }
         repaired += updates.len() as u64;
         for (neighbor, list) in updates {
+            let bytes = stored_list(tx, ns, numbered, &list, &mut cache.numbers)?;
             links
-                .insert((ns, neighbor, layer), links_bytes(&list).as_slice())
+                .insert((ns, neighbor, layer), bytes.as_slice())
                 .map_err(storage)?;
             cache.links.insert((neighbor, layer), list.into());
         }
@@ -1429,6 +1585,72 @@ pub(crate) fn remove(
         .insert(ns, encode(&meta)?.as_slice())
         .map_err(storage)?;
     Ok(true)
+}
+
+/// A list as `space` stores it: numbers (each node of a numbered space has
+/// one from its first insert on) or ids.
+fn stored_list(
+    tx: &WriteTransaction,
+    space: &str,
+    numbered: bool,
+    list: &[u128],
+    known: &mut HashMap<u128, u32>,
+) -> Result<Vec<u8>> {
+    if !numbered {
+        return Ok(links_bytes(list));
+    }
+    let mut numbers = Vec::with_capacity(list.len());
+    for id in list {
+        let number = crate::vnumbers::existing_number(tx, space, *id, known)?.ok_or_else(|| {
+            Error::Storage(format!(
+                "node {} has no number in {}",
+                NodeId::from_u128(*id),
+                describe_space(space)
+            ))
+        })?;
+        numbers.push(number);
+    }
+    Ok(crate::vnumbers::list_bytes(&numbers))
+}
+
+/// How a write reads a numbered space's lists (`None`: the space keeps ids).
+fn writing_resolver<'a>(
+    tx: &'a WriteTransaction,
+    cache: &Cache,
+    space: &'a str,
+    meta: &VectorMeta,
+) -> Result<Option<crate::vnumbers::Writing<'a>>> {
+    if !meta.numbered {
+        return Ok(None);
+    }
+    crate::vnumbers::Writing::new(tx, &cache.numbers, space, meta.epoch).map(Some)
+}
+
+/// What reads a space's graph needs: its links, and how numbers map back
+/// to nodes in numbered spaces.
+pub(crate) struct Graph<'a, L, I> {
+    pub(crate) links: &'a L,
+    pub(crate) ids: Option<&'a I>,
+    pub(crate) numbers: &'a crate::vnumbers::Cache,
+    /// Read from a committed snapshot (what it resolves may be cached).
+    pub(crate) committed: bool,
+}
+
+impl<L, I> Graph<'_, L, I>
+where
+    I: ReadableTable<(&'static str, u32), u128>,
+{
+    fn resolver<'b>(
+        &'b self,
+        space: &'b str,
+        meta: &VectorMeta,
+    ) -> Result<Option<crate::vnumbers::Snapshot<'b, I>>> {
+        if !meta.numbered {
+            return Ok(None);
+        }
+        crate::vnumbers::Snapshot::new(self.numbers, space, meta.epoch, self.ids, self.committed)
+            .map(Some)
+    }
 }
 
 /// The node with the highest level in the namespace (the new entry point).
@@ -1468,16 +1690,20 @@ fn describe_space(space: &str) -> String {
 /// The `limit` nodes most similar to `query`, best first. `ef` is the size of
 /// the candidate list on layer 0: higher is slower and more accurate.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn search(
+pub(crate) fn search<L, I>(
     vectors: &impl ReadableTable<RecordKey, &'static [u8]>,
     quantized: &impl ReadableTable<RecordKey, &'static [u8]>,
-    links: &impl ReadableTable<LinkKey, &'static [u8]>,
+    links: &Graph<'_, L, I>,
     meta: &impl ReadableTable<&'static str, &'static [u8]>,
     ns: &str,
     query: &[f32],
     limit: usize,
     ef: usize,
-) -> Result<Vec<Hit>> {
+) -> Result<Vec<Hit>>
+where
+    L: ReadableTable<LinkKey, &'static [u8]>,
+    I: ReadableTable<(&'static str, u32), u128>,
+{
     search_with(
         vectors,
         quantized,
@@ -1494,17 +1720,21 @@ pub(crate) fn search(
 /// [`search`] keeping only the nodes `keep` accepts, decided during the
 /// walk.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn search_with(
+pub(crate) fn search_with<L, I>(
     vectors: &impl ReadableTable<RecordKey, &'static [u8]>,
     quantized: &impl ReadableTable<RecordKey, &'static [u8]>,
-    links: &impl ReadableTable<LinkKey, &'static [u8]>,
+    links: &Graph<'_, L, I>,
     meta: &impl ReadableTable<&'static str, &'static [u8]>,
     ns: &str,
     query: &[f32],
     limit: usize,
     ef: usize,
     keep: &mut dyn FnMut(u128) -> Result<bool>,
-) -> Result<Vec<Hit>> {
+) -> Result<Vec<Hit>>
+where
+    L: ReadableTable<LinkKey, &'static [u8]>,
+    I: ReadableTable<(&'static str, u32), u128>,
+{
     let Some(meta) = read_meta(meta, ns)? else {
         return Ok(Vec::new());
     };
@@ -1522,14 +1752,18 @@ pub(crate) fn search_with(
     let similarity = meta.similarity;
     let query = similarity.prepare(query)?;
     // Walk the graph with the quantized vectors…
+    let resolver = links.resolver(ns, &meta)?;
     let mut space = Space {
         ns,
         similarity,
         m: meta.m,
         vectors: quantized,
-        links,
+        links: links.links,
         cache: None,
         quantized: true,
+        resolve: resolver
+            .as_ref()
+            .map(|r| r as &dyn crate::vnumbers::Resolve),
     };
     let entries = space.descend(&query, entry, 0)?;
     let found = space.search_layer_with(&query, &entries, ef.max(limit), 0, keep)?;
@@ -1606,15 +1840,30 @@ pub(crate) fn rank_ids(
 /// cannot be reached from the entry point on layer 0 (searches can never
 /// return them; a few appear as the graph changes, and compacting the
 /// namespace reconnects them).
-pub(crate) fn check(
+pub(crate) fn check<L, I>(
     vectors: &impl ReadableTable<RecordKey, &'static [u8]>,
-    links: &impl ReadableTable<LinkKey, &'static [u8]>,
+    graph: &Graph<'_, L, I>,
     meta: &impl ReadableTable<&'static str, &'static [u8]>,
     ns: &str,
     nodes: &HashSet<u128>,
     problems: &mut Vec<String>,
-) -> Result<(u64, u64, u64)> {
+) -> Result<(u64, u64, u64)>
+where
+    L: ReadableTable<LinkKey, &'static [u8]>,
+    I: ReadableTable<(&'static str, u32), u128>,
+{
+    let links = graph.links;
     let meta = read_meta(meta, ns)?;
+    let resolver = match &meta {
+        Some(meta) => graph.resolver(ns, meta)?,
+        None => None,
+    };
+    let decode = |bytes: &[u8]| -> Result<Vec<u128>> {
+        match &resolver {
+            Some(resolver) => crate::vnumbers::ids_of(bytes, resolver),
+            None => Ok(bytes_links(bytes)),
+        }
+    };
     let mut ids = HashSet::new();
     for item in vectors.range((ns, 0u128)..).map_err(storage)? {
         let (key, value) = item.map_err(storage)?;
@@ -1688,7 +1937,7 @@ pub(crate) fn check(
                 "links of node {node} on layer {layer}, above its level"
             ));
         }
-        dangling += bytes_links(value.value())
+        dangling += decode(value.value())?
             .iter()
             .filter(|neighbor| !ids.contains(neighbor))
             .count() as u64;
@@ -1701,11 +1950,10 @@ pub(crate) fn check(
         let mut seen = HashSet::from([entry.as_u128()]);
         let mut stack = vec![entry.as_u128()];
         while let Some(id) = stack.pop() {
-            let neighbors = links
-                .get((ns, id, 0u8))
-                .map_err(storage)?
-                .map(|guard| bytes_links(guard.value()))
-                .unwrap_or_default();
+            let neighbors = match links.get((ns, id, 0u8)).map_err(storage)? {
+                Some(guard) => decode(guard.value())?,
+                None => Vec::new(),
+            };
             for neighbor in neighbors {
                 if ids.contains(&neighbor) && seen.insert(neighbor) {
                     stack.push(neighbor);
@@ -1720,15 +1968,19 @@ pub(crate) fn check(
 /// Estimates recall@10 of searches with `ef`: the vectors of `sample` nodes
 /// spread over the namespace are the queries, and exact answers come from
 /// one pass over every vector. `None` when there are no vectors.
-pub(crate) fn estimate_recall(
+pub(crate) fn estimate_recall<L, I>(
     vectors: &impl ReadableTable<RecordKey, &'static [u8]>,
     quantized: &impl ReadableTable<RecordKey, &'static [u8]>,
-    links: &impl ReadableTable<LinkKey, &'static [u8]>,
+    links: &Graph<'_, L, I>,
     meta: &impl ReadableTable<&'static str, &'static [u8]>,
     ns: &str,
     sample: usize,
     ef: usize,
-) -> Result<Option<f64>> {
+) -> Result<Option<f64>>
+where
+    L: ReadableTable<LinkKey, &'static [u8]>,
+    I: ReadableTable<(&'static str, u32), u128>,
+{
     let Some(info) = read_meta(meta, ns)? else {
         return Ok(None);
     };
@@ -1779,6 +2031,59 @@ pub(crate) fn estimate_recall(
         total += truth.len();
     }
     Ok((total > 0).then(|| found as f64 / total as f64))
+}
+
+/// The neighbor list of `id` on `layer` in `space`, as stored.
+pub(crate) fn neighbors<L, I>(
+    graph: &Graph<'_, L, I>,
+    meta: &impl ReadableTable<&'static str, &'static [u8]>,
+    space: &str,
+    id: u128,
+    layer: u8,
+) -> Result<Vec<u128>>
+where
+    L: ReadableTable<LinkKey, &'static [u8]>,
+    I: ReadableTable<(&'static str, u32), u128>,
+{
+    let Some(meta) = read_meta(meta, space)? else {
+        return Ok(Vec::new());
+    };
+    let resolver = graph.resolver(space, &meta)?;
+    match graph.links.get((space, id, layer)).map_err(storage)? {
+        Some(guard) => match &resolver {
+            Some(resolver) => crate::vnumbers::ids_of(guard.value(), resolver),
+            None => Ok(bytes_links(guard.value())),
+        },
+        None => Ok(Vec::new()),
+    }
+}
+
+impl crate::ReadTx {
+    /// The neighbors of `node` on `layer` of the vector graph of `ns` (or
+    /// of its vector index `index`), as stored: for tests of the graph.
+    #[doc(hidden)]
+    pub fn vector_neighbors(
+        &self,
+        ns: &str,
+        index: Option<&str>,
+        node: NodeId,
+        layer: u8,
+    ) -> Result<Vec<NodeId>> {
+        let space = match index {
+            Some(name) => crate::vindex::space_of(ns, name),
+            None => ns.to_owned(),
+        };
+        Ok(neighbors(
+            &self.graph(),
+            &self.vector_meta,
+            &space,
+            node.as_u128(),
+            layer,
+        )?
+        .into_iter()
+        .map(NodeId::from_u128)
+        .collect())
+    }
 }
 
 #[cfg(test)]

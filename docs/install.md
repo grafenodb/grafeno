@@ -672,6 +672,17 @@ grafeno storage apply --config /etc/grafeno/grafeno.toml --fulltext entries --re
 On a cluster, keep `fulltext = "entries"` until every member runs this
 release, for the same reason as compression.
 
+Vector indexes keep their neighbor lists as numbers per space, a quarter
+of the space: new and compacted spaces take it, and the first one makes
+the file layout 22. `--vector-links numbers` compacts existing spaces into
+it; `[storage] vector_links = "ids"` keeps the earlier format, and this
+brings a file back to its earlier layout (on a cluster, keep `ids` until
+every member runs this release):
+
+```bash
+grafeno storage apply --config /etc/grafeno/grafeno.toml --vector-links ids --verify
+```
+
 A running server also
 plans and runs migrations at `/v1/storage/migrations` (owners), through
 its writer, between other writes. On a cluster, migrate each member's file
@@ -743,6 +754,7 @@ vector_cache_mb = 128       # vectors decoded while inserting embeddings
 [storage]
 compression = "auto"        # compress values where it pays; "off" writes them as they are
 fulltext = "postings"       # full-text indexes built from now on; "entries" as earlier releases
+vector_links = "numbers"    # vector spaces made or compacted from now on; "ids" as earlier releases
 
 [indexing]
 mode = "automatic"          # of namespaces without one: automatic, manual or hybrid

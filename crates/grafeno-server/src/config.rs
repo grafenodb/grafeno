@@ -34,6 +34,7 @@
 //! [storage]
 //! compression = "auto"   # compress values where it pays; "off" writes them as they are
 //! fulltext = "postings"  # full-text indexes built from now on; "entries": as earlier releases
+//! vector_links = "numbers"  # vector spaces made or compacted from now on; "ids": as earlier releases
 //!
 //! [indexing]
 //! mode = "automatic"     # of namespaces without one: automatic, manual or hybrid
@@ -397,6 +398,10 @@ pub struct StorageConfig {
     /// files stay readable by them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fulltext: Option<grafeno::FulltextFormat>,
+    /// How vector spaces made or compacted from now on keep their neighbor
+    /// lists: `numbers` (the default) or `ids`, as earlier releases.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vector_links: Option<grafeno::LinkFormat>,
 }
 
 /// `[indexing]`: the indexing mode of namespaces that have none of their

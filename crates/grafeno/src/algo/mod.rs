@@ -583,6 +583,10 @@ pub(crate) struct Shared {
     pub(crate) index_uses: crate::indexing::Uses,
     /// New full-text indexes keep the entries format, not postings (phase 9).
     pub(crate) fulltext_entries: std::sync::atomic::AtomicBool,
+    /// New vector spaces keep links as ids, not numbers (phase 10).
+    pub(crate) vector_ids_format: std::sync::atomic::AtomicBool,
+    /// Vector numbers back to nodes, per space and epoch (phase 10).
+    pub(crate) vector_numbers: Arc<crate::vnumbers::Cache>,
 }
 
 impl Shared {
@@ -615,6 +619,8 @@ impl Default for Shared {
             indexing: crate::indexing::Cache::default(),
             index_uses: crate::indexing::Uses::default(),
             fulltext_entries: std::sync::atomic::AtomicBool::new(false),
+            vector_ids_format: std::sync::atomic::AtomicBool::new(false),
+            vector_numbers: Arc::default(),
         }
     }
 }

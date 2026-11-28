@@ -706,29 +706,17 @@ impl crate::WriteTx {
         {
             return Ok(false);
         }
-        let mut meta = self.tx.open_table(crate::store::META).map_err(storage)?;
-        let stored = meta
-            .get(crate::db::SCHEMA_KEY)
-            .map_err(storage)?
-            .map_or(crate::BASE_LAYOUT, |guard| guard.value());
-        if stored < crate::ENVELOPE_LAYOUT {
-            meta.insert(crate::db::LAYOUT_BEFORE_ENVELOPES, stored)
-                .map_err(storage)?;
-            meta.insert(crate::db::SCHEMA_KEY, crate::ENVELOPE_LAYOUT)
-                .map_err(storage)?;
-        } else if stored == crate::POSTINGS_LAYOUT {
-            // Postings came first: the layout without them becomes 20.
-            let before = meta
-                .get(crate::db::LAYOUT_BEFORE_POSTINGS)
+        if !crate::db::has_envelopes(&self.tx)? {
+            let mut meta = self.tx.open_table(crate::store::META).map_err(storage)?;
+            let stored = meta
+                .get(crate::db::SCHEMA_KEY)
                 .map_err(storage)?
                 .map_or(crate::BASE_LAYOUT, |guard| guard.value());
-            if before < crate::ENVELOPE_LAYOUT {
-                meta.insert(crate::db::LAYOUT_BEFORE_ENVELOPES, before)
-                    .map_err(storage)?;
-                meta.insert(crate::db::LAYOUT_BEFORE_POSTINGS, crate::ENVELOPE_LAYOUT)
-                    .map_err(storage)?;
-            }
+            // Its presence says the file holds envelopes.
+            meta.insert(crate::db::LAYOUT_BEFORE_ENVELOPES, stored)
+                .map_err(storage)?;
         }
+        crate::db::raise_layout(&self.tx, crate::ENVELOPE_LAYOUT)?;
         Ok(true)
     }
 }

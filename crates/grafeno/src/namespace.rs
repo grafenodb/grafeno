@@ -353,6 +353,8 @@ impl WriteTx {
             (high.as_str(), 0u128, 0u8)
         );
         clear!(VECTOR_META, low.as_str(), high.as_str());
+        crate::vnumbers::clear_range(tx, low.as_str(), Some(high.as_str()))?;
+        crate::vnumbers::clear_space(tx, ns)?;
         clear!(
             crate::fulltext::FULLTEXT_STATS,
             (ns, ""),

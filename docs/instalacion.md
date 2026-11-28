@@ -702,6 +702,18 @@ grafeno storage apply --config /etc/grafeno/grafeno.toml --fulltext entries --re
 En un clúster, deja `fulltext = "entries"` hasta que todos los miembros
 ejecuten esta versión, por la misma razón que la compresión.
 
+Los índices vectoriales guardan sus listas de vecinos como números por
+espacio, en la cuarta parte del espacio: los espacios nuevos y los
+compactados lo usan, y el primero lleva el archivo al layout 22.
+`--vector-links numbers` compacta en él los espacios que ya existen;
+`[storage] vector_links = "ids"` sigue con el formato anterior, y esto
+devuelve un archivo a su layout anterior (en un clúster, deja `ids` hasta
+que todos los miembros ejecuten esta versión):
+
+```bash
+grafeno storage apply --config /etc/grafeno/grafeno.toml --vector-links ids --verify
+```
+
 Un servidor en marcha también planifica y ejecuta migraciones en
 `/v1/storage/migrations` (propietarios), a través de su escritor, entre las
 demás escrituras. En un clúster, migra el archivo de cada miembro con su
@@ -772,6 +784,7 @@ vector_cache_mb = 128       # vectors decoded while inserting embeddings
 [storage]
 compression = "auto"        # compress values where it pays; "off" writes them as they are
 fulltext = "postings"       # full-text indexes built from now on; "entries" as earlier releases
+vector_links = "numbers"    # vector spaces made or compacted from now on; "ids" as earlier releases
 
 [indexing]
 mode = "automatic"          # of namespaces without one: automatic, manual or hybrid

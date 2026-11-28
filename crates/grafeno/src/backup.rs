@@ -247,6 +247,19 @@ pub(crate) fn restore_into(from: &ReadTransaction, to: &WriteTransaction) -> Res
         Err(redb::TableError::TableDoesNotExist(_)) => {}
         Err(error) => return Err(storage(error)),
     }
+    // Of layout 22.
+    to.delete_table(crate::vnumbers::VECTOR_NUMBERS)
+        .map_err(storage)?;
+    to.delete_table(crate::vnumbers::VECTOR_IDS)
+        .map_err(storage)?;
+    match from.open_table(crate::vnumbers::VECTOR_IDS) {
+        Ok(_) => {
+            entries += copy(from, to, crate::vnumbers::VECTOR_NUMBERS)?;
+            entries += copy(from, to, crate::vnumbers::VECTOR_IDS)?;
+        }
+        Err(redb::TableError::TableDoesNotExist(_)) => {}
+        Err(error) => return Err(storage(error)),
+    }
     Ok(entries)
 }
 
@@ -304,6 +317,8 @@ impl ReadTx {
                 crate::compress::DICTIONARIES.name(),
                 crate::store::TEXT_VALUES.name(),
                 crate::fulltext::FULLTEXT_POSTINGS.name(),
+                crate::vnumbers::VECTOR_NUMBERS.name(),
+                crate::vnumbers::VECTOR_IDS.name(),
             ];
             for table in from.list_tables().map_err(storage)? {
                 if !known.contains(&table.name()) {
@@ -359,6 +374,10 @@ impl ReadTx {
                     entries += copy(from, &tx, crate::store::TEXT_VALUES)?;
                 } else if table.name() == crate::fulltext::FULLTEXT_POSTINGS.name() {
                     entries += copy(from, &tx, crate::fulltext::FULLTEXT_POSTINGS)?;
+                } else if table.name() == crate::vnumbers::VECTOR_NUMBERS.name() {
+                    entries += copy(from, &tx, crate::vnumbers::VECTOR_NUMBERS)?;
+                } else if table.name() == crate::vnumbers::VECTOR_IDS.name() {
+                    entries += copy(from, &tx, crate::vnumbers::VECTOR_IDS)?;
                 }
             }
             tx.commit().map_err(storage)?;

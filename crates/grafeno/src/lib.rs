@@ -49,6 +49,7 @@ mod resolve;
 mod rights;
 mod view;
 mod vindex;
+mod vnumbers;
 pub use alias::Alias;
 pub use audit::{AuditEvent, AuditPage, AuditRetention, NewAuditEvent, Outcome};
 pub use db::Origin;
@@ -76,8 +77,8 @@ pub use constraints::{
 };
 pub use db::{
     Actor, BASE_LAYOUT, DEFAULT_CACHE, Durability, ENVELOPE_LAYOUT, FileIntegrity, Grafeno,
-    HYPEREDGE_LAYOUT, OpenOptions, POSTINGS_LAYOUT, ReadTx, SCHEMA_VERSION, WriteTx,
-    upgrade_copies, upgrade_copy_path,
+    HYPEREDGE_LAYOUT, NUMBERS_LAYOUT, OpenOptions, POSTINGS_LAYOUT, ReadTx, SCHEMA_VERSION,
+    WriteTx, upgrade_copies, upgrade_copy_path,
 };
 pub use dump::{DumpStats, EXPORT_FORMAT, EXPORT_VERSION, ImportOptions, Record};
 pub use find::{Cmp, Filter, Find, FindPage, IndexPosition, MAX_FIND_LIMIT, OrderBy, ValueKind};
@@ -117,6 +118,7 @@ pub use traverse::{Direction, EdgeFilter, Neighbor, Path, Subgraph};
 pub use usage::{NamespaceUsage, StorageUsage, TableUsage};
 pub use vector::Similarity;
 pub use vindex::{BuildProgress, Building, EMBEDDING_KEY, VectorFilter, VectorSearch, VectorSpec};
+pub use vnumbers::LinkFormat;
 pub use writer::{Histogram, HistogramSnapshot, Lane, Writer, WriterOptions, WriterSnapshot};
 
 /// A search result: a node and its score (BM25 for text, cosine similarity

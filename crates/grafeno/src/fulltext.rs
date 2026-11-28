@@ -1516,7 +1516,6 @@ impl crate::WriteTx {
     /// `fulltext_postings` and gives the file the layout it had without
     /// them. `Err` says why not.
     pub(crate) fn leave_postings_layout(&mut self) -> Result<std::result::Result<u64, String>> {
-        use redb::ReadableTableMetadata;
         {
             let stats = self.tx.open_table(FULLTEXT_STATS).map_err(storage)?;
             for item in stats.iter().map_err(storage)? {
@@ -1534,50 +1533,13 @@ impl crate::WriteTx {
         if crate::compress::has_table(&self.tx, redb::TableHandle::name(&FULLTEXT_POSTINGS))? {
             self.tx.delete_table(FULLTEXT_POSTINGS).map_err(storage)?;
         }
-        let hyperedges = self
-            .tx
-            .open_table(crate::hyperedge::HYPEREDGES)
-            .map_err(storage)?
-            .len()
-            .map_err(storage)?
-            > 0;
-        let mut meta = self.tx.open_table(crate::store::META).map_err(storage)?;
-        let stored = meta
-            .get(crate::db::SCHEMA_KEY)
-            .map_err(storage)?
-            .map_or(crate::BASE_LAYOUT, |guard| guard.value());
-        if stored != crate::POSTINGS_LAYOUT {
-            return Ok(Ok(stored));
-        }
-        let before = meta
-            .remove(crate::db::LAYOUT_BEFORE_POSTINGS)
-            .map_err(storage)?
-            .map_or(crate::BASE_LAYOUT, |guard| guard.value());
-        let layout = if hyperedges {
-            before.max(crate::HYPEREDGE_LAYOUT)
-        } else {
-            before
-        };
-        meta.insert(crate::db::SCHEMA_KEY, layout)
-            .map_err(storage)?;
-        Ok(Ok(layout))
+        Ok(Ok(crate::db::settle_layout(&self.tx)?))
     }
 }
 
-/// Marks the file layout 21, keeping the layout it had.
+/// Marks the file layout 21.
 pub(crate) fn mark_postings_layout(tx: &redb::WriteTransaction) -> Result<()> {
-    let mut meta = tx.open_table(crate::store::META).map_err(storage)?;
-    let stored = meta
-        .get(crate::db::SCHEMA_KEY)
-        .map_err(storage)?
-        .map_or(crate::BASE_LAYOUT, |guard| guard.value());
-    if stored < crate::POSTINGS_LAYOUT {
-        meta.insert(crate::db::LAYOUT_BEFORE_POSTINGS, stored)
-            .map_err(storage)?;
-        meta.insert(crate::db::SCHEMA_KEY, crate::POSTINGS_LAYOUT)
-            .map_err(storage)?;
-    }
-    Ok(())
+    crate::db::raise_layout(tx, crate::POSTINGS_LAYOUT)
 }
 
 /// How many postings index `name` holds (the postings format).

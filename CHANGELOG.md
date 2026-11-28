@@ -14,6 +14,19 @@ upgraded in place, with a copy kept first.
 
 ## Unreleased
 
+- **Changed**: vector indexes store their graph's neighbor lists in a
+  quarter of the space. Each vector gets a number in its space, and a
+  list keeps numbers of one to three bytes instead of 16-byte ids: the
+  same neighbors, in the same order, so searches return the same nodes
+  and scores. On 100,000 vectors of 64 values the links went from 45.6 to
+  10.0 MiB (plus 5.3 MiB of numbers) and the file stored 12% less;
+  searches cost the same, a load and a single write about 8% more. New
+  and compacted spaces take it; existing ones keep theirs until compacted
+  (`grafeno storage apply --vector-links numbers`). The first space in it
+  makes the file layout 22, which earlier releases refuse; `[storage]
+  vector_links = "ids"` (`OpenOptions::vector_links`) keeps the earlier
+  format, and `grafeno storage apply --vector-links ids` brings a file
+  back.
 - **Changed**: full-text indexes take a fifth less space. Their postings
   move to a table of their own, one entry per term and node with the
   fields, frequencies, lengths and positions packed as varints, instead

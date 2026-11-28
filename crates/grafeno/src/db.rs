@@ -79,21 +79,27 @@ use crate::{Hit, text, vector};
 /// 21. Full-text postings (`fulltext_postings`, phase 9): one entry per term
 ///     and node, which an older Grafeno would not see. A file is marked 21
 ///     by the transaction that builds its first full-text index in that
-///     format; the layout it would have without them is kept under
-///     `layout_before_postings`, and rebuilding every full-text index in the
-///     entries format (`grafeno storage apply --fulltext entries
-///     --reindex-existing`) brings it back.
-pub const SCHEMA_VERSION: u64 = 21;
+///     format; rebuilding every full-text index in the entries format
+///     (`grafeno storage apply --fulltext entries --reindex-existing`)
+///     drops the table.
+/// 22. Vector links by number (`vector_numbers`, `vector_ids`, phase 10):
+///     HNSW neighbor lists as varints of numbers per space, which an older
+///     Grafeno would misread. Marked by the transaction that creates the
+///     first space in that format; compacting every space in the ids format
+///     (`grafeno storage apply --vector-links ids`) drops the tables.
+///
+/// From 19 on, what a file holds decides its layout ([`needed_layout`]):
+/// leaving a format gives the file the layout of what is left.
+pub const SCHEMA_VERSION: u64 = 22;
+
+/// The layout of a file whose vector links are numbers.
+pub const NUMBERS_LAYOUT: u64 = 22;
 
 /// The layout of a file that holds full-text postings.
 pub const POSTINGS_LAYOUT: u64 = 21;
 
-/// The layout of a file that holds values in envelopes (and no postings).
+/// The layout of a file that holds values in envelopes.
 pub const ENVELOPE_LAYOUT: u64 = 20;
-
-/// The `meta` key keeping the layout a file at 21 would have without its
-/// full-text postings.
-pub(crate) const LAYOUT_BEFORE_POSTINGS: &str = "layout_before_postings";
 
 /// The layout of a file that holds hyperedges (and no envelopes).
 pub const HYPEREDGE_LAYOUT: u64 = 19;
@@ -105,18 +111,72 @@ pub(crate) const LAYOUT_BEFORE_ENVELOPES: &str = "layout_before_envelopes";
 /// upgraded ones get this one, and Grafeno 0.4 reads it.
 pub const BASE_LAYOUT: u64 = 18;
 
-/// Whether a file at `layout` is marked for envelopes: 20, or 21 when the
-/// layout it would have without postings is 20.
-pub(crate) fn envelope_layout(tx: &redb::WriteTransaction, layout: u64) -> Result<bool> {
-    if layout != POSTINGS_LAYOUT {
-        return Ok(layout >= ENVELOPE_LAYOUT);
-    }
+/// A snapshot's view of a vector graph.
+pub(crate) type ReadGraph<'a> = crate::vector::Graph<
+    'a,
+    ReadOnlyTable<LinkKey, &'static [u8]>,
+    ReadOnlyTable<(&'static str, u32), u128>,
+>;
+
+/// Whether a file holds values in envelopes (its first one kept the
+/// layout before it under `layout_before_envelopes`).
+pub(crate) fn has_envelopes(tx: &redb::WriteTransaction) -> Result<bool> {
     Ok(tx
         .open_table(META)
         .map_err(storage)?
-        .get(LAYOUT_BEFORE_POSTINGS)
+        .get(LAYOUT_BEFORE_ENVELOPES)
         .map_err(storage)?
-        .is_some_and(|guard| guard.value() >= ENVELOPE_LAYOUT))
+        .is_some())
+}
+
+/// The layout what a file holds needs: numbered vector links 22, full-text
+/// postings 21, envelopes 20, hyperedges 19, else 18.
+pub(crate) fn needed_layout(tx: &redb::WriteTransaction) -> Result<u64> {
+    use redb::{ReadableTableMetadata, TableHandle};
+    if crate::compress::has_table(tx, crate::vnumbers::VECTOR_IDS.name())? {
+        return Ok(NUMBERS_LAYOUT);
+    }
+    if crate::compress::has_table(tx, crate::fulltext::FULLTEXT_POSTINGS.name())? {
+        return Ok(POSTINGS_LAYOUT);
+    }
+    if has_envelopes(tx)? {
+        return Ok(ENVELOPE_LAYOUT);
+    }
+    let hyperedges = tx
+        .open_table(crate::hyperedge::HYPEREDGES)
+        .map_err(storage)?
+        .len()
+        .map_err(storage)?
+        > 0;
+    Ok(if hyperedges {
+        HYPEREDGE_LAYOUT
+    } else {
+        BASE_LAYOUT
+    })
+}
+
+/// Raises the file's layout to `layout` (never lowers it).
+pub(crate) fn raise_layout(tx: &redb::WriteTransaction, layout: u64) -> Result<()> {
+    let mut meta = tx.open_table(META).map_err(storage)?;
+    let stored = meta
+        .get(SCHEMA_KEY)
+        .map_err(storage)?
+        .map_or(BASE_LAYOUT, |guard| guard.value());
+    if stored < layout {
+        meta.insert(SCHEMA_KEY, layout).map_err(storage)?;
+    }
+    Ok(())
+}
+
+/// Gives the file the layout of what it holds now, after a format was
+/// left. Returns it.
+pub(crate) fn settle_layout(tx: &redb::WriteTransaction) -> Result<u64> {
+    let layout = needed_layout(tx)?;
+    tx.open_table(META)
+        .map_err(storage)?
+        .insert(SCHEMA_KEY, layout)
+        .map_err(storage)?;
+    Ok(layout)
 }
 
 /// The tables replaced in version 3, by name (their types no longer matter).
@@ -151,6 +211,9 @@ pub struct OpenOptions {
     pub indexing: crate::IndexingMode,
     /// How new and rebuilt full-text indexes keep their postings (phase 9).
     pub fulltext: crate::FulltextFormat,
+    /// How new and compacted vector spaces keep their neighbor lists
+    /// (phase 10).
+    pub vector_links: crate::LinkFormat,
 }
 
 /// The default page cache: 256 MiB.
@@ -166,6 +229,7 @@ impl Default for OpenOptions {
             compression: crate::Compression::Auto,
             indexing: crate::IndexingMode::Default,
             fulltext: crate::FulltextFormat::Postings,
+            vector_links: crate::LinkFormat::Numbers,
         }
     }
 }
@@ -361,7 +425,24 @@ impl Grafeno {
         self.shared.compression.set(options.compression);
         self.shared.indexing.set_default(options.indexing);
         self.set_fulltext_format(options.fulltext);
+        self.set_link_format(options.vector_links);
         self
+    }
+
+    /// How new and compacted vector spaces keep their neighbor lists.
+    pub fn link_format(&self) -> crate::LinkFormat {
+        if self.shared.vector_ids_format.load(Ordering::Relaxed) {
+            crate::LinkFormat::Ids
+        } else {
+            crate::LinkFormat::Numbers
+        }
+    }
+
+    /// Sets it, for spaces made or compacted from now on.
+    pub fn set_link_format(&self, format: crate::LinkFormat) {
+        self.shared
+            .vector_ids_format
+            .store(format == crate::LinkFormat::Ids, Ordering::Relaxed);
     }
 
     /// How new and rebuilt full-text indexes keep their postings.
@@ -567,7 +648,7 @@ impl Grafeno {
             .is_some_and(|guard| guard.value() == 1);
         let shared: Arc<Shared> = Arc::default();
         shared.compression.load(&tx)?;
-        let envelopes = envelope_layout(&tx, layout)?;
+        let envelopes = has_envelopes(&tx)?;
         shared
             .compression
             .layout_marked
@@ -635,6 +716,11 @@ impl Grafeno {
             vectors: tx.open_table(VECTORS).map_err(storage)?,
             vectors_q8: tx.open_table(VECTORS_Q8).map_err(storage)?,
             hnsw_links: tx.open_table(HNSW_LINKS).map_err(storage)?,
+            vector_ids: match tx.open_table(crate::vnumbers::VECTOR_IDS) {
+                Ok(table) => Some(table),
+                Err(redb::TableError::TableDoesNotExist(_)) => None,
+                Err(error) => return Err(storage(error)),
+            },
             vector_meta: tx.open_table(VECTOR_META).map_err(storage)?,
             ns_counts: tx.open_table(NS_COUNTS).map_err(storage)?,
             label_counts: tx.open_table(LABEL_COUNTS).map_err(storage)?,
@@ -686,7 +772,12 @@ impl Grafeno {
         Ok(WriteTx {
             tx,
             database: self.db.clone(),
-            vectors: vector::Cache::new(self.vector_cache),
+            vectors: {
+                let mut cache = vector::Cache::new(self.vector_cache);
+                cache.numbered = !self.shared.vector_ids_format.load(Ordering::Relaxed);
+                cache.numbers = self.shared.vector_numbers.clone();
+                cache
+            },
             shared: self.shared.clone(),
             actor: None,
             constraint_cache: None,
@@ -753,7 +844,7 @@ impl Grafeno {
         let tx = self.db.begin_write().map_err(storage)?;
         let entries = crate::backup::restore_into(&from, &tx)?;
         self.shared.compression.load(&tx)?;
-        let envelopes = envelope_layout(&tx, version)?;
+        let envelopes = has_envelopes(&tx)?;
         self.shared.indexing.clear();
         let replication = tx
             .open_table(META)
@@ -1067,6 +1158,8 @@ pub struct ReadTx {
     pub(crate) vectors: ReadOnlyTable<RecordKey, &'static [u8]>,
     pub(crate) vectors_q8: ReadOnlyTable<RecordKey, &'static [u8]>,
     pub(crate) hnsw_links: ReadOnlyTable<LinkKey, &'static [u8]>,
+    /// `vector_ids`, in files with numbered links (layout 22).
+    pub(crate) vector_ids: Option<ReadOnlyTable<(&'static str, u32), u128>>,
     pub(crate) vector_meta: ReadOnlyTable<&'static str, &'static [u8]>,
     pub(crate) ns_counts: ReadOnlyTable<&'static str, (u64, u64)>,
     pub(crate) label_counts: ReadOnlyTable<CountKey, u64>,
@@ -1557,6 +1650,16 @@ impl ReadTx {
         })
     }
 
+    /// What reads of a space's graph need.
+    pub(crate) fn graph(&self) -> ReadGraph<'_> {
+        crate::vector::Graph {
+            links: &self.hnsw_links,
+            ids: self.vector_ids.as_ref(),
+            numbers: &self.shared.vector_numbers,
+            committed: true,
+        }
+    }
+
     fn raw_search_vector(
         &self,
         ns: &str,
@@ -1567,7 +1670,7 @@ impl ReadTx {
         vector::search(
             &self.vectors,
             &self.vectors_q8,
-            &self.hnsw_links,
+            &self.graph(),
             &self.vector_meta,
             ns,
             query,

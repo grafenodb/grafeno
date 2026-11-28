@@ -1974,6 +1974,42 @@ in `docs/data/compression.csv`, against the redb 5 run of
 The other operations are within ±5% (full list in the CSV). Reads that
 go through many records pay for decompressing each one: 8–12%.
 
+## Vector links by number (phase 10)
+
+The storage suite's catalogue (100,000 vectors of 64 values, one vector
+index on `@embedding`), both formats in one session, twice each
+(`VECTOR_LINKS=ids` keeps the format before phase 10); every result
+matches the fixtures, recall@10 included (`docs/data/vector_links_ids.csv`,
+`docs/data/vector_links_numbers.csv`).
+
+| | ids | numbers |
+| --- | ---: | ---: |
+| `hnsw_links` MiB | 45.6 | 10.0 |
+| `vector_numbers` + `vector_ids` MiB | | 5.3 |
+| stored MiB | 260.3 | 230.0 |
+| after `vacuum` MiB | 300.3 | 267.0 |
+| load s | 60.1–60.5 | 65.7–66.0 |
+| vector search p50 ms | 0.90 | 0.88–0.92 |
+| a node written, p50 ms | 1.24–1.31 | 1.35–1.42 |
+
+Each neighbor takes a varint of one to three bytes instead of sixteen;
+writing a new vector writes its number into two more tables, which is
+what a load and a single write pay.
+
+Lossless compression of the vectors themselves
+(`crates/grafeno/examples/vector_compression.rs`,
+`docs/data/vector_compression.csv`), each normalized vector of near-normal
+values compressed alone with Zstandard, its bytes shuffled into planes:
+
+| values | size compressed | read one back | the distance a search computes |
+| ---: | ---: | ---: | ---: |
+| 64 | 103.9% | 0.10 µs | 0.03 µs |
+| 384 | 96.7% | 2.19 µs | 0.25 µs |
+| 768 | 94.2% | 5.28 µs | 0.52 µs |
+
+Not adopted: an embedding's values fill their mantissas, and every read
+would pay nine times the distance it serves.
+
 ## Full-text index storage (phase 9)
 
 The storage suite on the catalogue and documents datasets, both formats

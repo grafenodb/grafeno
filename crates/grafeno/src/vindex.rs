@@ -174,20 +174,24 @@ pub(crate) fn clear_space(tx: &WriteTransaction, space: &str) -> Result<()> {
         .map_err(storage)?
         .remove(space)
         .map_err(storage)?;
+    crate::vnumbers::clear_space(tx, space)?;
     Ok(())
 }
 
 /// Makes the space of `def` empty, with its parameters.
-pub(crate) fn reset_space(tx: &WriteTransaction, ns: &str, def: &IndexDef) -> Result<()> {
+pub(crate) fn reset_space(
+    tx: &WriteTransaction,
+    ns: &str,
+    def: &IndexDef,
+    numbered: bool,
+) -> Result<()> {
     let spec = def.vector.as_ref().expect("a vector index");
     let space = space_of(ns, &def.name);
     clear_space(tx, &space)?;
+    let meta = VectorMeta::fresh(tx, spec.dimension, spec.params(), numbered)?;
     tx.open_table(VECTOR_META)
         .map_err(storage)?
-        .insert(
-            space.as_str(),
-            encode(&VectorMeta::new(spec.dimension, spec.params()))?.as_slice(),
-        )
+        .insert(space.as_str(), encode(&meta)?.as_slice())
         .map_err(storage)?;
     Ok(())
 }
@@ -325,7 +329,7 @@ impl WriteTx {
         records: &[(u128, Props, bool)],
     ) -> Result<u64> {
         let spec = def.vector.as_ref().expect("a vector index");
-        reset_space(&self.tx, ns, def)?;
+        reset_space(&self.tx, ns, def, self.vectors.numbered)?;
         let space = space_of(ns, &def.name);
         self.vectors.forget(&space);
         if spec.building.is_some() {
@@ -630,7 +634,7 @@ impl ReadTx {
         vector::search_with(
             &self.vectors,
             &self.vectors_q8,
-            &self.hnsw_links,
+            &self.graph(),
             &self.vector_meta,
             &space,
             query,
